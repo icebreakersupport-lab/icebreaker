@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(flutter --version 2>/dev/null || echo \"flutter not found\")",
+      "Bash(flutter pub get)",
+      "Bash(flutter run -d emulator-5554)",
+      "Bash(gh auth status)",
+      "Bash(brew install gh)",
+      "Bash(git init && git add . && git commit -m \"Initial commit\")"
+    ]
+  }
+}
