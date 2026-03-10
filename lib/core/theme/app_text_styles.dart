@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'app_colors.dart';
 
 /// Icebreaker typography system.
@@ -20,7 +19,8 @@ abstract final class AppTextStyles {
   // ─── Display ──────────────────────────────────────────────────────────────
 
   /// Countdown timer — "4:59". Large, bold, white, high contrast.
-  static TextStyle display = GoogleFonts.plusJakartaSans(
+  static TextStyle display = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 56,
     fontWeight: FontWeight.w800,
     color: AppColors.textPrimary,
@@ -29,7 +29,8 @@ abstract final class AppTextStyles {
   );
 
   /// Hero label — "MATCHED!", "COLOR MATCH!". Bold uppercase.
-  static TextStyle displayLabel = GoogleFonts.plusJakartaSans(
+  static TextStyle displayLabel = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 32,
     fontWeight: FontWeight.w800,
     color: AppColors.textPrimary,
@@ -39,7 +40,8 @@ abstract final class AppTextStyles {
 
   // ─── Headings ─────────────────────────────────────────────────────────────
 
-  static TextStyle h1 = GoogleFonts.plusJakartaSans(
+  static TextStyle h1 = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 32,
     fontWeight: FontWeight.w700,
     color: AppColors.textPrimary,
@@ -47,7 +49,8 @@ abstract final class AppTextStyles {
     height: 1.2,
   );
 
-  static TextStyle h2 = GoogleFonts.plusJakartaSans(
+  static TextStyle h2 = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 24,
     fontWeight: FontWeight.w700,
     color: AppColors.textPrimary,
@@ -55,7 +58,8 @@ abstract final class AppTextStyles {
     height: 1.3,
   );
 
-  static TextStyle h3 = GoogleFonts.plusJakartaSans(
+  static TextStyle h3 = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 20,
     fontWeight: FontWeight.w600,
     color: AppColors.textPrimary,
@@ -65,28 +69,32 @@ abstract final class AppTextStyles {
 
   // ─── Body ─────────────────────────────────────────────────────────────────
 
-  static TextStyle bodyL = GoogleFonts.plusJakartaSans(
+  static TextStyle bodyL = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 18,
     fontWeight: FontWeight.w400,
     color: AppColors.textPrimary,
     height: 1.5,
   );
 
-  static TextStyle body = GoogleFonts.plusJakartaSans(
+  static TextStyle body = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 16,
     fontWeight: FontWeight.w400,
     color: AppColors.textPrimary,
     height: 1.5,
   );
 
-  static TextStyle bodyS = GoogleFonts.plusJakartaSans(
+  static TextStyle bodyS = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 14,
     fontWeight: FontWeight.w400,
     color: AppColors.textSecondary,
     height: 1.4,
   );
 
-  static TextStyle caption = GoogleFonts.plusJakartaSans(
+  static TextStyle caption = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 12,
     fontWeight: FontWeight.w400,
     color: AppColors.textMuted,
@@ -95,7 +103,8 @@ abstract final class AppTextStyles {
 
   // ─── Button labels ────────────────────────────────────────────────────────
 
-  static TextStyle buttonL = GoogleFonts.plusJakartaSans(
+  static TextStyle buttonL = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 18,
     fontWeight: FontWeight.w700,
     color: AppColors.textPrimary,
@@ -103,7 +112,8 @@ abstract final class AppTextStyles {
     height: 1.0,
   );
 
-  static TextStyle button = GoogleFonts.plusJakartaSans(
+  static TextStyle button = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 16,
     fontWeight: FontWeight.w700,
     color: AppColors.textPrimary,
@@ -111,7 +121,8 @@ abstract final class AppTextStyles {
     height: 1.0,
   );
 
-  static TextStyle buttonS = GoogleFonts.plusJakartaSans(
+  static TextStyle buttonS = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 14,
     fontWeight: FontWeight.w600,
     color: AppColors.textPrimary,
@@ -122,7 +133,8 @@ abstract final class AppTextStyles {
   // ─── Overline / Labels ────────────────────────────────────────────────────
 
   /// Small allcaps label — section headers in Messages tab.
-  static TextStyle overline = GoogleFonts.plusJakartaSans(
+  static TextStyle overline = const TextStyle(
+    fontFamily: 'PlusJakartaSans',
     fontSize: 11,
     fontWeight: FontWeight.w700,
     color: AppColors.textMuted,
