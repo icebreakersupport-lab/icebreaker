@@ -1,0 +1,162 @@
+import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../features/shell/main_shell.dart';
+import '../../features/home/screens/home_screen.dart';
+import '../../features/nearby/screens/nearby_screen.dart';
+import '../../features/nearby/screens/send_icebreaker_screen.dart';
+import '../../features/messages/screens/messages_screen.dart';
+import '../../features/meetup/screens/icebreaker_received_screen.dart';
+import '../../features/meetup/screens/matched_screen.dart';
+import '../../features/meetup/screens/color_match_screen.dart';
+import '../../features/meetup/screens/post_meet_screen.dart';
+import '../../features/meetup/screens/match_confirmed_screen.dart';
+import '../../features/profile/screens/profile_screen.dart';
+import '../constants/app_constants.dart';
+
+/// Icebreaker app router using go_router.
+///
+/// Navigation architecture:
+///   / → MainShell (4-tab bottom nav)
+///     /home
+///     /nearby
+///     /messages
+///     /profile
+///   Pushed on top of shell (full-screen):
+///     /nearby/send-icebreaker
+///     /icebreaker-received
+///     /meetup/matched
+///     /meetup/color-match
+///     /meetup/post-meet
+///     /meetup/confirmed
+final GoRouter appRouter = GoRouter(
+  initialLocation: AppRoutes.home,
+  debugLogDiagnostics: false,
+  routes: [
+    // ── Main shell with persistent bottom nav ──────────────────────────────
+    ShellRoute(
+      builder: (context, state, child) => MainShell(child: child),
+      routes: [
+        GoRoute(
+          path: AppRoutes.home,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            child: HomeScreen(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.nearby,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            child: NearbyScreen(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.messages,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            child: MessagesScreen(),
+          ),
+        ),
+        GoRoute(
+          path: AppRoutes.profile,
+          pageBuilder: (context, state) => const NoTransitionPage(
+            child: ProfileScreen(),
+          ),
+        ),
+      ],
+    ),
+
+    // ── Send Icebreaker (pushed over nearby) ──────────────────────────────
+    GoRoute(
+      path: AppRoutes.sendIcebreaker,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return SendIcebreakerScreen(
+          recipientId: extra['recipientId'] as String,
+          recipientFirstName: extra['firstName'] as String,
+          recipientAge: extra['age'] as int,
+          recipientPhotoUrl: extra['photoUrl'] as String,
+          recipientBio: extra['bio'] as String,
+        );
+      },
+    ),
+
+    // ── Icebreaker received ────────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.icebreakerReceived,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return IcebreakerReceivedScreen(
+          icebreakerId: extra['icebreakerId'] as String,
+          senderFirstName: extra['senderFirstName'] as String,
+          senderAge: extra['senderAge'] as int,
+          senderPhotoUrl: extra['senderPhotoUrl'] as String,
+          myPhotoUrl: extra['myPhotoUrl'] as String,
+          myFirstName: extra['myFirstName'] as String,
+          message: extra['message'] as String,
+          secondsRemaining: extra['secondsRemaining'] as int,
+        );
+      },
+    ),
+
+    // ── Meetup: Finding ───────────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.matched,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return MatchedScreen(
+          meetupId: extra['meetupId'] as String,
+          matchColor: extra['matchColor'] as Color,
+          otherFirstName: extra['otherFirstName'] as String,
+          otherPhotoUrl: extra['otherPhotoUrl'] as String,
+          myFirstName: extra['myFirstName'] as String,
+          myPhotoUrl: extra['myPhotoUrl'] as String,
+          findSecondsRemaining: extra['findSecondsRemaining'] as int,
+        );
+      },
+    ),
+
+    // ── Meetup: In Conversation ───────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.colorMatch,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return ColorMatchScreen(
+          meetupId: extra['meetupId'] as String,
+          matchColor: extra['matchColor'] as Color,
+          otherFirstName: extra['otherFirstName'] as String,
+          otherPhotoUrl: extra['otherPhotoUrl'] as String,
+          myFirstName: extra['myFirstName'] as String,
+          myPhotoUrl: extra['myPhotoUrl'] as String,
+          conversationSecondsRemaining:
+              extra['conversationSecondsRemaining'] as int,
+        );
+      },
+    ),
+
+    // ── Meetup: Post Meet ─────────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.postMeet,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return PostMeetScreen(
+          meetupId: extra['meetupId'] as String,
+          matchColor: extra['matchColor'] as Color,
+          otherFirstName: extra['otherFirstName'] as String,
+          otherPhotoUrl: extra['otherPhotoUrl'] as String,
+        );
+      },
+    ),
+
+    // ── Meetup: Chat Unlocked ─────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.matchConfirmed,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return MatchConfirmedScreen(
+          conversationId: extra['conversationId'] as String,
+          otherFirstName: extra['otherFirstName'] as String,
+          otherPhotoUrl: extra['otherPhotoUrl'] as String,
+          matchColor: extra['matchColor'] as Color,
+        );
+      },
+    ),
+  ],
+);
