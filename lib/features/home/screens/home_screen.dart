@@ -13,13 +13,12 @@ import 'live_verification_screen.dart';
 
 /// Home tab — the "GO LIVE" entry point.
 ///
-/// Live state is read from and written to the global [LiveSession] via
-/// [LiveSessionScope]. Tapping GO LIVE navigates to [LiveVerificationScreen];
-/// only after the selfie is verified does the session become active here.
+/// Offline state: hero logo + GO LIVE CTA + supporting copy below.
+/// Live state: pulsing logo + YOU'RE LIVE badge + selfie avatar + countdown.
 ///
-/// A per-second [Timer] drives the live countdown display. The timer is
-/// started/stopped automatically via [didChangeDependencies] when the
-/// session transitions between live/offline.
+/// Live state is owned by the global [LiveSession] via [LiveSessionScope].
+/// A per-second [Timer] drives the countdown — started/stopped automatically
+/// by [didChangeDependencies].
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -89,23 +88,55 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  // ── App bar ───────────────────────────────────────────────────────────────
+
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
       centerTitle: true,
-      title: Text(
-        'Icebreaker',
-        style: AppTextStyles.h3.copyWith(
-          letterSpacing: 0.5,
-          color: AppColors.textPrimary,
+      // Subtle left icon — balanced with the right action
+      leading: Padding(
+        padding: const EdgeInsets.only(left: 8),
+        child: IconButton(
+          icon: const Icon(
+            Icons.person_outline_rounded,
+            color: AppColors.textMuted,
+            size: 22,
+          ),
+          onPressed: () {
+            // TODO: open own profile
+          },
         ),
+      ),
+      // "icebreaker •" — lowercase + green live-status dot
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'icebreaker',
+            style: AppTextStyles.h3.copyWith(
+              letterSpacing: 0.3,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(width: 6),
+          Container(
+            width: 7,
+            height: 7,
+            decoration: const BoxDecoration(
+              color: AppColors.success,
+              shape: BoxShape.circle,
+            ),
+          ),
+        ],
       ),
       actions: [
         IconButton(
           icon: const Icon(
             Icons.notifications_none_rounded,
-            color: AppColors.textSecondary,
+            color: AppColors.textMuted,
+            size: 22,
           ),
           onPressed: () {
             // TODO: open notifications
@@ -118,50 +149,89 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Offline state ─────────────────────────────────────────────────────────
 
   Widget _buildOfflineState() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Column(
-        children: [
-          const Spacer(flex: 2),
+    return Column(
+      children: [
+        const Spacer(flex: 3),
 
-          const IcebreakerLogo(size: 140, showGlow: true),
+        // ── Hero logo with atmospheric glow ──────────────────────────────
+        // The glow here is always-on — it's part of the brand identity
+        // presentation on the home screen, independent of live state.
+        Stack(
+          alignment: Alignment.center,
+          children: [
+            // Ambient radial glow behind the logo
+            Container(
+              width: 300,
+              height: 300,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.brandPink.withValues(alpha: 0.20),
+                    AppColors.brandPurple.withValues(alpha: 0.12),
+                    Colors.transparent,
+                  ],
+                  stops: const [0.0, 0.5, 1.0],
+                ),
+              ),
+            ),
+            // Logo — IcebreakerLogo's own glow only activates when live
+            const IcebreakerLogo(size: 192, showGlow: false),
+          ],
+        ),
 
-          const SizedBox(height: 32),
+        const Spacer(flex: 2),
 
-          Text(
-            'Ready to meet\nsomeone nearby?',
-            style: AppTextStyles.h1.copyWith(height: 1.2),
-            textAlign: TextAlign.center,
+        // ── CTA section ───────────────────────────────────────────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 28),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Primary CTA — tall, gradient pill, full width
+              PillButton.primary(
+                label: 'GO LIVE',
+                onTap: _handleGoLive,
+                width: double.infinity,
+                height: 68,
+              ),
+
+              const SizedBox(height: 20),
+
+              // Primary supporting copy
+              Text(
+                'Go Live to appear on the radar for people around you',
+                style: AppTextStyles.bodyS.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+                textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: 5),
+
+              // Secondary supporting copy
+              Text(
+                'Same building, venue, or nearby social setting',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted,
+                ),
+                textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: 20),
+
+              // Session / quota info
+              Text(
+                '1 Live session available  ·  3 Icebreakers remaining',
+                style: AppTextStyles.caption,
+                textAlign: TextAlign.center,
+              ),
+
+              const SizedBox(height: 28),
+            ],
           ),
-
-          const SizedBox(height: 12),
-
-          Text(
-            'Go Live to appear on the map for people\naround you — up to 30 metres away.',
-            style: AppTextStyles.bodyS,
-            textAlign: TextAlign.center,
-          ),
-
-          const Spacer(flex: 3),
-
-          PillButton.primary(
-            label: 'GO LIVE',
-            onTap: _handleGoLive,
-            width: double.infinity,
-            height: 64,
-          ),
-
-          const SizedBox(height: 16),
-
-          Text(
-            '1 Live session available  ·  3 Icebreakers remaining',
-            style: AppTextStyles.caption,
-            textAlign: TextAlign.center,
-          ),
-
-          const SizedBox(height: 16),
-        ],
-      ),
+        ),
+      ],
     );
   }
 
@@ -174,8 +244,8 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Spacer(flex: 2),
 
-          // Logo — heartbeat driven by LiveSession, no wrapper needed
-          const IcebreakerLogo(size: 140, showGlow: true),
+          // Logo — heartbeat driven by LiveSession
+          const IcebreakerLogo(size: 160, showGlow: true),
 
           const SizedBox(height: 20),
 
@@ -201,8 +271,8 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 8),
                 Text(
                   "YOU'RE LIVE",
-                  style:
-                      AppTextStyles.buttonS.copyWith(letterSpacing: 1.2),
+                  style: AppTextStyles.buttonS
+                      .copyWith(letterSpacing: 1.2),
                 ),
               ],
             ),
@@ -268,7 +338,7 @@ class _HomeScreenState extends State<HomeScreen> {
             border: Border.all(color: AppColors.brandPink, width: 2),
             boxShadow: [
               BoxShadow(
-                color: AppColors.brandPink.withValues(alpha: 0.20),
+                color: AppColors.brandPink.withValues(alpha: 0.22),
                 blurRadius: 16,
                 spreadRadius: 2,
               ),
