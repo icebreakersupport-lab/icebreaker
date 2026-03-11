@@ -415,36 +415,75 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildLiveSelfieAvatar(LiveSession session) {
     final path = session.selfieFilePath;
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 72,
-          height: 72,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.brandPink, width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.brandPink.withValues(alpha: 0.22),
-                blurRadius: 16,
-                spreadRadius: 2,
-              ),
+    return GestureDetector(
+      onTap: path != null ? () => _showSelfieExpanded(context, session) : null,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 180,
+            height: 180,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              border: Border.all(color: AppColors.brandPink, width: 2.5),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.brandPink.withValues(alpha: 0.38),
+                  blurRadius: 32,
+                  spreadRadius: 4,
+                ),
+                BoxShadow(
+                  color: AppColors.brandPurple.withValues(alpha: 0.22),
+                  blurRadius: 56,
+                  spreadRadius: 6,
+                ),
+              ],
+            ),
+            child: ClipOval(
+              child: path != null
+                  ? Image.file(File(path), fit: BoxFit.cover)
+                  : const Icon(
+                      Icons.person_rounded,
+                      color: AppColors.textMuted,
+                      size: 72,
+                    ),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Your live photo', style: AppTextStyles.caption),
+              if (path != null) ...[
+                const SizedBox(width: 5),
+                Icon(
+                  Icons.open_in_full_rounded,
+                  size: 11,
+                  color: AppColors.textMuted.withValues(alpha: 0.6),
+                ),
+              ],
             ],
           ),
-          child: ClipOval(
-            child: path != null
-                ? Image.file(File(path), fit: BoxFit.cover)
-                : const Icon(
-                    Icons.person_rounded,
-                    color: AppColors.textMuted,
-                    size: 36,
-                  ),
-          ),
-        ),
-        const SizedBox(height: 6),
-        Text('Your live photo', style: AppTextStyles.caption),
-      ],
+        ],
+      ),
+    );
+  }
+
+  void _showSelfieExpanded(BuildContext context, LiveSession session) {
+    showDialog<void>(
+      context: context,
+      barrierColor: Colors.black.withValues(alpha: 0.82),
+      builder: (dialogCtx) => _SelfieExpandedDialog(
+        session: session,
+        onRedo: () {
+          Navigator.of(dialogCtx).pop();
+          Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const LiveVerificationScreen(isRedo: true),
+            ),
+          );
+        },
+      ),
     );
   }
 
@@ -456,6 +495,137 @@ class _HomeScreenState extends State<HomeScreen> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$h:$m:$s';
+  }
+}
+
+// ── Selfie expanded dialog ────────────────────────────────────────────────────
+
+/// Full-screen dark overlay showing the live selfie enlarged, with a
+/// "Redo Live Selfie" button that re-enters the verification capture flow.
+///
+/// Tapping anywhere outside the content area (the dark scrim) also dismisses.
+class _SelfieExpandedDialog extends StatelessWidget {
+  const _SelfieExpandedDialog({
+    required this.session,
+    required this.onRedo,
+  });
+
+  final LiveSession session;
+  final VoidCallback onRedo;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = session.selfieFilePath;
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      insetPadding: EdgeInsets.zero,
+      child: SizedBox.expand(
+        child: GestureDetector(
+          // Tap the dark scrim → dismiss
+          onTap: () => Navigator.of(context).pop(),
+          behavior: HitTestBehavior.opaque,
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              // ── Large selfie circle ─────────────────────────────────────
+              GestureDetector(
+                // Prevent taps on the selfie itself from closing the dialog
+                onTap: () {},
+                child: Container(
+                  width: 260,
+                  height: 260,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    border: Border.all(
+                      color: AppColors.brandPink,
+                      width: 2.5,
+                    ),
+                    boxShadow: [
+                      BoxShadow(
+                        color: AppColors.brandPink.withValues(alpha: 0.45),
+                        blurRadius: 52,
+                        spreadRadius: 4,
+                      ),
+                      BoxShadow(
+                        color: AppColors.brandPurple.withValues(alpha: 0.30),
+                        blurRadius: 88,
+                        spreadRadius: 8,
+                      ),
+                    ],
+                  ),
+                  child: ClipOval(
+                    child: path != null
+                        ? Image.file(File(path), fit: BoxFit.cover)
+                        : const Icon(
+                            Icons.person_rounded,
+                            color: AppColors.textMuted,
+                            size: 96,
+                          ),
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              // ── Label ───────────────────────────────────────────────────
+              Text(
+                'Your live photo',
+                style: AppTextStyles.bodyS.copyWith(
+                  color: AppColors.textMuted,
+                ),
+              ),
+
+              const SizedBox(height: 36),
+
+              // ── Redo button ─────────────────────────────────────────────
+              GestureDetector(
+                onTap: onRedo,
+                child: Container(
+                  width: 240,
+                  height: 54,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(27),
+                    border: Border.all(
+                      color: AppColors.brandPink.withValues(alpha: 0.60),
+                    ),
+                    color: AppColors.brandPink.withValues(alpha: 0.10),
+                  ),
+                  alignment: Alignment.center,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(
+                        Icons.camera_alt_rounded,
+                        color: AppColors.brandPink,
+                        size: 18,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Redo Live Selfie',
+                        style: AppTextStyles.button.copyWith(
+                          color: AppColors.brandPink,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+
+              const SizedBox(height: 20),
+
+              // ── Dismiss hint ────────────────────────────────────────────
+              Text(
+                'Tap anywhere to close',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted.withValues(alpha: 0.5),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
   }
 }
 
