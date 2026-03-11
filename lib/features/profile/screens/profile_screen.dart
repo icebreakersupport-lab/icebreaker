@@ -6,131 +6,165 @@ import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
-import '../../../shared/widgets/pill_button.dart';
 import '../../home/screens/live_verification_screen.dart';
 
-/// Profile tab — the user's own profile view.
+/// Profile tab — redesigned to match reference layout.
 ///
-/// Shows:
-///   - Current live verification selfie (large, neon glow) when available,
-///     or a placeholder avatar when no selfie has been taken yet.
-///   - "Redo Live Selfie" button that re-enters the verification capture flow.
-///   - Name, bio, credits summary, subscription banner.
+/// Layout (top → bottom):
+///   AppBar (Profile title + settings icon)
+///   Hero circle — live selfie when live, placeholder when offline
+///   "XX% COMPLETE" pill
+///   Name (pink) + age (cyan) in large type
+///   Location line
+///   3 action buttons — Edit Profile / My Gallery / Live Selfie
+///   About Me card — bio + bullet details
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
+
+  // TODO: replace with real user data from Firestore via Riverpod
+  static const String _firstName = 'You';
+  static const int _age = 24;
+  static const String _location = 'San Francisco, CA';
+  static const String _occupation = 'Product Designer';
+  static const String _bio =
+      "I'm an adventurous soul who loves exploring new places, "
+      "trying new foods, and meeting interesting people. "
+      "Let's embark on an exciting journey together!";
 
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
 
-    // TODO: replace with real user data from Firestore via Riverpod
-    const String firstName = 'You';
-    const int age = 24;
-    const String bio = 'Add a bio to let people know who you are.';
-
     return GradientScaffold(
-      appBar: _buildAppBar(context),
+      appBar: AppBar(
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        centerTitle: true,
+        title: Text('Profile', style: AppTextStyles.h3),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.settings_outlined,
+                color: AppColors.textSecondary),
+            onPressed: () {
+              // TODO: open Settings
+            },
+          ),
+        ],
+      ),
       body: SafeArea(
         top: false,
         child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
+          padding: const EdgeInsets.symmetric(horizontal: 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               const SizedBox(height: 28),
 
-              // ── Hero selfie ───────────────────────────────────────────────
-              _LiveSelfieHero(session: session),
+              // ── Hero profile circle ─────────────────────────────────────
+              _HeroAvatar(session: session),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 18),
 
-              // ── Redo Live Selfie ──────────────────────────────────────────
-              GestureDetector(
-                onTap: () => Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) =>
-                        const LiveVerificationScreen(isRedo: true),
-                  ),
-                ),
-                child: Container(
-                  width: double.infinity,
-                  height: 52,
-                  decoration: BoxDecoration(
-                    borderRadius: BorderRadius.circular(26),
-                    border: Border.all(
-                      color: AppColors.brandPink.withValues(alpha: 0.55),
-                    ),
-                    color: AppColors.brandPink.withValues(alpha: 0.08),
-                  ),
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(
-                        Icons.camera_alt_rounded,
-                        color: AppColors.brandPink,
-                        size: 18,
-                      ),
-                      const SizedBox(width: 8),
-                      Text(
-                        'Redo Live Selfie',
-                        style: AppTextStyles.button.copyWith(
-                          color: AppColors.brandPink,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
+              // ── Completeness pill ───────────────────────────────────────
+              const _CompletenessChip(percent: 50),
 
-              const SizedBox(height: 24),
+              const SizedBox(height: 22),
 
-              // ── Name + age ────────────────────────────────────────────────
+              // ── Name + age ──────────────────────────────────────────────
               Row(
                 mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.baseline,
+                textBaseline: TextBaseline.alphabetic,
                 children: [
-                  Text(firstName, style: AppTextStyles.h2),
-                  const SizedBox(width: 8),
                   Text(
-                    '$age',
-                    style: AppTextStyles.h3
-                        .copyWith(color: AppColors.textSecondary),
+                    '$_firstName ',
+                    style: AppTextStyles.h1.copyWith(
+                      color: AppColors.brandPink,
+                      fontSize: 38,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: -0.5,
+                    ),
+                  ),
+                  Text(
+                    '($_age)',
+                    style: AppTextStyles.h2.copyWith(
+                      color: AppColors.brandCyan,
+                      fontSize: 28,
+                      fontWeight: FontWeight.w700,
+                    ),
                   ),
                 ],
               ),
 
               const SizedBox(height: 8),
 
-              // ── Bio ───────────────────────────────────────────────────────
-              Text(
-                bio,
-                style: AppTextStyles.bodyS,
-                textAlign: TextAlign.center,
-                maxLines: 3,
-                overflow: TextOverflow.ellipsis,
+              // ── Location ────────────────────────────────────────────────
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const Icon(Icons.location_on_rounded,
+                      color: AppColors.brandPink, size: 15),
+                  const SizedBox(width: 4),
+                  Text(
+                    _location,
+                    style: AppTextStyles.bodyS
+                        .copyWith(color: AppColors.textSecondary),
+                  ),
+                ],
               ),
 
-              const SizedBox(height: 28),
+              const SizedBox(height: 26),
 
-              // ── Edit Profile CTA ──────────────────────────────────────────
-              PillButton.outlined(
-                label: 'Edit Profile',
-                onTap: () {
-                  // TODO: navigate to EditProfileScreen
-                },
-                width: double.infinity,
-                height: 50,
+              // ── Action buttons ──────────────────────────────────────────
+              Row(
+                children: [
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.edit_rounded,
+                      label: 'Edit\nProfile',
+                      color: AppColors.brandPink,
+                      onTap: () {
+                        // TODO: navigate to EditProfileScreen
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.photo_library_outlined,
+                      label: 'My\nGallery',
+                      color: AppColors.brandCyan,
+                      onTap: () {
+                        // TODO: navigate to GalleryScreen
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: _ActionTile(
+                      icon: Icons.camera_alt_rounded,
+                      label: 'Live\nSelfie',
+                      color: AppColors.brandPurple,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) =>
+                              const LiveVerificationScreen(isRedo: true),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(height: 20),
 
-              // ── Credits summary ───────────────────────────────────────────
-              _CreditsSummaryCard(),
-
-              const SizedBox(height: 16),
-
-              // ── Subscription banner ───────────────────────────────────────
-              _SubscriptionBanner(),
+              // ── About Me card ───────────────────────────────────────────
+              _AboutCard(
+                bio: _bio,
+                age: _age,
+                location: _location,
+                occupation: _occupation,
+              ),
 
               const SizedBox(height: 40),
             ],
@@ -139,194 +173,323 @@ class ProfileScreen extends StatelessWidget {
       ),
     );
   }
+}
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
-    return AppBar(
-      backgroundColor: Colors.transparent,
-      elevation: 0,
-      centerTitle: true,
-      title: Text('Profile', style: AppTextStyles.h3),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.settings_outlined,
-              color: AppColors.textSecondary),
-          onPressed: () {
-            // TODO: open Settings
-          },
+// ── Hero avatar ───────────────────────────────────────────────────────────────
+
+/// Large circular profile photo with pink→purple gradient ring.
+///
+/// When the user is live and has a selfie path: shows the verification photo.
+/// When offline (or no selfie yet): shows a placeholder with copy
+/// "Profile pic will appear when you go live".
+///
+/// A "LIVE" pill badge overlays the bottom of the circle when live.
+class _HeroAvatar extends StatelessWidget {
+  const _HeroAvatar({required this.session});
+  final LiveSession session;
+
+  static const double _size = 200;
+  static const double _border = 3.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final path = session.selfieFilePath;
+    final isLive = session.isLive;
+
+    return Stack(
+      alignment: Alignment.bottomCenter,
+      clipBehavior: Clip.none,
+      children: [
+        // Ambient outer glow
+        Positioned(
+          left: -24,
+          right: -24,
+          top: -24,
+          bottom: -24,
+          child: Container(
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [
+                  AppColors.brandPink.withValues(alpha: 0.20),
+                  AppColors.brandPurple.withValues(alpha: 0.12),
+                  Colors.transparent,
+                ],
+                stops: const [0.0, 0.55, 1.0],
+              ),
+            ),
+          ),
         ),
+
+        // Gradient ring + clipped photo
+        Container(
+          width: _size,
+          height: _size,
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [AppColors.brandPink, AppColors.brandPurple],
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(_border),
+            child: ClipOval(
+              child: path != null
+                  ? Image.file(File(path), fit: BoxFit.cover)
+                  : _AvatarPlaceholder(),
+            ),
+          ),
+        ),
+
+        // LIVE badge — overlays bottom edge when live
+        if (isLive)
+          Positioned(
+            bottom: -10,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
+              decoration: BoxDecoration(
+                gradient: AppColors.brandGradient,
+                borderRadius: BorderRadius.circular(14),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.brandPink.withValues(alpha: 0.40),
+                    blurRadius: 12,
+                    spreadRadius: 0,
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 6,
+                    height: 6,
+                    decoration: const BoxDecoration(
+                      color: Colors.white,
+                      shape: BoxShape.circle,
+                    ),
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    'LIVE',
+                    style: AppTextStyles.caption.copyWith(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                      letterSpacing: 1.4,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
       ],
     );
   }
 }
 
-// ── Live selfie hero ──────────────────────────────────────────────────────────
-
-/// Large circular profile photo, 190px radius (2.5× the old 76px placeholder).
-/// Shows the current live verification selfie when available; falls back to
-/// the branded placeholder icon. Neon pink border + glow when live.
-class _LiveSelfieHero extends StatelessWidget {
-  const _LiveSelfieHero({required this.session});
-  final LiveSession session;
-
+class _AvatarPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    final path = session.selfieFilePath;
-    const radius = 95.0; // 190px diameter — 2.5× the old 76px radius
-
     return Container(
-      width: radius * 2,
-      height: radius * 2,
-      decoration: BoxDecoration(
-        shape: BoxShape.circle,
-        border: Border.all(
-          color: AppColors.brandPink,
-          width: 2.5,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: AppColors.brandPink.withValues(alpha: 0.42),
-            blurRadius: 48,
-            spreadRadius: 4,
+      color: AppColors.bgElevated,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.person_rounded,
+            size: 60,
+            color: AppColors.textMuted.withValues(alpha: 0.45),
           ),
-          BoxShadow(
-            color: AppColors.brandPurple.withValues(alpha: 0.28),
-            blurRadius: 80,
-            spreadRadius: 8,
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Text(
+              'Profile pic will appear\nwhen you go live',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textMuted,
+                height: 1.4,
+              ),
+              textAlign: TextAlign.center,
+            ),
           ),
         ],
-      ),
-      child: ClipOval(
-        child: path != null
-            ? Image.file(File(path), fit: BoxFit.cover)
-            : Container(
-                color: AppColors.bgElevated,
-                child: const Center(
-                  child: Icon(
-                    Icons.person_rounded,
-                    size: 80,
-                    color: AppColors.textMuted,
-                  ),
-                ),
-              ),
       ),
     );
   }
 }
 
-// ── Credits summary card ──────────────────────────────────────────────────────
+// ── Completeness chip ─────────────────────────────────────────────────────────
 
-class _CreditsSummaryCard extends StatelessWidget {
+class _CompletenessChip extends StatelessWidget {
+  const _CompletenessChip({required this.percent});
+  final int percent;
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 8),
       decoration: BoxDecoration(
         color: AppColors.bgSurface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(color: AppColors.divider),
       ),
-      child: Row(
-        children: [
-          _CreditItem(
-            icon: Icons.favorite_rounded,
-            label: 'Lives',
-            value: '1',
-            color: AppColors.brandPink,
-          ),
-          const SizedBox(width: 1),
-          const VerticalDivider(
-              color: AppColors.divider, indent: 4, endIndent: 4),
-          const SizedBox(width: 1),
-          _CreditItem(
-            icon: Icons.bolt_rounded,
-            label: 'Icebreakers',
-            value: '3',
-            color: AppColors.brandCyan,
-          ),
-        ],
+      child: Text(
+        '$percent% COMPLETE',
+        style: AppTextStyles.caption.copyWith(
+          color: AppColors.textSecondary,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 1.6,
+        ),
       ),
     );
   }
 }
 
-class _CreditItem extends StatelessWidget {
-  const _CreditItem({
+// ── Action tile ───────────────────────────────────────────────────────────────
+
+/// Tall rounded card with centered icon + two-line label.
+/// Border and icon tinted with the tile's accent color.
+class _ActionTile extends StatelessWidget {
+  const _ActionTile({
     required this.icon,
     required this.label,
-    required this.value,
     required this.color,
+    required this.onTap,
   });
 
   final IconData icon;
   final String label;
-  final String value;
   final Color color;
+  final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    return Expanded(
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 8),
+        decoration: BoxDecoration(
+          color: color.withValues(alpha: 0.07),
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: color.withValues(alpha: 0.40)),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: color, size: 26),
+            const SizedBox(height: 8),
+            Text(
+              label,
+              style: AppTextStyles.buttonS.copyWith(
+                color: color,
+                height: 1.3,
+                fontWeight: FontWeight.w700,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// ── About Me card ─────────────────────────────────────────────────────────────
+
+/// Bio + key profile details card.
+/// Cyan border, two-tone "About Me" heading (pink + cyan).
+class _AboutCard extends StatelessWidget {
+  const _AboutCard({
+    required this.bio,
+    required this.age,
+    required this.location,
+    required this.occupation,
+  });
+
+  final String bio;
+  final int age;
+  final String location;
+  final String occupation;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(22),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: AppColors.brandCyan.withValues(alpha: 0.30),
+        ),
+      ),
       child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: color, size: 24),
-          const SizedBox(height: 6),
-          Text(value,
-              style: AppTextStyles.h2.copyWith(color: AppColors.textPrimary)),
-          const SizedBox(height: 2),
-          Text(label, style: AppTextStyles.caption),
+          // "About Me" — two-tone heading
+          Row(
+            children: [
+              Text(
+                'About ',
+                style: AppTextStyles.h3.copyWith(color: AppColors.brandPink),
+              ),
+              Text(
+                'Me',
+                style: AppTextStyles.h3.copyWith(color: AppColors.brandCyan),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 14),
+
+          // Bio
+          Text(
+            bio,
+            style: AppTextStyles.bodyS.copyWith(
+              color: AppColors.textSecondary,
+              height: 1.65,
+            ),
+          ),
+
+          const SizedBox(height: 18),
+
+          // Bullet details
+          _BulletRow(label: '$age years old'),
+          const SizedBox(height: 7),
+          _BulletRow(label: location),
+          const SizedBox(height: 7),
+          _BulletRow(label: occupation),
         ],
       ),
     );
   }
 }
 
-// ── Subscription banner ───────────────────────────────────────────────────────
+class _BulletRow extends StatelessWidget {
+  const _BulletRow({required this.label});
+  final String label;
 
-class _SubscriptionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-          colors: [
-            const Color(0xFFFFD700).withValues(alpha: 0.15),
-            const Color(0xFFFF8C00).withValues(alpha: 0.10),
-          ],
-        ),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFFFFD700).withValues(alpha: 0.3),
-        ),
-      ),
-      child: Row(
-        children: [
-          const Icon(Icons.workspace_premium_rounded,
-              color: Color(0xFFFFD700), size: 32),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Upgrade to Gold',
-                  style: AppTextStyles.button.copyWith(
-                    color: const Color(0xFFFFD700),
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'Unlimited Lives · Top of carousel · \$9.99/mo',
-                  style: AppTextStyles.caption,
-                ),
-              ],
-            ),
+    return Row(
+      children: [
+        Container(
+          width: 6,
+          height: 6,
+          decoration: const BoxDecoration(
+            color: AppColors.brandCyan,
+            shape: BoxShape.circle,
           ),
-          const Icon(Icons.chevron_right_rounded,
-              color: AppColors.textMuted),
-        ],
-      ),
+        ),
+        const SizedBox(width: 10),
+        Text(
+          label,
+          style: AppTextStyles.bodyS.copyWith(color: AppColors.textPrimary),
+        ),
+      ],
     );
   }
 }
