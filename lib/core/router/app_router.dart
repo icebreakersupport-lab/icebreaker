@@ -30,7 +30,7 @@ import '../constants/app_constants.dart';
 ///     /meetup/post-meet
 ///     /meetup/confirmed
 final GoRouter appRouter = GoRouter(
-  initialLocation: '/preview',
+  initialLocation: AppRoutes.home,
   debugLogDiagnostics: false,
   routes: [
     // ── Main shell with persistent bottom nav ──────────────────────────────
