@@ -207,24 +207,30 @@ class _HomeScreenState extends State<HomeScreen> {
         const Spacer(flex: 1),
 
         // ── Hero logo with atmospheric glow ──────────────────────────────
-        // The glow here is always-on — it's part of the brand identity
-        // presentation on the home screen, independent of live state.
+        // The glow Container is Positioned so the Stack sizes to the logo
+        // (480px) rather than the glow (640px), preventing vertical overflow.
+        // clipBehavior: Clip.none lets the glow bleed outside the Stack bounds.
         Stack(
           alignment: Alignment.center,
+          clipBehavior: Clip.none,
           children: [
-            // Ambient radial glow — scaled with logo
-            Container(
-              width: 640,
-              height: 640,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: [
-                    AppColors.brandPink.withValues(alpha: 0.20),
-                    AppColors.brandPurple.withValues(alpha: 0.12),
-                    Colors.transparent,
-                  ],
-                  stops: const [0.0, 0.5, 1.0],
+            // Ambient radial glow — extends 80px beyond logo on each side
+            Positioned(
+              left: -80,
+              right: -80,
+              top: -80,
+              bottom: -80,
+              child: Container(
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  gradient: RadialGradient(
+                    colors: [
+                      AppColors.brandPink.withValues(alpha: 0.20),
+                      AppColors.brandPurple.withValues(alpha: 0.12),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.5, 1.0],
+                  ),
                 ),
               ),
             ),
