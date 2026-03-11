@@ -1,16 +1,25 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../../../shared/widgets/pill_button.dart';
+import 'live_verification_screen.dart';
 
 /// Home tab — the "GO LIVE" entry point.
 ///
 /// Live state is read from and written to the global [LiveSession] via
-/// [LiveSessionScope]. No local isLive flag — the logo and UI rebuild
-/// automatically when the session changes.
+/// [LiveSessionScope]. Tapping GO LIVE navigates to [LiveVerificationScreen];
+/// only after the selfie is verified does the session become active here.
+///
+/// A per-second [Timer] drives the live countdown display. The timer is
+/// started/stopped automatically via [didChangeDependencies] when the
+/// session transitions between live/offline.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -19,31 +28,63 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _isLoading = false;
+  Timer? _countdownTimer;
 
-  Future<void> _handleGoLive() async {
-    setState(() => _isLoading = true);
-    // TODO: call goLive() Cloud Function + navigate to selfie capture
-    await Future.delayed(const Duration(milliseconds: 500));
-    setState(() => _isLoading = false);
-    if (mounted) LiveSessionScope.of(context).setLive(true);
-  }
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  void _handleEndSession() {
-    LiveSessionScope.of(context).setLive(false);
-    // TODO: call endSession() Cloud Function
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncCountdownTimer(LiveSessionScope.isLive(context));
   }
 
   @override
+  void dispose() {
+    _countdownTimer?.cancel();
+    super.dispose();
+  }
+
+  void _syncCountdownTimer(bool isLive) {
+    if (isLive && (_countdownTimer == null || !_countdownTimer!.isActive)) {
+      _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!isLive) {
+      _countdownTimer?.cancel();
+      _countdownTimer = null;
+    }
+  }
+
+  // ── Actions ───────────────────────────────────────────────────────────────
+
+  void _handleGoLive() {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => const LiveVerificationScreen(),
+      ),
+    );
+  }
+
+  void _handleEndSession() {
+    LiveSessionScope.of(context).endSession();
+    // TODO: call endSession() Cloud Function
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
+
+  @override
   Widget build(BuildContext context) {
-    final isLive = LiveSessionScope.isLive(context);
+    final session = LiveSessionScope.of(context);
+    _syncCountdownTimer(session.isLive);
 
     return GradientScaffold(
       showTopGlow: true,
       appBar: _buildAppBar(),
       body: SafeArea(
         top: false,
-        child: isLive ? _buildLiveState() : _buildOfflineState(),
+        child: session.isLive
+            ? _buildLiveState(session)
+            : _buildOfflineState(),
       ),
     );
   }
@@ -62,8 +103,10 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       actions: [
         IconButton(
-          icon: const Icon(Icons.notifications_none_rounded,
-              color: AppColors.textSecondary),
+          icon: const Icon(
+            Icons.notifications_none_rounded,
+            color: AppColors.textSecondary,
+          ),
           onPressed: () {
             // TODO: open notifications
           },
@@ -71,6 +114,8 @@ class _HomeScreenState extends State<HomeScreen> {
       ],
     );
   }
+
+  // ── Offline state ─────────────────────────────────────────────────────────
 
   Widget _buildOfflineState() {
     return Padding(
@@ -102,7 +147,6 @@ class _HomeScreenState extends State<HomeScreen> {
           PillButton.primary(
             label: 'GO LIVE',
             onTap: _handleGoLive,
-            isLoading: _isLoading,
             width: double.infinity,
             height: 64,
           ),
@@ -110,7 +154,7 @@ class _HomeScreenState extends State<HomeScreen> {
           const SizedBox(height: 16),
 
           Text(
-            '1 Live session available · 3 Icebreakers remaining',
+            '1 Live session available  ·  3 Icebreakers remaining',
             style: AppTextStyles.caption,
             textAlign: TextAlign.center,
           ),
@@ -121,21 +165,24 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  Widget _buildLiveState() {
+  // ── Live state ────────────────────────────────────────────────────────────
+
+  Widget _buildLiveState(LiveSession session) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 32),
       child: Column(
         children: [
           const Spacer(flex: 2),
 
-          // Logo — animation is driven by global LiveSession, no wrapper needed.
+          // Logo — heartbeat driven by LiveSession, no wrapper needed
           const IcebreakerLogo(size: 140, showGlow: true),
 
-          const SizedBox(height: 24),
+          const SizedBox(height: 20),
 
           // Live badge
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             decoration: BoxDecoration(
               gradient: AppColors.brandGradient,
               borderRadius: BorderRadius.circular(20),
@@ -154,13 +201,19 @@ class _HomeScreenState extends State<HomeScreen> {
                 const SizedBox(width: 8),
                 Text(
                   "YOU'RE LIVE",
-                  style: AppTextStyles.buttonS.copyWith(letterSpacing: 1.2),
+                  style:
+                      AppTextStyles.buttonS.copyWith(letterSpacing: 1.2),
                 ),
               ],
             ),
           ),
 
           const SizedBox(height: 20),
+
+          // Live selfie avatar
+          _buildLiveSelfieAvatar(session),
+
+          const SizedBox(height: 16),
 
           Text(
             'People nearby can see you now',
@@ -170,8 +223,9 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const Spacer(flex: 3),
 
+          // Live countdown
           Text(
-            'Session expires in 59:59',
+            'Session expires in ${_formatDuration(session.remainingDuration)}',
             style: AppTextStyles.caption,
           ),
 
@@ -198,5 +252,51 @@ class _HomeScreenState extends State<HomeScreen> {
         ],
       ),
     );
+  }
+
+  Widget _buildLiveSelfieAvatar(LiveSession session) {
+    final path = session.selfieFilePath;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 72,
+          height: 72,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            border: Border.all(color: AppColors.brandPink, width: 2),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.brandPink.withValues(alpha: 0.20),
+                blurRadius: 16,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
+          child: ClipOval(
+            child: path != null
+                ? Image.file(File(path), fit: BoxFit.cover)
+                : const Icon(
+                    Icons.person_rounded,
+                    color: AppColors.textMuted,
+                    size: 36,
+                  ),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Text('Your live photo', style: AppTextStyles.caption),
+      ],
+    );
+  }
+
+  // ── Helpers ───────────────────────────────────────────────────────────────
+
+  String _formatDuration(Duration d) {
+    if (d <= Duration.zero) return '0:00:00';
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 }
