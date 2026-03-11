@@ -151,7 +151,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildOfflineState() {
     return Column(
       children: [
-        const Spacer(flex: 3),
+        const Spacer(flex: 1),
 
         // ── Hero logo with atmospheric glow ──────────────────────────────
         // The glow here is always-on — it's part of the brand identity
@@ -159,10 +159,10 @@ class _HomeScreenState extends State<HomeScreen> {
         Stack(
           alignment: Alignment.center,
           children: [
-            // Ambient radial glow behind the logo
+            // Ambient radial glow — scaled with logo
             Container(
-              width: 300,
-              height: 300,
+              width: 640,
+              height: 640,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
@@ -176,11 +176,11 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             // Logo — IcebreakerLogo's own glow only activates when live
-            const IcebreakerLogo(size: 192, showGlow: false),
+            const IcebreakerLogo(size: 480, showGlow: false),
           ],
         ),
 
-        const Spacer(flex: 2),
+        const Spacer(flex: 1),
 
         // ── CTA section ───────────────────────────────────────────────────
         Padding(
