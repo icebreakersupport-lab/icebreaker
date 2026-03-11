@@ -176,7 +176,7 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildOfflineState() {
     return Column(
       children: [
-        const SizedBox(height: 20),
+        const SizedBox(height: 16),
 
         // ── Status counters — between header and hero logo ─────────────
         Padding(
@@ -204,46 +204,48 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
 
-        const Spacer(flex: 1),
-
-        // ── Hero logo with atmospheric glow ──────────────────────────────
-        // The glow Container is Positioned so the Stack sizes to the logo
-        // (480px) rather than the glow (640px), preventing vertical overflow.
-        // clipBehavior: Clip.none lets the glow bleed outside the Stack bounds.
-        Stack(
-          alignment: Alignment.center,
-          clipBehavior: Clip.none,
-          children: [
-            // Ambient radial glow — extends 80px beyond logo on each side
-            Positioned(
-              left: -80,
-              right: -80,
-              top: -80,
-              bottom: -80,
-              child: Container(
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: RadialGradient(
-                    colors: [
-                      AppColors.brandPink.withValues(alpha: 0.20),
-                      AppColors.brandPurple.withValues(alpha: 0.12),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.5, 1.0],
+        // ── Hero logo — Expanded so it takes all remaining vertical space
+        // between the status row and the CTA, never forcing an overflow.
+        // LayoutBuilder sizes the logo up to 480px based on actual height.
+        Expanded(
+          child: Stack(
+            alignment: Alignment.center,
+            clipBehavior: Clip.none,
+            children: [
+              // Ambient radial glow — Positioned so it doesn't affect layout
+              Positioned(
+                left: -80,
+                right: -80,
+                top: -80,
+                bottom: -80,
+                child: Container(
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    gradient: RadialGradient(
+                      colors: [
+                        AppColors.brandPink.withValues(alpha: 0.20),
+                        AppColors.brandPurple.withValues(alpha: 0.12),
+                        Colors.transparent,
+                      ],
+                      stops: const [0.0, 0.5, 1.0],
+                    ),
                   ),
                 ),
               ),
-            ),
-            // Logo — IcebreakerLogo's own glow only activates when live
-            const IcebreakerLogo(size: 480, showGlow: false),
-          ],
+              // Logo — sized to available height, capped at 480px
+              LayoutBuilder(
+                builder: (_, constraints) {
+                  final size = constraints.maxHeight.clamp(100.0, 480.0);
+                  return IcebreakerLogo(size: size, showGlow: false);
+                },
+              ),
+            ],
+          ),
         ),
-
-        const Spacer(flex: 1),
 
         // ── CTA section ───────────────────────────────────────────────────
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 28),
+          padding: const EdgeInsets.fromLTRB(28, 0, 28, 20),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
@@ -255,7 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 height: 68,
               ),
 
-              const SizedBox(height: 20),
+              const SizedBox(height: 16),
 
               // Primary supporting copy
               Text(
@@ -266,7 +268,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 textAlign: TextAlign.center,
               ),
 
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
 
               // Secondary supporting copy
               Text(
@@ -276,8 +278,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
                 textAlign: TextAlign.center,
               ),
-
-              const SizedBox(height: 28),
             ],
           ),
         ),
