@@ -11,6 +11,7 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 import '../../../shared/widgets/pill_button.dart';
 import '../../shop/screens/shop_screen.dart';
 import 'live_verification_screen.dart';
+import 'selfie_preview_screen.dart';
 
 /// Home tab — the "GO LIVE" entry point.
 ///
@@ -79,7 +80,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
     return GradientScaffold(
       showTopGlow: true,
-      appBar: _buildAppBar(),
+      appBar: _buildAppBar(session),
       body: SafeArea(
         top: false,
         child: session.isLive
@@ -91,23 +92,64 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── App bar ───────────────────────────────────────────────────────────────
 
-  PreferredSizeWidget _buildAppBar() {
+  PreferredSizeWidget _buildAppBar(LiveSession session) {
     return AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
       centerTitle: true,
-      // Subtle left icon — balanced with the right action
+      // Profile avatar — shows live selfie when available; taps into preview.
       leading: Padding(
-        padding: const EdgeInsets.only(left: 8),
-        child: IconButton(
-          icon: const Icon(
-            Icons.person_outline_rounded,
-            color: AppColors.textMuted,
-            size: 22,
+        padding: const EdgeInsets.only(left: 12),
+        child: Center(
+          child: GestureDetector(
+            onTap: () {
+              if (session.selfieFilePath != null) {
+                Navigator.of(context).push(
+                  MaterialPageRoute<void>(
+                    builder: (_) => const SelfiePreviewScreen(),
+                  ),
+                );
+              }
+            },
+            child: Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: session.isLive
+                      ? AppColors.brandPink
+                      : AppColors.textMuted.withValues(alpha: 0.35),
+                  width: session.isLive ? 2.0 : 1.0,
+                ),
+                boxShadow: session.isLive
+                    ? [
+                        BoxShadow(
+                          color: AppColors.brandPink.withValues(alpha: 0.30),
+                          blurRadius: 12,
+                          spreadRadius: 0,
+                        ),
+                      ]
+                    : null,
+              ),
+              child: ClipOval(
+                child: session.selfieFilePath != null
+                    ? Image.file(
+                        File(session.selfieFilePath!),
+                        fit: BoxFit.cover,
+                        width: 36,
+                        height: 36,
+                      )
+                    : const Center(
+                        child: Icon(
+                          Icons.person_outline_rounded,
+                          color: AppColors.textMuted,
+                          size: 20,
+                        ),
+                      ),
+              ),
+            ),
           ),
-          onPressed: () {
-            // TODO: open own profile
-          },
         ),
       ),
       // "icebreaker •" — lowercase + green live-status dot

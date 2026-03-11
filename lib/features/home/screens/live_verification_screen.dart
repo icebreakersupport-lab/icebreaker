@@ -29,7 +29,11 @@ enum _Step { preparing, cameraReady, cameraError, verifying, verified }
 /// Camera: uses front-facing camera via [camera] package (camera_avfoundation
 /// on macOS). No gallery fallback — fresh live selfie required.
 class LiveVerificationScreen extends StatefulWidget {
-  const LiveVerificationScreen({super.key});
+  const LiveVerificationScreen({super.key, this.isRedo = false});
+
+  /// When true, a successful capture calls [LiveSession.updateSelfie] instead
+  /// of [LiveSession.goLive], preserving the current live state and expiry.
+  final bool isRedo;
 
   @override
   State<LiveVerificationScreen> createState() => _LiveVerificationScreenState();
@@ -127,7 +131,12 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       await Future.delayed(const Duration(milliseconds: 600));
       if (!mounted) return;
 
-      LiveSessionScope.of(context).goLive(selfieFilePath: _capturedPath);
+      final session = LiveSessionScope.of(context);
+      if (widget.isRedo) {
+        session.updateSelfie(_capturedPath!);
+      } else {
+        session.goLive(selfieFilePath: _capturedPath);
+      }
       Navigator.of(context).pop();
     } catch (e) {
       _setError('Capture failed: ${e.runtimeType}');
@@ -349,7 +358,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         );
 
       case _Step.verified:
-        return _VerifiedStatus(key: const ValueKey('verified'));
+        return _VerifiedStatus(
+          key: const ValueKey('verified'),
+          isRedo: widget.isRedo,
+        );
     }
   }
 
@@ -459,7 +471,8 @@ class _VerifyingStatus extends StatelessWidget {
 }
 
 class _VerifiedStatus extends StatelessWidget {
-  const _VerifiedStatus({super.key});
+  const _VerifiedStatus({super.key, required this.isRedo});
+  final bool isRedo;
 
   @override
   Widget build(BuildContext context) {
@@ -477,7 +490,10 @@ class _VerifiedStatus extends StatelessWidget {
           style: AppTextStyles.h2.copyWith(color: AppColors.success),
         ),
         const SizedBox(height: 6),
-        Text('Going live…', style: AppTextStyles.bodyS),
+        Text(
+          isRedo ? 'Selfie updated!' : 'Going live…',
+          style: AppTextStyles.bodyS,
+        ),
       ],
     );
   }

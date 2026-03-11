@@ -37,6 +37,13 @@ class LiveSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Replace the selfie without touching live state or session expiry.
+  /// Used when the user redoes their photo while already live.
+  void updateSelfie(String path) {
+    _selfieFilePath = path;
+    notifyListeners();
+  }
+
   /// End the active session. Selfie path is preserved for the demo session.
   void endSession() {
     _isLive = false;
