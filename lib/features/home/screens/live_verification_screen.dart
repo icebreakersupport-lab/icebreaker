@@ -201,7 +201,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   // ── Body ──────────────────────────────────────────────────────────────────
 
   Widget _buildBody(BuildContext context) {
-    final frameSize = MediaQuery.of(context).size.width - 40;
+    final mq = MediaQuery.of(context).size;
+    // Cap frame to fit the screen: at most 80% of width or 48% of height.
+    // This keeps the layout sane on both phone portrait and wide macOS windows.
+    final frameSize = (mq.width - 40).clamp(0.0, mq.height * 0.48);
 
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 20),
