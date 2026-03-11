@@ -42,14 +42,14 @@ class GradientScaffold extends StatelessWidget {
                   right: 0,
                   child: Center(
                     child: Container(
-                      width: 400,
-                      height: 400,
+                      width: 560,
+                      height: 560,
                       decoration: BoxDecoration(
                         shape: BoxShape.circle,
                         gradient: RadialGradient(
                           colors: [
-                            AppColors.brandPink.withValues(alpha: 0.18),
-                            AppColors.brandPurple.withValues(alpha: 0.10),
+                            AppColors.brandPink.withValues(alpha: 0.30),
+                            AppColors.brandPurple.withValues(alpha: 0.18),
                             Colors.transparent,
                           ],
                           stops: const [0.0, 0.5, 1.0],

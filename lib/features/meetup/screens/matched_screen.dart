@@ -189,8 +189,8 @@ class _MatchPhotoPair extends StatelessWidget {
         _PhotoCircle(url: leftUrl, name: leftName, matchColor: matchColor),
         const SizedBox(width: 16),
         Container(
-          width: 40,
-          height: 3,
+          width: 56,
+          height: 4,
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [matchColor, matchColor.withValues(alpha: 0.4)],
@@ -221,7 +221,7 @@ class _PhotoCircle extends StatelessWidget {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.all(3),
+          padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             gradient: LinearGradient(
@@ -229,7 +229,7 @@ class _PhotoCircle extends StatelessWidget {
             ),
           ),
           child: CircleAvatar(
-            radius: 48,
+            radius: 56,
             backgroundColor: AppColors.bgElevated,
             backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
             child: url.isEmpty

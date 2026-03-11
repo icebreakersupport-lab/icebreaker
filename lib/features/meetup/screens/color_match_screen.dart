@@ -78,9 +78,11 @@ class ColorMatchScreen extends StatelessWidget {
                   Text(
                     'COLOR MATCH!',
                     style: AppTextStyles.displayLabel.copyWith(
+                      fontSize: 40,
+                      letterSpacing: 2.0,
                       foreground: Paint()
                         ..shader = AppColors.brandGradient.createShader(
-                          const Rect.fromLTWH(0, 0, 300, 60),
+                          const Rect.fromLTWH(0, 0, 360, 60),
                         ),
                     ),
                   ),
@@ -194,19 +196,19 @@ class _RingedPhoto extends StatelessWidget {
     return Column(
       children: [
         Container(
-          padding: const EdgeInsets.all(3),
+          padding: const EdgeInsets.all(4),
           decoration: BoxDecoration(
             shape: BoxShape.circle,
             color: matchColor,
           ),
           child: Container(
-            padding: const EdgeInsets.all(2),
+            padding: const EdgeInsets.all(3),
             decoration: const BoxDecoration(
               shape: BoxShape.circle,
               color: AppColors.bgBase,
             ),
             child: CircleAvatar(
-              radius: 44,
+              radius: 50,
               backgroundColor: AppColors.bgElevated,
               backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
               child: url.isEmpty

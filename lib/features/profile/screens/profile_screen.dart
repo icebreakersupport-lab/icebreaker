@@ -40,7 +40,7 @@ class ProfileScreen extends StatelessWidget {
                 child: Stack(
                   children: [
                     CircleAvatar(
-                      radius: 64,
+                      radius: 76,
                       backgroundColor: AppColors.bgElevated,
                       backgroundImage: photoUrl.isNotEmpty
                           ? NetworkImage(photoUrl)
@@ -61,8 +61,8 @@ class ProfileScreen extends StatelessWidget {
                           // TODO: open photo picker
                         },
                         child: Container(
-                          width: 34,
-                          height: 34,
+                          width: 38,
+                          height: 38,
                           decoration: const BoxDecoration(
                             gradient: AppColors.brandGradient,
                             shape: BoxShape.circle,

@@ -11,6 +11,7 @@ import '../../features/meetup/screens/color_match_screen.dart';
 import '../../features/meetup/screens/post_meet_screen.dart';
 import '../../features/meetup/screens/match_confirmed_screen.dart';
 import '../../features/profile/screens/profile_screen.dart';
+import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
 /// Icebreaker app router using go_router.
@@ -29,7 +30,7 @@ import '../constants/app_constants.dart';
 ///     /meetup/post-meet
 ///     /meetup/confirmed
 final GoRouter appRouter = GoRouter(
-  initialLocation: AppRoutes.home,
+  initialLocation: '/preview',
   debugLogDiagnostics: false,
   routes: [
     // ── Main shell with persistent bottom nav ──────────────────────────────
@@ -143,6 +144,12 @@ final GoRouter appRouter = GoRouter(
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
         );
       },
+    ),
+
+    // ── Design preview (dev only) ─────────────────────────────────────────
+    GoRoute(
+      path: '/preview',
+      builder: (context, state) => const DesignPreviewScreen(),
     ),
 
     // ── Meetup: Chat Unlocked ─────────────────────────────────────────────

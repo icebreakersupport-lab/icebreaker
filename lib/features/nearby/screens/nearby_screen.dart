@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
+import '../../../shared/widgets/icebreaker_logo.dart';
 import '../widgets/carousel_card.dart';
 
 /// Nearby tab — the discovery carousel.
@@ -19,7 +20,7 @@ class NearbyScreen extends StatefulWidget {
 
 class _NearbyScreenState extends State<NearbyScreen> {
   // TODO: replace with real state from Firestore via Riverpod
-  final bool _isLive = false;
+  final bool _isLive = true;
   final List<_MockUser> _nearbyUsers = [
     _MockUser(
       id: '1',
@@ -107,9 +108,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.explore_off_rounded,
-                size: 64, color: AppColors.textMuted),
-            const SizedBox(height: 20),
+            const IcebreakerLogo(size: 72, showGlow: true),
+            const SizedBox(height: 24),
             Text(
               'No one nearby right now',
               style: AppTextStyles.h3,
@@ -134,9 +134,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(Icons.favorite_border_rounded,
-                size: 64, color: AppColors.textMuted),
-            const SizedBox(height: 20),
+            const IcebreakerLogo(size: 80, showGlow: true),
+            const SizedBox(height: 28),
             Text(
               'Go Live to see\nwho\'s nearby',
               style: AppTextStyles.h2,

@@ -46,7 +46,7 @@ class CarouselCard extends StatelessWidget {
         children: [
           // ── Photo card ────────────────────────────────────────────────────
           ClipRRect(
-            borderRadius: BorderRadius.circular(24),
+            borderRadius: BorderRadius.circular(28),
             child: Stack(
               children: [
                 // Photo
@@ -211,7 +211,13 @@ class _PhotoPlaceholder extends StatelessWidget {
     return Container(
       width: double.infinity,
       height: height,
-      color: AppColors.bgSurface,
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [AppColors.bgSurface, AppColors.bgElevated],
+        ),
+      ),
       child: const Center(
         child: Icon(Icons.person_rounded, size: 80, color: AppColors.textMuted),
       ),

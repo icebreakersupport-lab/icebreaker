@@ -164,9 +164,13 @@ class PillButton extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(height / 2),
             gradient: !isOutlined ? gradient : null,
-            color: gradient == null ? backgroundColor : null,
+            color: gradient == null
+                ? (isOutlined
+                    ? AppColors.brandPink.withValues(alpha: 0.06)
+                    : backgroundColor)
+                : null,
             border: isOutlined
-                ? Border.all(color: AppColors.brandPink, width: 1.5)
+                ? Border.all(color: AppColors.brandPink, width: 2.0)
                 : null,
           ),
           alignment: Alignment.center,

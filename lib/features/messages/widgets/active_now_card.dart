@@ -38,7 +38,7 @@ class ActiveNowCard extends StatelessWidget {
     return GestureDetector(
       onTap: onTap,
       child: Container(
-        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+        margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
         decoration: BoxDecoration(
           color: AppColors.bgSurface,
           borderRadius: BorderRadius.circular(16),

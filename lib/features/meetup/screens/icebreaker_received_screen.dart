@@ -77,6 +77,8 @@ class _IcebreakerReceivedScreenState
                 child: Text(
                   'MATCHED!',
                   style: AppTextStyles.displayLabel.copyWith(
+                    fontSize: 44,
+                    letterSpacing: 2.5,
                     color: Colors.white, // masked by shader
                   ),
                 ),
@@ -185,11 +187,12 @@ class _ProfilePhotoPair extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
+      mainAxisSize: MainAxisSize.min,
       children: [
         _CirclePhoto(url: leftPhotoUrl, name: leftName),
-        // Overlap connector
+        const SizedBox(width: 8),
+        // Heart connector (centred between the two photos)
         Container(
-          margin: const EdgeInsets.symmetric(horizontal: -6),
           width: 32,
           height: 32,
           decoration: BoxDecoration(
@@ -197,10 +200,10 @@ class _ProfilePhotoPair extends StatelessWidget {
             shape: BoxShape.circle,
             border: Border.all(color: AppColors.bgBase, width: 2),
           ),
-          child: const Center(
-            child: Icon(Icons.favorite_rounded, size: 16, color: Colors.white),
-          ),
+          alignment: Alignment.center,
+          child: const Icon(Icons.favorite_rounded, size: 16, color: Colors.white),
         ),
+        const SizedBox(width: 8),
         _CirclePhoto(url: rightPhotoUrl, name: rightName),
       ],
     );
@@ -216,17 +219,24 @@ class _CirclePhoto extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        CircleAvatar(
-          radius: 52,
-          backgroundColor: AppColors.bgElevated,
-          backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
-          child: url.isEmpty
-              ? Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : '?',
-                  style: AppTextStyles.h1.copyWith(
-                      color: AppColors.textSecondary),
-                )
-              : null,
+        Container(
+          padding: const EdgeInsets.all(3),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            gradient: AppColors.brandGradient,
+          ),
+          child: CircleAvatar(
+            radius: 58,
+            backgroundColor: AppColors.bgElevated,
+            backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
+            child: url.isEmpty
+                ? Text(
+                    name.isNotEmpty ? name[0].toUpperCase() : '?',
+                    style: AppTextStyles.h1.copyWith(
+                        color: AppColors.textSecondary),
+                  )
+                : null,
+          ),
         ),
         const SizedBox(height: 8),
         Text(name, style: AppTextStyles.bodyS),
