@@ -28,5 +28,7 @@
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Icebreaker uses your camera to capture a live selfie and verify you are present.</string>
 </dict>
 </plist>

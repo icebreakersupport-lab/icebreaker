@@ -1,26 +1,33 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
+import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
-import '../../../shared/widgets/gradient_scaffold.dart';
-import '../../../shared/widgets/pill_button.dart';
 
-enum _Step { idle, picked, verifying, verified }
+// ── Step enum ────────────────────────────────────────────────────────────────
 
-/// Full-screen selfie upload + mock verification flow.
+enum _Step { preparing, cameraReady, cameraError, verifying, verified }
+
+/// Immersive live-selfie capture + mock verification screen.
+///
+/// Layout (matches reference mockup):
+///   • Minimal dark header: back icon / "icebreaker •" / close icon
+///   • Large square selfie frame with neon border glow (camera live or captured photo)
+///   • Status area below:
+///       idle     — "Position your face in the frame"
+///       verifying — green ✓  "Verifying…"  neon gradient progress bar
+///       verified  — "Verified!"
+///   • Circular shutter capture button (visible in camera-ready state only)
 ///
 /// Flow:
-///   1. User taps the circular picker → OS file dialog opens (images only).
-///   2. Selected photo previewed in the circle with a pink glow border.
-///   3. "Go Live" CTA becomes active.
-///   4. Tap "Go Live" → 1.5 s mock verification ("Verifying you're real…").
-///   5. "Verified!" moment (0.6 s) → [LiveSession.goLive] fires → screen pops.
+///   camera ready → tap shutter → auto-verifying (1.5 s) → verified (0.6 s)
+///   → [LiveSession.goLive] → pop.
 ///
-/// The screen is presented modally via [Navigator.push] from [HomeScreen].
+/// Camera: uses front-facing camera via [camera] package (camera_avfoundation
+/// on macOS). No gallery fallback — fresh live selfie required.
 class LiveVerificationScreen extends StatefulWidget {
   const LiveVerificationScreen({super.key});
 
@@ -29,264 +36,427 @@ class LiveVerificationScreen extends StatefulWidget {
 }
 
 class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
-  _Step _step = _Step.idle;
-  String? _selfieFilePath;
+  _Step _step = _Step.preparing;
+  CameraController? _camController;
+  String? _capturedPath;
+  String? _errorMessage;
 
-  bool get _isBusy =>
-      _step == _Step.verifying || _step == _Step.verified;
+  // ── Lifecycle ─────────────────────────────────────────────────────────────
 
-  Future<void> _pickSelfie() async {
-    final result = await FilePicker.platform.pickFiles(
-      type: FileType.image,
-      allowMultiple: false,
-    );
-    if (result != null && result.files.single.path != null) {
+  @override
+  void initState() {
+    super.initState();
+    _initCamera();
+  }
+
+  @override
+  void dispose() {
+    _camController?.dispose();
+    super.dispose();
+  }
+
+  // ── Camera ────────────────────────────────────────────────────────────────
+
+  Future<void> _initCamera() async {
+    try {
+      final cameras = await availableCameras();
+      if (cameras.isEmpty) {
+        _setError('No camera found on this device.');
+        return;
+      }
+
+      // Prefer front-facing (selfie) camera; fall back to first available.
+      final desc = cameras.firstWhere(
+        (c) => c.lensDirection == CameraLensDirection.front,
+        orElse: () => cameras.first,
+      );
+
+      final ctrl = CameraController(
+        desc,
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.jpeg,
+      );
+
+      await ctrl.initialize();
+
+      if (!mounted) return;
       setState(() {
-        _selfieFilePath = result.files.single.path;
-        _step = _Step.picked;
+        _camController = ctrl;
+        _step = _Step.cameraReady;
+      });
+    } catch (e) {
+      _setError('Camera unavailable: ${e.runtimeType}');
+    }
+  }
+
+  void _setError(String message) {
+    if (mounted) {
+      setState(() {
+        _step = _Step.cameraError;
+        _errorMessage = message;
       });
     }
   }
 
-  Future<void> _startVerification() async {
-    setState(() => _step = _Step.verifying);
+  // ── Capture + verify ──────────────────────────────────────────────────────
 
-    // Mock verification — 1.5 s
-    await Future.delayed(const Duration(milliseconds: 1500));
-    if (!mounted) return;
+  Future<void> _captureAndVerify() async {
+    final ctrl = _camController;
+    if (ctrl == null || !ctrl.value.isInitialized) return;
 
-    setState(() => _step = _Step.verified);
+    try {
+      final xFile = await ctrl.takePicture();
+      if (!mounted) return;
 
-    // Brief "Verified!" moment — 0.6 s
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
+      setState(() {
+        _capturedPath = xFile.path;
+        _step = _Step.verifying;
+      });
 
-    LiveSessionScope.of(context).goLive(selfieFilePath: _selfieFilePath);
-    Navigator.of(context).pop();
+      // Stop the camera feed — we have the captured image.
+      await ctrl.dispose();
+      _camController = null;
+
+      // Mock verification — 1.5 s
+      await Future.delayed(const Duration(milliseconds: 1500));
+      if (!mounted) return;
+      setState(() => _step = _Step.verified);
+
+      // Brief "Verified!" moment — 0.6 s
+      await Future.delayed(const Duration(milliseconds: 600));
+      if (!mounted) return;
+
+      LiveSessionScope.of(context).goLive(selfieFilePath: _capturedPath);
+      Navigator.of(context).pop();
+    } catch (e) {
+      _setError('Capture failed: ${e.runtimeType}');
+    }
   }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return GradientScaffold(
-      showTopGlow: true,
-      appBar: _buildAppBar(),
+    return Scaffold(
+      backgroundColor: const Color(0xFF05000E), // near-black, slightly deeper
       body: SafeArea(
-        top: false,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            children: [
-              const Spacer(flex: 1),
-              _buildSelfiePicker(),
-              const SizedBox(height: 28),
-              _buildStatusArea(),
-              const Spacer(flex: 2),
-              _buildBottomArea(),
-              const SizedBox(height: 16),
-            ],
-          ),
+        child: Column(
+          children: [
+            _buildHeader(),
+            Expanded(child: _buildBody(context)),
+          ],
         ),
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      backgroundColor: Colors.transparent,
-      elevation: 0,
-      centerTitle: true,
-      automaticallyImplyLeading: false,
-      leading: _isBusy
-          ? const SizedBox.shrink()
-          : IconButton(
-              icon: const Icon(
-                Icons.arrow_back_ios_new_rounded,
-                color: AppColors.textSecondary,
-                size: 20,
-              ),
-              onPressed: () => Navigator.of(context).pop(),
-            ),
-      title: Text('Go Live', style: AppTextStyles.h3),
-    );
-  }
+  // ── Header ────────────────────────────────────────────────────────────────
 
-  // ── Selfie picker circle ──────────────────────────────────────────────────
-
-  Widget _buildSelfiePicker() {
-    const double size = 180;
-    final hasSelfie = _selfieFilePath != null;
-
-    return GestureDetector(
-      onTap: _isBusy ? null : _pickSelfie,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 250),
-        width: size,
-        height: size,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: AppColors.bgSurface,
-          border: Border.all(
-            color: hasSelfie ? AppColors.brandPink : AppColors.divider,
-            width: hasSelfie ? 2.5 : 1.5,
+  Widget _buildHeader() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          // Back / close
+          _HeaderIconButton(
+            icon: Icons.arrow_back_ios_new_rounded,
+            onTap: (_step == _Step.verifying || _step == _Step.verified)
+                ? null
+                : () => Navigator.of(context).pop(),
           ),
-          boxShadow: hasSelfie
-              ? [
-                  BoxShadow(
-                    color: AppColors.brandPink.withValues(alpha: 0.22),
-                    blurRadius: 32,
-                    spreadRadius: 4,
+
+          // Brand wordmark + live dot
+          Expanded(
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'icebreaker',
+                  style: AppTextStyles.h3.copyWith(
+                    letterSpacing: 0.5,
+                    fontWeight: FontWeight.w700,
                   ),
-                  BoxShadow(
-                    color: AppColors.brandPurple.withValues(alpha: 0.14),
-                    blurRadius: 56,
-                    spreadRadius: 8,
-                  ),
-                ]
-              : null,
-        ),
-        child: ClipOval(
-          child: hasSelfie
-              ? Image.file(File(_selfieFilePath!), fit: BoxFit.cover)
-              : Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
-                  children: [
-                    const Icon(
-                      Icons.add_a_photo_rounded,
-                      color: AppColors.textMuted,
-                      size: 38,
-                    ),
-                    const SizedBox(height: 10),
-                    Text('Add selfie', style: AppTextStyles.caption),
-                  ],
                 ),
-        ),
+                const SizedBox(width: 6),
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: const BoxDecoration(
+                    color: AppColors.success,
+                    shape: BoxShape.circle,
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          // Right spacer to balance layout
+          const SizedBox(width: 40),
+        ],
       ),
     );
   }
 
-  // ── Status text / verification states ────────────────────────────────────
+  // ── Body ──────────────────────────────────────────────────────────────────
 
-  Widget _buildStatusArea() {
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 280),
-      child: switch (_step) {
-        _Step.idle => _StatusIdle(key: const ValueKey('idle')),
-        _Step.picked => _StatusPicked(key: const ValueKey('picked')),
-        _Step.verifying => _StatusVerifying(key: const ValueKey('verifying')),
-        _Step.verified => _StatusVerified(key: const ValueKey('verified')),
-      },
+  Widget _buildBody(BuildContext context) {
+    final frameSize = MediaQuery.of(context).size.width - 40;
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Column(
+        children: [
+          const SizedBox(height: 8),
+
+          // ── Selfie frame ────────────────────────────────────────────────
+          _SelfieFrame(
+            size: frameSize,
+            child: _buildFrameContent(frameSize),
+          ),
+
+          const SizedBox(height: 28),
+
+          // ── Status section ──────────────────────────────────────────────
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 300),
+            child: _buildStatusSection(),
+          ),
+
+          const Spacer(),
+
+          // ── Action area ─────────────────────────────────────────────────
+          _buildActionArea(),
+
+          const SizedBox(height: 36),
+        ],
+      ),
     );
   }
 
-  // ── Bottom CTA area ───────────────────────────────────────────────────────
+  // ── Frame content ─────────────────────────────────────────────────────────
 
-  Widget _buildBottomArea() {
-    // Reserve height so layout doesn't jump during verification
-    if (_isBusy) return const SizedBox(height: 80);
+  Widget _buildFrameContent(double frameSize) {
+    switch (_step) {
+      case _Step.preparing:
+        return const Center(
+          child: CircularProgressIndicator(
+            strokeWidth: 2,
+            valueColor:
+                AlwaysStoppedAnimation<Color>(AppColors.brandCyan),
+          ),
+        );
 
-    return Column(
-      children: [
-        PillButton.primary(
-          label: 'Go Live',
-          onTap: _step == _Step.picked ? _startVerification : null,
-          width: double.infinity,
-          height: 64,
-        ),
-        const SizedBox(height: 16),
-        Text(
-          '1 Live session available  ·  3 Icebreakers remaining',
-          style: AppTextStyles.caption,
-          textAlign: TextAlign.center,
-        ),
-      ],
-    );
+      case _Step.cameraError:
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.camera_alt_outlined,
+                    color: AppColors.textMuted, size: 40),
+                const SizedBox(height: 12),
+                Text(
+                  _errorMessage ?? 'Camera unavailable',
+                  style: AppTextStyles.caption,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        );
+
+      case _Step.cameraReady:
+        final ctrl = _camController;
+        if (ctrl == null || !ctrl.value.isInitialized) {
+          return const SizedBox.shrink();
+        }
+        // Fill frame with camera preview, mirrored (selfie mode).
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: SizedBox.square(
+            dimension: frameSize,
+            child: OverflowBox(
+              maxWidth: double.infinity,
+              maxHeight: double.infinity,
+              child: Transform.scale(
+                scaleX: -1, // mirror horizontally for selfie feel
+                child: CameraPreview(ctrl),
+              ),
+            ),
+          ),
+        );
+
+      case _Step.verifying:
+      case _Step.verified:
+        final path = _capturedPath;
+        if (path == null) return const SizedBox.shrink();
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: Image.file(
+            File(path),
+            width: frameSize,
+            height: frameSize,
+            fit: BoxFit.cover,
+          ),
+        );
+    }
+  }
+
+  // ── Status sections ───────────────────────────────────────────────────────
+
+  Widget _buildStatusSection() {
+    switch (_step) {
+      case _Step.preparing:
+        return const SizedBox(key: ValueKey('preparing'), height: 80);
+
+      case _Step.cameraError:
+        return SizedBox(
+          key: const ValueKey('error'),
+          height: 80,
+          child: Center(
+            child: Text(
+              'Point your camera here and try again.',
+              style: AppTextStyles.caption,
+              textAlign: TextAlign.center,
+            ),
+          ),
+        );
+
+      case _Step.cameraReady:
+        return SizedBox(
+          key: const ValueKey('ready'),
+          height: 80,
+          child: Center(
+            child: Text(
+              'Position your face in the frame',
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textSecondary,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        );
+
+      case _Step.verifying:
+        return _VerifyingStatus(
+          key: const ValueKey('verifying'),
+          duration: const Duration(milliseconds: 1500),
+        );
+
+      case _Step.verified:
+        return _VerifiedStatus(key: const ValueKey('verified'));
+    }
+  }
+
+  // ── Action area ───────────────────────────────────────────────────────────
+
+  Widget _buildActionArea() {
+    if (_step == _Step.cameraReady) {
+      return _ShutterButton(onTap: _captureAndVerify);
+    }
+    // Reserve height so layout stays stable during all states.
+    return const SizedBox(height: 72);
   }
 }
 
-// ── Status sub-widgets ────────────────────────────────────────────────────────
+// ── Selfie frame ─────────────────────────────────────────────────────────────
 
-class _StatusIdle extends StatelessWidget {
-  const _StatusIdle({super.key});
+/// Square frame with neon gradient border and multi-layer glow,
+/// matching the reference UI.
+class _SelfieFrame extends StatelessWidget {
+  const _SelfieFrame({required this.size, required this.child});
+
+  final double size;
+  final Widget child;
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          'Add a selfie to go live',
-          style: AppTextStyles.h3,
-          textAlign: TextAlign.center,
+    return Container(
+      width: size,
+      height: size,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.white.withValues(alpha: 0.12),
+            blurRadius: 12,
+            spreadRadius: 0,
+          ),
+          BoxShadow(
+            color: AppColors.brandPink.withValues(alpha: 0.35),
+            blurRadius: 40,
+            spreadRadius: 2,
+          ),
+          BoxShadow(
+            color: AppColors.brandPurple.withValues(alpha: 0.30),
+            blurRadius: 70,
+            spreadRadius: 8,
+          ),
+        ],
+      ),
+      // Gradient border via nested containers
+      child: Container(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(16),
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [
+              Color(0xFFFFFFFF), // bright white top-left corner
+              Color(0xFFBBCCFF), // cool blue
+              AppColors.brandCyan,
+              AppColors.brandPurple,
+              AppColors.brandPink,
+              Color(0xFFFFFFFF), // bright white bottom-right
+            ],
+            stops: [0.0, 0.2, 0.4, 0.6, 0.8, 1.0],
+          ),
         ),
-        const SizedBox(height: 8),
-        Text(
-          'Your selfie is your live profile photo.\nPeople nearby will see this when you appear.',
-          style: AppTextStyles.bodyS,
-          textAlign: TextAlign.center,
+        padding: const EdgeInsets.all(2),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(14),
+          child: child,
         ),
-      ],
+      ),
     );
   }
 }
 
-class _StatusPicked extends StatelessWidget {
-  const _StatusPicked({super.key});
+// ── Verifying status ──────────────────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      children: [
-        Text(
-          'Looking good',
-          style: AppTextStyles.h3.copyWith(color: AppColors.brandPink),
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 8),
-        Text(
-          'Tap your photo to choose a different one,\nor hit Go Live when you\'re ready.',
-          style: AppTextStyles.bodyS,
-          textAlign: TextAlign.center,
-        ),
-      ],
-    );
-  }
-}
-
-class _StatusVerifying extends StatelessWidget {
-  const _StatusVerifying({super.key});
+class _VerifyingStatus extends StatelessWidget {
+  const _VerifyingStatus({super.key, required this.duration});
+  final Duration duration;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const SizedBox(
-          width: 28,
-          height: 28,
-          child: CircularProgressIndicator(
-            strokeWidth: 2.5,
-            valueColor:
-                AlwaysStoppedAnimation<Color>(AppColors.brandCyan),
+        const Icon(
+          Icons.check_rounded,
+          color: AppColors.success,
+          size: 36,
+        ),
+        const SizedBox(height: 10),
+        Text(
+          'Verifying…',
+          style: AppTextStyles.h2.copyWith(
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.2,
           ),
         ),
         const SizedBox(height: 16),
-        Text(
-          'Verifying you\'re real…',
-          style: AppTextStyles.bodyS,
-          textAlign: TextAlign.center,
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'This only takes a moment.',
-          style: AppTextStyles.caption,
-          textAlign: TextAlign.center,
-        ),
+        _NeonProgressBar(duration: duration),
       ],
     );
   }
 }
 
-class _StatusVerified extends StatelessWidget {
-  const _StatusVerified({super.key});
+class _VerifiedStatus extends StatelessWidget {
+  const _VerifiedStatus({super.key});
 
   @override
   Widget build(BuildContext context) {
@@ -296,21 +466,167 @@ class _StatusVerified extends StatelessWidget {
         const Icon(
           Icons.check_circle_rounded,
           color: AppColors.success,
-          size: 34,
+          size: 36,
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 10),
         Text(
           'Verified!',
-          style: AppTextStyles.h3.copyWith(color: AppColors.success),
-          textAlign: TextAlign.center,
+          style: AppTextStyles.h2.copyWith(color: AppColors.success),
         ),
         const SizedBox(height: 6),
-        Text(
-          'Going live now…',
-          style: AppTextStyles.bodyS,
-          textAlign: TextAlign.center,
-        ),
+        Text('Going live…', style: AppTextStyles.bodyS),
       ],
+    );
+  }
+}
+
+// ── Neon progress bar ────────────────────────────────────────────────────────
+
+class _NeonProgressBar extends StatefulWidget {
+  const _NeonProgressBar({required this.duration});
+  final Duration duration;
+
+  @override
+  State<_NeonProgressBar> createState() => _NeonProgressBarState();
+}
+
+class _NeonProgressBarState extends State<_NeonProgressBar>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+  late final Animation<double> _progress;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(vsync: this, duration: widget.duration);
+    _progress = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
+    _ctrl.forward();
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _progress,
+      builder: (context, _) {
+        return Stack(
+          children: [
+            // Track
+            Container(
+              height: 4,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(2),
+                color: AppColors.divider,
+              ),
+            ),
+            // Fill
+            FractionallySizedBox(
+              widthFactor: _progress.value,
+              child: Container(
+                height: 4,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(2),
+                  gradient: const LinearGradient(
+                    colors: [AppColors.brandPink, AppColors.brandCyan],
+                  ),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.brandCyan.withValues(alpha: 0.55),
+                      blurRadius: 10,
+                      spreadRadius: 1,
+                    ),
+                    BoxShadow(
+                      color: AppColors.brandPink.withValues(alpha: 0.40),
+                      blurRadius: 8,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+// ── Shutter button ────────────────────────────────────────────────────────────
+
+class _ShutterButton extends StatelessWidget {
+  const _ShutterButton({required this.onTap});
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        width: 72,
+        height: 72,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          // Outer ring: gradient
+          gradient: const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [AppColors.brandPink, AppColors.brandCyan],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.brandPink.withValues(alpha: 0.45),
+              blurRadius: 20,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        padding: const EdgeInsets.all(3),
+        child: Container(
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: Color(0xFF05000E),
+          ),
+          padding: const EdgeInsets.all(3),
+          child: Container(
+            decoration: const BoxDecoration(
+              shape: BoxShape.circle,
+              color: Colors.white,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Header icon button ────────────────────────────────────────────────────────
+
+class _HeaderIconButton extends StatelessWidget {
+  const _HeaderIconButton({required this.icon, required this.onTap});
+  final IconData icon;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: AnimatedOpacity(
+        opacity: onTap != null ? 1.0 : 0.3,
+        duration: const Duration(milliseconds: 150),
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: Colors.white.withValues(alpha: 0.08),
+          ),
+          child: Icon(icon, color: AppColors.textSecondary, size: 18),
+        ),
+      ),
     );
   }
 }

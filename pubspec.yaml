@@ -38,8 +38,8 @@ dependencies:
   # Navigation
   go_router: ^14.0.0
 
-  # File / image picker (used for live selfie on macOS demo)
-  file_picker: ^8.0.0
+  # Camera (used for live selfie capture on macOS demo)
+  camera: ^0.11.0
 
 
 dev_dependencies:
