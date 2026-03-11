@@ -24,14 +24,14 @@ class AppBottomNavBar extends StatelessWidget {
 
   static const _items = <_NavItem>[
     _NavItem(
-      icon: Icons.favorite_border_rounded,
-      activeIcon: Icons.favorite_rounded,
-      label: 'Live',
+      icon: Icons.home_outlined,
+      activeIcon: Icons.home_rounded,
+      label: 'Home',
     ),
     _NavItem(
       icon: Icons.explore_outlined,
       activeIcon: Icons.explore_rounded,
-      label: 'Nearby',
+      label: 'Carousel',
     ),
     _NavItem(
       icon: Icons.chat_bubble_outline_rounded,
@@ -54,7 +54,7 @@ class AppBottomNavBar extends StatelessWidget {
           top: BorderSide(color: AppColors.navBorder, width: 1),
         ),
       ),
-      height: 60,
+      height: 64,
       child: Row(
         children: List.generate(_items.length, (i) {
           final item = _items[i];
@@ -64,16 +64,37 @@ class AppBottomNavBar extends StatelessWidget {
               onTap: () => onTap(i),
               behavior: HitTestBehavior.opaque,
               child: Center(
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 200),
-                  child: Icon(
-                    isActive ? item.activeIcon : item.icon,
-                    key: ValueKey(isActive),
-                    color: isActive
-                        ? AppColors.brandPink
-                        : AppColors.textMuted,
-                    size: 26,
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    AnimatedSwitcher(
+                      duration: const Duration(milliseconds: 200),
+                      child: Icon(
+                        isActive ? item.activeIcon : item.icon,
+                        key: ValueKey(isActive),
+                        color: isActive
+                            ? AppColors.brandPink
+                            : AppColors.textMuted,
+                        size: 24,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 200),
+                      style: TextStyle(
+                        fontFamily: 'PlusJakartaSans',
+                        fontSize: 10,
+                        fontWeight: isActive
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                        color: isActive
+                            ? AppColors.brandPink
+                            : AppColors.textMuted,
+                        letterSpacing: 0.2,
+                      ),
+                      child: Text(item.label),
+                    ),
+                  ],
                 ),
               ),
             ),

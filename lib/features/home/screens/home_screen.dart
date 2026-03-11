@@ -400,18 +400,7 @@ class _HomeScreenState extends State<HomeScreen> {
             width: double.infinity,
           ),
 
-          const SizedBox(height: 12),
-
-          PillButton.primary(
-            label: 'Renew Session',
-            onTap: () {
-              // TODO: renewSession() Cloud Function
-            },
-            width: double.infinity,
-            height: 60,
-          ),
-
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
         ],
       ),
     );
