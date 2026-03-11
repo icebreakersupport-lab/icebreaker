@@ -630,7 +630,7 @@ class _PlusPlanCard extends StatelessWidget {
                   Text('Plus', style: AppTextStyles.h2),
                   const SizedBox(height: 2),
                   Text(
-                    r'$4.99 / month',
+                    r'$4.99 / month · 10 Icebreakers/day',
                     style: AppTextStyles.bodyS.copyWith(
                       color: AppColors.brandCyan,
                       fontWeight: FontWeight.w600,
@@ -666,7 +666,7 @@ class _PlusPlanCard extends StatelessWidget {
           // Features
           _Feature('Unlimited Go Live'),
           const SizedBox(height: 6),
-          _Feature('5 Icebreakers / month'),
+          _Feature('10 Icebreakers per day'),
 
           const Spacer(),
 
