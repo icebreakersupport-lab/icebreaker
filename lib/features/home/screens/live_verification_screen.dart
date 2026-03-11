@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
@@ -6,6 +7,77 @@ import 'package:flutter/material.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+
+// ── Demo assets ──────────────────────────────────────────────────────────────
+
+/// Generates and caches three distinct coloured-circle PNG demo selfies in the
+/// system temp directory using [dart:ui] canvas — no extra packages or bundled
+/// image assets required. Each 200×200 PNG has a unique radial gradient so
+/// they're visually distinguishable in the 36 px profile icon.
+///
+/// Used exclusively by [_DemoModePanel] to let developers test the full
+/// verification → profile icon → expanded selfie → redo flow without a camera.
+class _DemoAssets {
+  _DemoAssets._();
+
+  static const _configs = [
+    (Color(0xFFFF6B9D), Color(0xFFFF8E53), 'Demo 1'),
+    (Color(0xFF00D4FF), Color(0xFF0055FF), 'Demo 2'),
+    (Color(0xFF8B5CF6), Color(0xFFD946EF), 'Demo 3'),
+  ];
+
+  static final Map<int, String> _cache = {};
+
+  static int get count => _configs.length;
+  static String label(int i) => _configs[i].$3;
+  static Color accent(int i) => _configs[i].$1;
+
+  /// Returns the local file path for demo selfie [index], generating it on
+  /// first call. Subsequent calls return the cached path immediately.
+  static Future<String> filePath(int index) async {
+    assert(index >= 0 && index < count);
+    if (_cache.containsKey(index)) return _cache[index]!;
+
+    const sz = 200.0;
+    final (c1, c2, _) = _configs[index];
+
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, sz, sz));
+
+    // Radial gradient fill
+    canvas.drawCircle(
+      const Offset(sz / 2, sz / 2),
+      sz / 2,
+      Paint()
+        ..shader = ui.Gradient.radial(
+          const Offset(sz * 0.38, sz * 0.35),
+          sz * 0.80,
+          [c1, c2],
+        ),
+    );
+
+    // Soft inner highlight to give depth
+    canvas.drawCircle(
+      const Offset(sz * 0.38, sz * 0.35),
+      sz * 0.22,
+      Paint()..color = const Color(0x20FFFFFF),
+    );
+
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(200, 200);
+    final byteData =
+        await image.toByteData(format: ui.ImageByteFormat.png);
+    image.dispose();
+
+    final path =
+        '${Directory.systemTemp.path}/icebreaker_demo_$index.png';
+    await File(path)
+        .writeAsBytes(byteData!.buffer.asUint8List(), flush: true);
+
+    _cache[index] = path;
+    return path;
+  }
+}
 
 // ── Step enum ────────────────────────────────────────────────────────────────
 
@@ -141,6 +213,43 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     } catch (e) {
       _setError('Capture failed: ${e.runtimeType}');
     }
+  }
+
+  // ── Demo selfie selection ─────────────────────────────────────────────────
+
+  /// Selects a pre-generated demo selfie and runs it through the exact same
+  /// mock-verification sequence as a real camera capture.
+  Future<void> _useDemoSelfie(int index) async {
+    if (_step == _Step.verifying || _step == _Step.verified) return;
+
+    // Dispose any live camera stream before showing the static demo image.
+    await _camController?.dispose();
+    _camController = null;
+
+    // Generate (or retrieve from cache) the coloured-circle PNG.
+    final path = await _DemoAssets.filePath(index);
+    if (!mounted) return;
+
+    setState(() {
+      _capturedPath = path;
+      _step = _Step.verifying;
+    });
+
+    // Same timing as the real flow.
+    await Future.delayed(const Duration(milliseconds: 1500));
+    if (!mounted) return;
+    setState(() => _step = _Step.verified);
+
+    await Future.delayed(const Duration(milliseconds: 600));
+    if (!mounted) return;
+
+    final session = LiveSessionScope.of(context);
+    if (widget.isRedo) {
+      session.updateSelfie(path);
+    } else {
+      session.goLive(selfieFilePath: path);
+    }
+    Navigator.of(context).pop();
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -368,11 +477,27 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   // ── Action area ───────────────────────────────────────────────────────────
 
   Widget _buildActionArea() {
-    if (_step == _Step.cameraReady) {
-      return _ShutterButton(onTap: _captureAndVerify);
+    switch (_step) {
+      case _Step.cameraReady:
+        // Real flow: shutter button. Demo panel shown below as dev shortcut.
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _ShutterButton(onTap: _captureAndVerify),
+            const SizedBox(height: 24),
+            _DemoModePanel(onSelect: _useDemoSelfie),
+          ],
+        );
+
+      case _Step.preparing:
+      case _Step.cameraError:
+        // Camera unavailable — demo panel becomes the primary action.
+        return _DemoModePanel(onSelect: _useDemoSelfie, asPrimary: true);
+
+      case _Step.verifying:
+      case _Step.verified:
+        return const SizedBox(height: 72);
     }
-    // Reserve height so layout stays stable during all states.
-    return const SizedBox(height: 72);
   }
 }
 
@@ -617,6 +742,127 @@ class _ShutterButton extends StatelessWidget {
             ),
           ),
         ),
+      ),
+    );
+  }
+}
+
+// ── Demo mode panel ───────────────────────────────────────────────────────────
+
+/// Developer-only panel shown in the Live Verification screen.
+///
+/// When [asPrimary] is false (camera is working): renders as a subtle row
+/// below the shutter button, clearly labelled DEV · DEMO MODE.
+///
+/// When [asPrimary] is true (no camera available): renders prominently as
+/// the only available action so the dev can still test the full flow.
+class _DemoModePanel extends StatelessWidget {
+  const _DemoModePanel({required this.onSelect, this.asPrimary = false});
+
+  final void Function(int index) onSelect;
+  final bool asPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // ── DEV label ────────────────────────────────────────────────────
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1530),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: const Color(0xFF3A3060)),
+          ),
+          child: Text(
+            'DEV · DEMO MODE',
+            style: AppTextStyles.overline.copyWith(
+              color: const Color(0xFF7A6EA8),
+              letterSpacing: 1.6,
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 10),
+
+        Text(
+          asPrimary
+              ? 'Camera unavailable — select a demo selfie to test the flow'
+              : 'or pick a demo selfie to test without a camera',
+          style: AppTextStyles.caption.copyWith(
+            color: AppColors.textMuted,
+          ),
+          textAlign: TextAlign.center,
+        ),
+
+        const SizedBox(height: 16),
+
+        // ── Demo selfie buttons ───────────────────────────────────────────
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (int i = 0; i < _DemoAssets.count; i++) ...[
+              if (i > 0) const SizedBox(width: 20),
+              _DemoAvatarButton(
+                index: i,
+                onTap: () => onSelect(i),
+              ),
+            ],
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Tappable coloured-circle avatar button for one demo selfie option.
+class _DemoAvatarButton extends StatelessWidget {
+  const _DemoAvatarButton({required this.index, required this.onTap});
+  final int index;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = _DemoAssets.accent(index);
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 60,
+            height: 60,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              // Preview circle matches the generated PNG colour
+              gradient: RadialGradient(
+                center: const Alignment(-0.3, -0.3),
+                radius: 0.9,
+                colors: [color, color.withValues(alpha: 0.55)],
+              ),
+              border: Border.all(
+                color: color.withValues(alpha: 0.55),
+                width: 1.5,
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: color.withValues(alpha: 0.35),
+                  blurRadius: 14,
+                  spreadRadius: 0,
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _DemoAssets.label(index),
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+              fontSize: 10,
+            ),
+          ),
+        ],
       ),
     );
   }
