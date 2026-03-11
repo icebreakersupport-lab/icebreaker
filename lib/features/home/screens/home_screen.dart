@@ -149,26 +149,31 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
       // "icebreaker •" — lowercase + green live-status dot
-      title: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(
-            'icebreaker',
-            style: AppTextStyles.h3.copyWith(
-              letterSpacing: 0.3,
-              fontWeight: FontWeight.w700,
+      // FittedBox prevents 3.5px horizontal overflow when the leading avatar
+      // narrows the available center-slot width.
+      title: FittedBox(
+        fit: BoxFit.scaleDown,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'icebreaker',
+              style: AppTextStyles.h3.copyWith(
+                letterSpacing: 0.3,
+                fontWeight: FontWeight.w700,
+              ),
             ),
-          ),
-          const SizedBox(width: 6),
-          Container(
-            width: 7,
-            height: 7,
-            decoration: const BoxDecoration(
-              color: AppColors.success,
-              shape: BoxShape.circle,
+            const SizedBox(width: 6),
+            Container(
+              width: 7,
+              height: 7,
+              decoration: const BoxDecoration(
+                color: AppColors.success,
+                shape: BoxShape.circle,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
       actions: [
         Padding(
@@ -333,9 +338,9 @@ class _HomeScreenState extends State<HomeScreen> {
           const Spacer(flex: 2),
 
           // Logo — heartbeat driven by LiveSession
-          const IcebreakerLogo(size: 160, showGlow: true),
+          const IcebreakerLogo(size: 120, showGlow: true),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
 
           // Live badge
           Container(
@@ -366,12 +371,12 @@ class _HomeScreenState extends State<HomeScreen> {
             ),
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
 
           // Live selfie avatar
           _buildLiveSelfieAvatar(session),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 10),
 
           Text(
             'People nearby can see you now',
@@ -387,7 +392,7 @@ class _HomeScreenState extends State<HomeScreen> {
             style: AppTextStyles.caption,
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 14),
 
           PillButton.outlined(
             label: 'End Session',
@@ -395,7 +400,7 @@ class _HomeScreenState extends State<HomeScreen> {
             width: double.infinity,
           ),
 
-          const SizedBox(height: 16),
+          const SizedBox(height: 12),
 
           PillButton.primary(
             label: 'Renew Session',
@@ -403,10 +408,10 @@ class _HomeScreenState extends State<HomeScreen> {
               // TODO: renewSession() Cloud Function
             },
             width: double.infinity,
-            height: 64,
+            height: 60,
           ),
 
-          const SizedBox(height: 32),
+          const SizedBox(height: 20),
         ],
       ),
     );
