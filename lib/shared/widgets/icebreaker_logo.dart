@@ -1,18 +1,21 @@
 import 'package:flutter/material.dart';
+import '../../core/state/live_session.dart';
 import '../../core/theme/app_colors.dart';
 
-/// The Icebreaker brand logo rendered from the real logo asset.
+/// The Icebreaker brand logo, rendered from the real brand asset.
 ///
-/// A subtle heartbeat pulse animation scales the logo: 1.0 → 1.08 → 1.0 →
-/// 1.05 → 1.0 to mimic a natural heartbeat rhythm.
-/// An optional radial glow is rendered behind the image.
+/// Animation is driven entirely by the global [LiveSession] state:
+///   - Not live → logo is completely still.
+///   - Live     → a subtle heartbeat pulse runs (1.0 → 1.07 → 1.0 → 1.04 → 1.0).
+///
+/// The PNG's black background is masked out via a luminance-to-alpha
+/// [ColorFilter] so the logo composites cleanly over any background.
 class IcebreakerLogo extends StatefulWidget {
   const IcebreakerLogo({
     super.key,
     this.size = 120,
     this.showGlow = true,
     this.glowRadius = 1.4,
-    this.animate = true,
   });
 
   /// Logical diameter of the bounding box.
@@ -23,9 +26,6 @@ class IcebreakerLogo extends StatefulWidget {
 
   /// Size multiplier for the glow relative to [size].
   final double glowRadius;
-
-  /// Whether to run the heartbeat pulse animation.
-  final bool animate;
 
   @override
   State<IcebreakerLogo> createState() => _IcebreakerLogoState();
@@ -41,52 +41,38 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1200),
+      duration: const Duration(milliseconds: 1400),
     );
 
-    // Heartbeat curve: rest → beat1 → rest → beat2 → rest
+    // Heartbeat: two beats followed by a rest.
+    // Kept subtle — peak only +7% and +4%.
     _scale = TweenSequence<double>([
       TweenSequenceItem(
-        tween: Tween(begin: 1.0, end: 1.08)
-            .chain(CurveTween(curve: Curves.easeOut)),
-        weight: 15,
-      ),
-      TweenSequenceItem(
-        tween: Tween(begin: 1.08, end: 1.0)
-            .chain(CurveTween(curve: Curves.easeIn)),
-        weight: 15,
-      ),
-      TweenSequenceItem(
-        tween: Tween(begin: 1.0, end: 1.05)
+        tween: Tween(begin: 1.0, end: 1.07)
             .chain(CurveTween(curve: Curves.easeOut)),
         weight: 12,
       ),
       TweenSequenceItem(
-        tween: Tween(begin: 1.05, end: 1.0)
+        tween: Tween(begin: 1.07, end: 1.0)
             .chain(CurveTween(curve: Curves.easeIn)),
         weight: 12,
       ),
-      // Pause at rest before next beat
+      TweenSequenceItem(
+        tween: Tween(begin: 1.0, end: 1.04)
+            .chain(CurveTween(curve: Curves.easeOut)),
+        weight: 10,
+      ),
+      TweenSequenceItem(
+        tween: Tween(begin: 1.04, end: 1.0)
+            .chain(CurveTween(curve: Curves.easeIn)),
+        weight: 10,
+      ),
+      // Rest between beats — logo sits still
       TweenSequenceItem(
         tween: ConstantTween(1.0),
-        weight: 46,
+        weight: 56,
       ),
     ]).animate(_controller);
-
-    if (widget.animate) {
-      _controller.repeat();
-    }
-  }
-
-  @override
-  void didUpdateWidget(IcebreakerLogo oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.animate && !_controller.isAnimating) {
-      _controller.repeat();
-    } else if (!widget.animate && _controller.isAnimating) {
-      _controller.stop();
-      _controller.value = 0;
-    }
   }
 
   @override
@@ -95,8 +81,21 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
     super.dispose();
   }
 
+  void _syncAnimation(bool isLive) {
+    if (isLive && !_controller.isAnimating) {
+      _controller.repeat();
+    } else if (!isLive && _controller.isAnimating) {
+      _controller.stop();
+      _controller.value = 0;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    // Subscribe to live state — rebuilds (and syncs animation) on change.
+    final isLive = LiveSessionScope.isLive(context);
+    _syncAnimation(isLive);
+
     final glowSize = widget.size * widget.glowRadius;
 
     return SizedBox(
@@ -105,8 +104,8 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Ambient glow
-          if (widget.showGlow)
+          // Ambient glow — only visible when live for extra signal.
+          if (widget.showGlow && isLive)
             Container(
               width: glowSize,
               height: glowSize,
@@ -114,8 +113,8 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: [
-                    AppColors.brandPink.withValues(alpha: 0.20),
-                    AppColors.brandPurple.withValues(alpha: 0.12),
+                    AppColors.brandPink.withValues(alpha: 0.18),
+                    AppColors.brandPurple.withValues(alpha: 0.10),
                     Colors.transparent,
                   ],
                   stops: const [0.0, 0.5, 1.0],
@@ -123,7 +122,8 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
               ),
             ),
 
-          // Pulsing logo image
+          // Logo image — luminance-to-alpha filter removes the black background
+          // so the neon strokes composite cleanly over any surface.
           AnimatedBuilder(
             animation: _scale,
             builder: (context, child) => Transform.scale(
@@ -133,9 +133,18 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
             child: SizedBox(
               width: widget.size,
               height: widget.size,
-              child: Image.asset(
-                'assets/images/logo.png',
-                fit: BoxFit.contain,
+              child: ColorFiltered(
+                // Set alpha = luminance: black → transparent, neon → opaque.
+                colorFilter: const ColorFilter.matrix([
+                  1, 0, 0, 0, 0, //
+                  0, 1, 0, 0, 0, //
+                  0, 0, 1, 0, 0, //
+                  0.299, 0.587, 0.114, 0, 0, //
+                ]),
+                child: Image.asset(
+                  'assets/images/logo.png',
+                  fit: BoxFit.contain,
+                ),
               ),
             ),
           ),

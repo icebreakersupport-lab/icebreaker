@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -20,7 +21,6 @@ class NearbyScreen extends StatefulWidget {
 
 class _NearbyScreenState extends State<NearbyScreen> {
   // TODO: replace with real state from Firestore via Riverpod
-  final bool _isLive = true;
   final List<_MockUser> _nearbyUsers = [
     _MockUser(
       id: '1',
@@ -47,7 +47,9 @@ class _NearbyScreenState extends State<NearbyScreen> {
       appBar: _buildAppBar(),
       body: SafeArea(
         top: false,
-        child: _isLive ? _buildCarousel() : _buildNotLiveState(),
+        child: LiveSessionScope.isLive(context)
+            ? _buildCarousel()
+            : _buildNotLiveState(),
       ),
     );
   }

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -7,12 +8,9 @@ import '../../../shared/widgets/pill_button.dart';
 
 /// Home tab — the "GO LIVE" entry point.
 ///
-/// Layout (from slide 5):
-///   - Very dark purple-black background with a subtle top radial glow
-///   - "Icebreaker" app name header (centred)
-///   - Hero logo (heart + lightning, gradient + glow) centred in the body
-///   - "GO LIVE" pill button below the logo (full-width, padded)
-///   - Optional session-active state (shown when user is already live)
+/// Live state is read from and written to the global [LiveSession] via
+/// [LiveSessionScope]. No local isLive flag — the logo and UI rebuild
+/// automatically when the session changes.
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -21,32 +19,31 @@ class HomeScreen extends StatefulWidget {
 }
 
 class _HomeScreenState extends State<HomeScreen> {
-  bool _isLive = false;
   bool _isLoading = false;
 
   Future<void> _handleGoLive() async {
     setState(() => _isLoading = true);
     // TODO: call goLive() Cloud Function + navigate to selfie capture
     await Future.delayed(const Duration(milliseconds: 500));
-    setState(() {
-      _isLoading = false;
-      _isLive = true;
-    });
+    setState(() => _isLoading = false);
+    if (mounted) LiveSessionScope.of(context).setLive(true);
   }
 
   void _handleEndSession() {
-    setState(() => _isLive = false);
+    LiveSessionScope.of(context).setLive(false);
     // TODO: call endSession() Cloud Function
   }
 
   @override
   Widget build(BuildContext context) {
+    final isLive = LiveSessionScope.isLive(context);
+
     return GradientScaffold(
       showTopGlow: true,
       appBar: _buildAppBar(),
       body: SafeArea(
         top: false,
-        child: _isLive ? _buildLiveState() : _buildOfflineState(),
+        child: isLive ? _buildLiveState() : _buildOfflineState(),
       ),
     );
   }
@@ -82,12 +79,10 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Spacer(flex: 2),
 
-          // Logo
           const IcebreakerLogo(size: 140, showGlow: true),
 
           const SizedBox(height: 32),
 
-          // Headline
           Text(
             'Ready to meet\nsomeone nearby?',
             style: AppTextStyles.h1.copyWith(height: 1.2),
@@ -104,7 +99,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const Spacer(flex: 3),
 
-          // GO LIVE button
           PillButton.primary(
             label: 'GO LIVE',
             onTap: _handleGoLive,
@@ -115,7 +109,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const SizedBox(height: 16),
 
-          // Session info hint
           Text(
             '1 Live session available · 3 Icebreakers remaining',
             style: AppTextStyles.caption,
@@ -135,23 +128,14 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           const Spacer(flex: 2),
 
-          // Pulsing logo when live
-          TweenAnimationBuilder<double>(
-            tween: Tween(begin: 0.92, end: 1.08),
-            duration: const Duration(milliseconds: 1200),
-            builder: (context, scale, child) {
-              return Transform.scale(scale: scale, child: child);
-            },
-            onEnd: () => setState(() {}),
-            child: const IcebreakerLogo(size: 140, showGlow: true),
-          ),
+          // Logo — animation is driven by global LiveSession, no wrapper needed.
+          const IcebreakerLogo(size: 140, showGlow: true),
 
           const SizedBox(height: 24),
 
           // Live badge
           Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
             decoration: BoxDecoration(
               gradient: AppColors.brandGradient,
               borderRadius: BorderRadius.circular(20),
@@ -186,7 +170,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const Spacer(flex: 3),
 
-          // Session timer (placeholder — will use CountdownTimerWidget + real expiry)
           Text(
             'Session expires in 59:59',
             style: AppTextStyles.caption,
@@ -194,7 +177,6 @@ class _HomeScreenState extends State<HomeScreen> {
 
           const SizedBox(height: 20),
 
-          // End session
           PillButton.outlined(
             label: 'End Session',
             onTap: _handleEndSession,
