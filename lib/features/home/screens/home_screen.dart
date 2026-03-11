@@ -9,9 +9,9 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../../../shared/widgets/pill_button.dart';
+import '../../profile/screens/profile_screen.dart';
 import '../../shop/screens/shop_screen.dart';
 import 'live_verification_screen.dart';
-import 'selfie_preview_screen.dart';
 
 /// Home tab — the "GO LIVE" entry point.
 ///
@@ -102,15 +102,11 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.only(left: 12),
         child: Center(
           child: GestureDetector(
-            onTap: () {
-              if (session.selfieFilePath != null) {
-                Navigator.of(context).push(
-                  MaterialPageRoute<void>(
-                    builder: (_) => const SelfiePreviewScreen(),
-                  ),
-                );
-              }
-            },
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const ProfileScreen(),
+              ),
+            ),
             child: Container(
               width: 36,
               height: 36,

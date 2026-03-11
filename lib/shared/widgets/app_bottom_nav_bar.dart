@@ -54,39 +54,36 @@ class AppBottomNavBar extends StatelessWidget {
           top: BorderSide(color: AppColors.navBorder, width: 1),
         ),
       ),
-      child: SafeArea(
-        top: false,
-        child: SizedBox(
-          height: 60,
-          child: Row(
-            children: List.generate(_items.length, (i) {
-              final item = _items[i];
-              final isActive = i == currentIndex;
-              return Expanded(
-                child: GestureDetector(
-                  onTap: () => onTap(i),
-                  behavior: HitTestBehavior.opaque,
-                  child: Center(
-                    child: AnimatedSwitcher(
-                      duration: const Duration(milliseconds: 200),
-                      child: Icon(
-                        isActive ? item.activeIcon : item.icon,
-                        key: ValueKey(isActive),
-                        color:
-                            isActive ? AppColors.brandPink : AppColors.textMuted,
-                        size: 26,
-                      ),
-                    ),
+      height: 60,
+      child: Row(
+        children: List.generate(_items.length, (i) {
+          final item = _items[i];
+          final isActive = i == currentIndex;
+          return Expanded(
+            child: GestureDetector(
+              onTap: () => onTap(i),
+              behavior: HitTestBehavior.opaque,
+              child: Center(
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 200),
+                  child: Icon(
+                    isActive ? item.activeIcon : item.icon,
+                    key: ValueKey(isActive),
+                    color: isActive
+                        ? AppColors.brandPink
+                        : AppColors.textMuted,
+                    size: 26,
                   ),
                 ),
-              );
-            }),
-          ),
-        ),
+              ),
+            ),
+          );
+        }),
       ),
     );
   }
 }
+
 
 class _NavItem {
   const _NavItem({
