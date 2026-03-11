@@ -176,6 +176,34 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildOfflineState() {
     return Column(
       children: [
+        const SizedBox(height: 20),
+
+        // ── Status counters — between header and hero logo ─────────────
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: Row(
+            children: [
+              Expanded(
+                child: _StatusPill(
+                  icon: Icons.bolt_rounded,
+                  iconColor: AppColors.brandPink,
+                  count: '1',
+                  label: 'Live Session',
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _StatusPill(
+                  icon: Icons.ac_unit_rounded,
+                  iconColor: AppColors.brandCyan,
+                  count: '3',
+                  label: 'Icebreakers',
+                ),
+              ),
+            ],
+          ),
+        ),
+
         const Spacer(flex: 1),
 
         // ── Hero logo with atmospheric glow ──────────────────────────────
@@ -240,15 +268,6 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: AppTextStyles.caption.copyWith(
                   color: AppColors.textMuted,
                 ),
-                textAlign: TextAlign.center,
-              ),
-
-              const SizedBox(height: 20),
-
-              // Session / quota info
-              Text(
-                '1 Live session available  ·  3 Icebreakers remaining',
-                style: AppTextStyles.caption,
                 textAlign: TextAlign.center,
               ),
 
@@ -393,5 +412,83 @@ class _HomeScreenState extends State<HomeScreen> {
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$h:$m:$s';
+  }
+}
+
+// ── Status pill ───────────────────────────────────────────────────────────────
+
+/// Branded counter chip used on the Home offline state.
+/// Displays an icon, a bold count, and a muted label — styled with a dark
+/// surface, a soft colored border, and a matching neon glow shadow.
+class _StatusPill extends StatelessWidget {
+  const _StatusPill({
+    required this.icon,
+    required this.iconColor,
+    required this.count,
+    required this.label,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String count;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: iconColor.withValues(alpha: 0.28),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: iconColor.withValues(alpha: 0.14),
+            blurRadius: 20,
+            spreadRadius: 0,
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          // Icon badge
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              color: iconColor.withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(
+                color: iconColor.withValues(alpha: 0.22),
+              ),
+            ),
+            child: Icon(icon, color: iconColor, size: 18),
+          ),
+          const SizedBox(width: 10),
+          // Count + label
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                count,
+                style: AppTextStyles.h3.copyWith(
+                  fontWeight: FontWeight.w800,
+                  height: 1.1,
+                ),
+              ),
+              Text(
+                label,
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
   }
 }
