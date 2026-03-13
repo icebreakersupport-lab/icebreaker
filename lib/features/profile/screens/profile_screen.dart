@@ -5,18 +5,19 @@ import 'package:flutter/material.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/models/profile_completion.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
-import '../../home/screens/live_verification_screen.dart';
+import 'profile_checklist_screen.dart';
 
 /// Profile tab — redesigned to match reference layout.
 ///
 /// Layout (top → bottom):
 ///   AppBar (Profile title + settings icon)
 ///   Hero circle — live selfie when live, placeholder when offline
-///   "XX% COMPLETE" pill
+///   "XX% COMPLETE" pill (dynamic, from ProfileCompletionScore)
 ///   Name (pink) + age (cyan) in large type
 ///   Location line
-///   3 action buttons — Edit Profile / My Gallery / Live Selfie
+///   3 action buttons — Edit Profile / My Gallery / Profile Checklist
 ///   About Me card — bio + bullet details
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -34,6 +35,9 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
+    final score = ProfileCompletionScore.demo(
+      hasLiveSelfie: session.selfieFilePath != null,
+    );
 
     return GradientScaffold(
       appBar: AppBar(
@@ -66,7 +70,7 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 18),
 
               // ── Completeness pill ───────────────────────────────────────
-              const _CompletenessChip(percent: 50),
+              _CompletenessChip(percent: score.percentage),
 
               const SizedBox(height: 22),
 
@@ -142,13 +146,13 @@ class ProfileScreen extends StatelessWidget {
                   const SizedBox(width: 12),
                   Expanded(
                     child: _ActionTile(
-                      icon: Icons.camera_alt_rounded,
-                      label: 'Live\nSelfie',
+                      icon: Icons.checklist_rounded,
+                      label: 'Profile\nChecklist',
                       color: AppColors.brandPurple,
                       onTap: () => Navigator.of(context).push(
                         MaterialPageRoute<void>(
                           builder: (_) =>
-                              const LiveVerificationScreen(isRedo: true),
+                              ProfileChecklistScreen(score: score),
                         ),
                       ),
                     ),
