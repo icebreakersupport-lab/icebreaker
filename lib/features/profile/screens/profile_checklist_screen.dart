@@ -4,6 +4,9 @@ import '../../../core/models/profile_completion.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
+import '../../home/screens/live_verification_screen.dart';
+import 'edit_profile_screen.dart';
+import 'gallery_screen.dart';
 
 /// Profile Checklist screen.
 ///
@@ -284,117 +287,188 @@ class _CategorySection extends StatelessWidget {
 
 // ── Checklist item ────────────────────────────────────────────────────────────
 
+/// Tappable when incomplete — navigates to the screen that fixes the issue.
+/// Completed items show a green check and are non-interactive.
+///
+/// Navigation map (by item.id):
+///   bio, interests, hobbies, preferences → EditProfileScreen(initialSection)
+///   photo_first, photo_three            → GalleryScreen()
+///   video                               → GalleryScreen(scrollToVideo: true)
+///   live_selfie                         → LiveVerificationScreen()
+///   name_age, email, location, phone    → complete; no tap
 class _ChecklistItem extends StatelessWidget {
   const _ChecklistItem({required this.item});
   final ProfileCompletionItem item;
 
+  void _navigate(BuildContext context) {
+    switch (item.id) {
+      case 'bio':
+      case 'interests':
+      case 'hobbies':
+      case 'preferences':
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => EditProfileScreen(initialSection: item.id),
+        ));
+      case 'photo_first':
+      case 'photo_three':
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => const GalleryScreen(),
+        ));
+      case 'video':
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => const GalleryScreen(scrollToVideo: true),
+        ));
+      case 'live_selfie':
+        Navigator.of(context).push(MaterialPageRoute<void>(
+          builder: (_) => const LiveVerificationScreen(),
+        ));
+      // name_age, email, location, phone — complete; no action
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final done = item.isComplete;
+    final tappable = !done && _hasDest(item.id);
     final iconColor = done ? AppColors.success : AppColors.textMuted;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Check / X icon
-          Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: done
-                  ? AppColors.success.withValues(alpha: 0.12)
-                  : AppColors.bgElevated,
-              border: Border.all(
-                color: done
-                    ? AppColors.success.withValues(alpha: 0.40)
-                    : AppColors.divider,
-              ),
-            ),
-            child: Icon(
-              done ? Icons.check_rounded : Icons.close_rounded,
-              size: 16,
-              color: iconColor,
-            ),
-          ),
-
-          const SizedBox(width: 12),
-
-          // Title + description + hint
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  item.title,
-                  style: AppTextStyles.bodyS.copyWith(
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: tappable ? () => _navigate(context) : null,
+        borderRadius: BorderRadius.circular(18),
+        splashColor: AppColors.brandPink.withValues(alpha: 0.08),
+        highlightColor: AppColors.brandPink.withValues(alpha: 0.04),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              // Check / X icon
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: done
+                      ? AppColors.success.withValues(alpha: 0.12)
+                      : AppColors.bgElevated,
+                  border: Border.all(
                     color: done
-                        ? AppColors.textPrimary
-                        : AppColors.textSecondary,
-                    fontWeight: FontWeight.w600,
+                        ? AppColors.success.withValues(alpha: 0.40)
+                        : AppColors.divider,
                   ),
                 ),
-                const SizedBox(height: 2),
-                Text(
-                  item.description,
-                  style: AppTextStyles.caption
-                      .copyWith(color: AppColors.textMuted),
+                child: Icon(
+                  done ? Icons.check_rounded : Icons.close_rounded,
+                  size: 16,
+                  color: iconColor,
                 ),
-                if (!done && item.hint.isNotEmpty) ...[
-                  const SizedBox(height: 5),
-                  Row(
-                    children: [
-                      Icon(
-                        Icons.arrow_forward_ios_rounded,
-                        size: 9,
-                        color: AppColors.brandCyan.withValues(alpha: 0.70),
+              ),
+
+              const SizedBox(width: 12),
+
+              // Title + description + hint
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      item.title,
+                      style: AppTextStyles.bodyS.copyWith(
+                        color: done
+                            ? AppColors.textPrimary
+                            : AppColors.textSecondary,
+                        fontWeight: FontWeight.w600,
                       ),
-                      const SizedBox(width: 4),
-                      Expanded(
-                        child: Text(
-                          item.hint,
-                          style: AppTextStyles.caption.copyWith(
-                            color: AppColors.brandCyan.withValues(alpha: 0.80),
-                            fontWeight: FontWeight.w500,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      item.description,
+                      style: AppTextStyles.caption
+                          .copyWith(color: AppColors.textMuted),
+                    ),
+                    if (!done && item.hint.isNotEmpty) ...[
+                      const SizedBox(height: 5),
+                      Row(
+                        children: [
+                          Icon(
+                            Icons.arrow_forward_ios_rounded,
+                            size: 9,
+                            color: AppColors.brandCyan.withValues(alpha: 0.70),
                           ),
-                        ),
+                          const SizedBox(width: 4),
+                          Expanded(
+                            child: Text(
+                              item.hint,
+                              style: AppTextStyles.caption.copyWith(
+                                color:
+                                    AppColors.brandCyan.withValues(alpha: 0.80),
+                                fontWeight: FontWeight.w500,
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
                     ],
+                  ],
+                ),
+              ),
+
+              const SizedBox(width: 8),
+
+              // Points badge + chevron for tappable items
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: done
+                          ? AppColors.success.withValues(alpha: 0.10)
+                          : AppColors.bgElevated,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(
+                        color: done
+                            ? AppColors.success.withValues(alpha: 0.30)
+                            : AppColors.divider,
+                      ),
+                    ),
+                    child: Text(
+                      '+${item.points}',
+                      style: AppTextStyles.caption.copyWith(
+                        color:
+                            done ? AppColors.success : AppColors.textMuted,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
                   ),
+                  if (tappable) ...[
+                    const SizedBox(width: 6),
+                    const Icon(
+                      Icons.chevron_right_rounded,
+                      size: 18,
+                      color: AppColors.textMuted,
+                    ),
+                  ],
                 ],
-              ],
-            ),
-          ),
-
-          const SizedBox(width: 8),
-
-          // Points badge
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            decoration: BoxDecoration(
-              color: done
-                  ? AppColors.success.withValues(alpha: 0.10)
-                  : AppColors.bgElevated,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: done
-                    ? AppColors.success.withValues(alpha: 0.30)
-                    : AppColors.divider,
               ),
-            ),
-            child: Text(
-              '+${item.points}',
-              style: AppTextStyles.caption.copyWith(
-                color: done ? AppColors.success : AppColors.textMuted,
-                fontWeight: FontWeight.w700,
-              ),
-            ),
+            ],
           ),
-        ],
+        ),
       ),
     );
   }
+
+  static bool _hasDest(String id) => const {
+        'bio',
+        'interests',
+        'hobbies',
+        'preferences',
+        'photo_first',
+        'photo_three',
+        'video',
+        'live_selfie',
+      }.contains(id);
 }

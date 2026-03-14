@@ -7,6 +7,8 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/models/profile_completion.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
+import 'edit_profile_screen.dart';
+import 'gallery_screen.dart';
 import 'profile_checklist_screen.dart';
 
 /// Profile tab — redesigned to match reference layout.
@@ -127,9 +129,11 @@ class ProfileScreen extends StatelessWidget {
                       icon: Icons.edit_rounded,
                       label: 'Edit\nProfile',
                       color: AppColors.brandPink,
-                      onTap: () {
-                        // TODO: navigate to EditProfileScreen
-                      },
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const EditProfileScreen(),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
@@ -138,9 +142,11 @@ class ProfileScreen extends StatelessWidget {
                       icon: Icons.photo_library_outlined,
                       label: 'My\nGallery',
                       color: AppColors.brandCyan,
-                      onTap: () {
-                        // TODO: navigate to GalleryScreen
-                      },
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const GalleryScreen(),
+                        ),
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
