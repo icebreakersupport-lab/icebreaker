@@ -185,35 +185,43 @@ class _ProfilePhotoPair extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        _CirclePhoto(url: leftPhotoUrl, name: leftName),
-        const SizedBox(width: 8),
-        // Heart connector (centred between the two photos)
-        Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            gradient: AppColors.brandGradient,
-            shape: BoxShape.circle,
-            border: Border.all(color: AppColors.bgBase, width: 2),
-          ),
-          alignment: Alignment.center,
-          child: const Icon(Icons.favorite_rounded, size: 16, color: Colors.white),
-        ),
-        const SizedBox(width: 8),
-        _CirclePhoto(url: rightPhotoUrl, name: rightName),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 circles (3px padding each side) + heart(32) + gaps(8+8)
+        // Available = 4*(radius+3) + 48 → radius = (available-48)/4 - 3
+        final radius = ((constraints.maxWidth - 48) / 4 - 3).clamp(36.0, 58.0);
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _CirclePhoto(url: leftPhotoUrl, name: leftName, radius: radius),
+            const SizedBox(width: 8),
+            // Heart connector (centred between the two photos)
+            Container(
+              width: 32,
+              height: 32,
+              decoration: BoxDecoration(
+                gradient: AppColors.brandGradient,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.bgBase, width: 2),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.favorite_rounded, size: 16, color: Colors.white),
+            ),
+            const SizedBox(width: 8),
+            _CirclePhoto(url: rightPhotoUrl, name: rightName, radius: radius),
+          ],
+        );
+      },
     );
   }
 }
 
 class _CirclePhoto extends StatelessWidget {
-  const _CirclePhoto({required this.url, required this.name});
+  const _CirclePhoto({required this.url, required this.name, this.radius = 58});
   final String url;
   final String name;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
@@ -226,7 +234,7 @@ class _CirclePhoto extends StatelessWidget {
             gradient: AppColors.brandGradient,
           ),
           child: CircleAvatar(
-            radius: 58,
+            radius: radius,
             backgroundColor: AppColors.bgElevated,
             backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
             child: url.isEmpty

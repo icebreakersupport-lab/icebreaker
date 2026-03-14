@@ -331,82 +331,98 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Live state ────────────────────────────────────────────────────────────
 
   Widget _buildLiveState(LiveSession session) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 32),
-      child: Column(
-        children: [
-          const Spacer(flex: 2),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final h = constraints.maxHeight;
+        // All sizes derived from available height — clamp keeps them
+        // reasonable on both tiny phones and large macOS windows.
+        final logoSz = (h * 0.20).clamp(60.0, 120.0);
+        final selfSz = (h * 0.25).clamp(72.0, 150.0);
+        final vSm = (h * 0.025).clamp(6.0, 14.0);
+        final vMd = (h * 0.045).clamp(10.0, 28.0);
 
-          // Logo — heartbeat driven by LiveSession
-          const IcebreakerLogo(size: 120, showGlow: true),
-
-          const SizedBox(height: 14),
-
-          // Live badge
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-            decoration: BoxDecoration(
-              gradient: AppColors.brandGradient,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 32),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: h),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               children: [
+                SizedBox(height: vMd),
+
+                // Logo — heartbeat driven by LiveSession
+                IcebreakerLogo(size: logoSz, showGlow: true),
+
+                SizedBox(height: vSm),
+
+                // Live badge
                 Container(
-                  width: 8,
-                  height: 8,
-                  decoration: const BoxDecoration(
-                    color: Colors.white,
-                    shape: BoxShape.circle,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 20, vertical: 8),
+                  decoration: BoxDecoration(
+                    gradient: AppColors.brandGradient,
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 8,
+                        height: 8,
+                        decoration: const BoxDecoration(
+                          color: Colors.white,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        "YOU'RE LIVE",
+                        style: AppTextStyles.buttonS
+                            .copyWith(letterSpacing: 1.2),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
+
+                SizedBox(height: vSm),
+
+                // Live selfie avatar — size scales with available height
+                _buildLiveSelfieAvatar(session, selfSz),
+
+                SizedBox(height: vSm * 0.6),
+
                 Text(
-                  "YOU'RE LIVE",
-                  style: AppTextStyles.buttonS
-                      .copyWith(letterSpacing: 1.2),
+                  'People nearby can see you now',
+                  style: AppTextStyles.bodyS,
+                  textAlign: TextAlign.center,
                 ),
+
+                SizedBox(height: vMd * 1.6),
+
+                // Live countdown
+                Text(
+                  'Session expires in ${_formatDuration(session.remainingDuration)}',
+                  style: AppTextStyles.caption,
+                ),
+
+                SizedBox(height: vSm),
+
+                PillButton.outlined(
+                  label: 'End Session',
+                  onTap: _handleEndSession,
+                  width: double.infinity,
+                ),
+
+                SizedBox(height: vMd),
               ],
             ),
           ),
-
-          const SizedBox(height: 14),
-
-          // Live selfie avatar
-          _buildLiveSelfieAvatar(session),
-
-          const SizedBox(height: 10),
-
-          Text(
-            'People nearby can see you now',
-            style: AppTextStyles.bodyS,
-            textAlign: TextAlign.center,
-          ),
-
-          const Spacer(flex: 3),
-
-          // Live countdown
-          Text(
-            'Session expires in ${_formatDuration(session.remainingDuration)}',
-            style: AppTextStyles.caption,
-          ),
-
-          const SizedBox(height: 14),
-
-          PillButton.outlined(
-            label: 'End Session',
-            onTap: _handleEndSession,
-            width: double.infinity,
-          ),
-
-          const SizedBox(height: 16),
-        ],
-      ),
+        );
+      },
     );
   }
 
-  Widget _buildLiveSelfieAvatar(LiveSession session) {
+  Widget _buildLiveSelfieAvatar(LiveSession session, double size) {
     final path = session.selfieFilePath;
 
     return GestureDetector(
@@ -415,8 +431,8 @@ class _HomeScreenState extends State<HomeScreen> {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 180,
-            height: 180,
+            width: size,
+            height: size,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               border: Border.all(color: AppColors.brandPink, width: 2.5),
@@ -436,10 +452,10 @@ class _HomeScreenState extends State<HomeScreen> {
             child: ClipOval(
               child: path != null
                   ? Image.file(File(path), fit: BoxFit.cover)
-                  : const Icon(
+                  : Icon(
                       Icons.person_rounded,
                       color: AppColors.textMuted,
-                      size: 72,
+                      size: (size * 0.4).clamp(24.0, 72.0),
                     ),
             ),
           ),

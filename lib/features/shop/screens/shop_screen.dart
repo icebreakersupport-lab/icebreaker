@@ -543,10 +543,12 @@ class _SubscriptionCarouselState extends State<_SubscriptionCarousel> {
 
   @override
   Widget build(BuildContext context) {
+    final carouselH = (MediaQuery.of(context).size.height * 0.32)
+        .clamp(210.0, 280.0);
     return Column(
       children: [
         SizedBox(
-          height: 260,
+          height: carouselH,
           child: PageView(
             controller: _pageController,
             onPageChanged: _onPageChanged,

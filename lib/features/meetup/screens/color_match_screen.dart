@@ -74,16 +74,20 @@ class ColorMatchScreen extends StatelessWidget {
 
                   const Spacer(),
 
-                  // COLOR MATCH! label
-                  Text(
-                    'COLOR MATCH!',
-                    style: AppTextStyles.displayLabel.copyWith(
-                      fontSize: 40,
-                      letterSpacing: 2.0,
-                      foreground: Paint()
-                        ..shader = AppColors.brandGradient.createShader(
-                          const Rect.fromLTWH(0, 0, 360, 60),
-                        ),
+                  // COLOR MATCH! label — FittedBox prevents overflow on
+                  // narrow screens where fontSize: 40 is too wide.
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    child: Text(
+                      'COLOR MATCH!',
+                      style: AppTextStyles.displayLabel.copyWith(
+                        fontSize: 40,
+                        letterSpacing: 2.0,
+                        foreground: Paint()
+                          ..shader = AppColors.brandGradient.createShader(
+                            const Rect.fromLTWH(0, 0, 360, 60),
+                          ),
+                      ),
                     ),
                   ),
 

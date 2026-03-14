@@ -51,6 +51,10 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final h = MediaQuery.of(context).size.height;
+    // Avatar scales with screen height; clamped so it stays usable on all sizes.
+    final avatarRadius = (h * 0.11).clamp(56.0, 80.0);
+
     return GradientScaffold(
       body: SafeArea(
         child: Padding(
@@ -88,7 +92,7 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
                   ),
                 ),
                 child: CircleAvatar(
-                  radius: 80,
+                  radius: avatarRadius,
                   backgroundColor: AppColors.bgElevated,
                   backgroundImage: widget.otherPhotoUrl.isNotEmpty
                       ? NetworkImage(widget.otherPhotoUrl)

@@ -183,24 +183,31 @@ class _MatchPhotoPair extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        _PhotoCircle(url: leftUrl, name: leftName, matchColor: matchColor),
-        const SizedBox(width: 16),
-        Container(
-          width: 56,
-          height: 4,
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [matchColor, matchColor.withValues(alpha: 0.4)],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 2 circles (padding:4 each side) + line(56) + gaps(16+16)
+        // Available = 4*(radius+4) + 88 → radius = (available-88)/4 - 4
+        final radius = ((constraints.maxWidth - 88) / 4 - 4).clamp(36.0, 56.0);
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _PhotoCircle(url: leftUrl, name: leftName, matchColor: matchColor, radius: radius),
+            const SizedBox(width: 16),
+            Container(
+              width: 56,
+              height: 4,
+              decoration: BoxDecoration(
+                gradient: LinearGradient(
+                  colors: [matchColor, matchColor.withValues(alpha: 0.4)],
+                ),
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-            borderRadius: BorderRadius.circular(2),
-          ),
-        ),
-        const SizedBox(width: 16),
-        _PhotoCircle(url: rightUrl, name: rightName, matchColor: matchColor),
-      ],
+            const SizedBox(width: 16),
+            _PhotoCircle(url: rightUrl, name: rightName, matchColor: matchColor, radius: radius),
+          ],
+        );
+      },
     );
   }
 }
@@ -210,11 +217,13 @@ class _PhotoCircle extends StatelessWidget {
     required this.url,
     required this.name,
     required this.matchColor,
+    this.radius = 56,
   });
 
   final String url;
   final String name;
   final Color matchColor;
+  final double radius;
 
   @override
   Widget build(BuildContext context) {
@@ -229,7 +238,7 @@ class _PhotoCircle extends StatelessWidget {
             ),
           ),
           child: CircleAvatar(
-            radius: 56,
+            radius: radius,
             backgroundColor: AppColors.bgElevated,
             backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
             child: url.isEmpty
