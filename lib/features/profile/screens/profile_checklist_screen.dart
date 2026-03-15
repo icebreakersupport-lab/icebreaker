@@ -149,23 +149,42 @@ class _SummaryRow extends StatelessWidget {
     final done = score.completed.length;
     final total = score.items.length;
 
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        _SummaryChip(
-          label: '$done of $total items',
-          sublabel: 'completed',
-          color: AppColors.success,
-          icon: Icons.check_circle_rounded,
-        ),
-        const SizedBox(width: 12),
-        _SummaryChip(
-          label: '${score.earnedPoints} / ${score.totalPoints} pts',
-          sublabel: 'earned',
-          color: AppColors.brandCyan,
-          icon: Icons.star_rounded,
-        ),
-      ],
+    final itemsChip = _SummaryChip(
+      label: '$done of $total items',
+      sublabel: 'completed',
+      color: AppColors.success,
+      icon: Icons.check_circle_rounded,
+    );
+    final ptsChip = _SummaryChip(
+      label: '${score.earnedPoints} / ${score.totalPoints} pts',
+      sublabel: 'earned',
+      color: AppColors.brandCyan,
+      icon: Icons.star_rounded,
+    );
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Below 360 dp the two chips sitting side-by-side overflow.
+        // Stack them vertically and stretch each to full width instead.
+        if (constraints.maxWidth < 360) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              itemsChip,
+              const SizedBox(height: 10),
+              ptsChip,
+            ],
+          );
+        }
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            itemsChip,
+            const SizedBox(width: 12),
+            ptsChip,
+          ],
+        );
+      },
     );
   }
 }
