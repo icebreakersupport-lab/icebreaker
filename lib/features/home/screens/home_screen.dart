@@ -13,14 +13,18 @@ import '../../profile/screens/profile_screen.dart';
 import '../../shop/screens/shop_screen.dart';
 import 'live_verification_screen.dart';
 
+/// Below this width the Home screen switches to its compact layout mode.
+/// 400 dp covers all small phones and narrow macOS windows.
+const double _kNarrow = 400.0;
+
 /// Home tab — the "GO LIVE" entry point.
 ///
 /// Offline state: hero logo + GO LIVE CTA + supporting copy below.
 /// Live state: pulsing logo + YOU'RE LIVE badge + selfie avatar + countdown.
 ///
-/// Live state is owned by the global [LiveSession] via [LiveSessionScope].
-/// A per-second [Timer] drives the countdown — started/stopped automatically
-/// by [didChangeDependencies].
+/// Responsive behaviour (breakpoint: [_kNarrow] = 400 dp):
+///   • narrow  → compact stat strip, tighter padding, shorter copy, smaller CTA
+///   • normal  → two-card stat row, full padding, two-line copy, tall CTA
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
 
@@ -93,6 +97,9 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── App bar ───────────────────────────────────────────────────────────────
 
   PreferredSizeWidget _buildAppBar(LiveSession session) {
+    // Read width here so the SHOP button can compact on narrow screens.
+    final isNarrow = MediaQuery.of(context).size.width < _kNarrow;
+
     return AppBar(
       backgroundColor: Colors.transparent,
       elevation: 0,
@@ -148,9 +155,7 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ),
       ),
-      // "icebreaker •" — lowercase + green live-status dot
-      // FittedBox prevents 3.5px horizontal overflow when the leading avatar
-      // narrows the available center-slot width.
+      // "icebreaker •" — FittedBox prevents overflow on narrow windows.
       title: FittedBox(
         fit: BoxFit.scaleDown,
         child: Row(
@@ -177,7 +182,13 @@ class _HomeScreenState extends State<HomeScreen> {
       ),
       actions: [
         Padding(
-          padding: const EdgeInsets.only(right: 12, top: 9, bottom: 9),
+          // Narrow: less outer margin and less horizontal button padding so
+          // the title retains room in the AppBar center slot.
+          padding: EdgeInsets.only(
+            right: isNarrow ? 8 : 12,
+            top: 9,
+            bottom: 9,
+          ),
           child: GestureDetector(
             onTap: () => Navigator.of(context).push(
               MaterialPageRoute<void>(
@@ -185,7 +196,9 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ),
             child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
+              padding: EdgeInsets.symmetric(
+                horizontal: isNarrow ? 10 : 16,
+              ),
               decoration: BoxDecoration(
                 gradient: AppColors.brandGradient,
                 borderRadius: BorderRadius.circular(20),
@@ -204,7 +217,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 style: AppTextStyles.caption.copyWith(
                   color: Colors.white,
                   fontWeight: FontWeight.w800,
-                  letterSpacing: 1.6,
+                  letterSpacing: isNarrow ? 0.8 : 1.6,
                 ),
               ),
             ),
@@ -217,114 +230,175 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Offline state ─────────────────────────────────────────────────────────
 
   Widget _buildOfflineState() {
-    return Column(
-      children: [
-        const SizedBox(height: 16),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final isNarrow = constraints.maxWidth < _kNarrow;
+        final hPad = isNarrow ? 16.0 : 32.0;
 
-        // ── Status counters — between header and hero logo ─────────────
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Row(
-            children: [
-              Expanded(
-                child: _StatusPill(
-                  icon: Icons.bolt_rounded,
-                  iconColor: AppColors.brandPink,
-                  count: '1',
-                  label: 'Live Session',
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _StatusPill(
-                  icon: Icons.ac_unit_rounded,
-                  iconColor: AppColors.brandCyan,
-                  count: '3',
-                  label: 'Icebreakers',
-                ),
-              ),
-            ],
-          ),
-        ),
+        return Column(
+          children: [
+            SizedBox(height: isNarrow ? 10 : 16),
 
-        // ── Hero logo — Expanded so it takes all remaining vertical space
-        // between the status row and the CTA, never forcing an overflow.
-        // LayoutBuilder sizes the logo up to 480px based on actual height.
-        Expanded(
-          child: Stack(
-            alignment: Alignment.center,
-            clipBehavior: Clip.none,
-            children: [
-              // Ambient radial glow — Positioned so it doesn't affect layout
-              Positioned(
-                left: -80,
-                right: -80,
-                top: -80,
-                bottom: -80,
-                child: Container(
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: RadialGradient(
-                      colors: [
-                        AppColors.brandPink.withValues(alpha: 0.20),
-                        AppColors.brandPurple.withValues(alpha: 0.12),
-                        Colors.transparent,
-                      ],
-                      stops: const [0.0, 0.5, 1.0],
+            // ── Stat counters ──────────────────────────────────────────────
+            // Narrow: single compact strip (both stats inline, one card).
+            // Normal: two side-by-side tall cards.
+            Padding(
+              padding: EdgeInsets.symmetric(horizontal: hPad),
+              child: isNarrow
+                  ? _buildCompactStatStrip()
+                  : _buildFullStatRow(),
+            ),
+
+            // ── Hero logo ─────────────────────────────────────────────────
+            // Expanded so it fills the remaining vertical space without
+            // forcing the CTA off-screen. LayoutBuilder sizes the logo to
+            // the available height, capped at 480 dp.
+            Expanded(
+              child: Stack(
+                alignment: Alignment.center,
+                clipBehavior: Clip.none,
+                children: [
+                  // Ambient radial glow
+                  Positioned(
+                    left: -80,
+                    right: -80,
+                    top: -80,
+                    bottom: -80,
+                    child: Container(
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: RadialGradient(
+                          colors: [
+                            AppColors.brandPink.withValues(alpha: 0.20),
+                            AppColors.brandPurple.withValues(alpha: 0.12),
+                            Colors.transparent,
+                          ],
+                          stops: const [0.0, 0.5, 1.0],
+                        ),
+                      ),
                     ),
                   ),
-                ),
+                  // Logo — sized proportionally to the available height
+                  LayoutBuilder(
+                    builder: (_, c) {
+                      final size = c.maxHeight.clamp(80.0, 480.0);
+                      return IcebreakerLogo(size: size, showGlow: false);
+                    },
+                  ),
+                ],
               ),
-              // Logo — sized to available height, capped at 480px
-              LayoutBuilder(
-                builder: (_, constraints) {
-                  final size = constraints.maxHeight.clamp(100.0, 480.0);
-                  return IcebreakerLogo(size: size, showGlow: false);
-                },
+            ),
+
+            // ── CTA section ───────────────────────────────────────────────
+            Padding(
+              padding: EdgeInsets.fromLTRB(
+                hPad, 0, hPad, isNarrow ? 14 : 20,
               ),
-            ],
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  PillButton.primary(
+                    label: 'GO LIVE',
+                    onTap: _handleGoLive,
+                    width: double.infinity,
+                    // Narrow: slightly shorter button to save vertical space.
+                    height: isNarrow ? 58 : 68,
+                  ),
+
+                  SizedBox(height: isNarrow ? 10 : 16),
+
+                  // Primary supporting copy — condensed for narrow screens.
+                  Text(
+                    isNarrow
+                        ? 'Go Live — appear on nearby radars'
+                        : 'Go Live to appear on the radar for people around you',
+                    style: AppTextStyles.bodyS.copyWith(
+                      color: AppColors.textSecondary,
+                    ),
+                    textAlign: TextAlign.center,
+                  ),
+
+                  // Secondary copy — hidden on narrow to avoid crowding.
+                  if (!isNarrow) ...[
+                    const SizedBox(height: 4),
+                    Text(
+                      'Same building, venue, or nearby social setting',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                      textAlign: TextAlign.center,
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// Normal-width stat layout: two tall branded cards side by side.
+  Widget _buildFullStatRow() {
+    return Row(
+      children: [
+        Expanded(
+          child: _StatusPill(
+            icon: Icons.bolt_rounded,
+            iconColor: AppColors.brandPink,
+            count: '1',
+            label: 'Live Session',
           ),
         ),
-
-        // ── CTA section ───────────────────────────────────────────────────
-        Padding(
-          padding: const EdgeInsets.fromLTRB(28, 0, 28, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              // Primary CTA — tall, gradient pill, full width
-              PillButton.primary(
-                label: 'GO LIVE',
-                onTap: _handleGoLive,
-                width: double.infinity,
-                height: 68,
-              ),
-
-              const SizedBox(height: 16),
-
-              // Primary supporting copy
-              Text(
-                'Go Live to appear on the radar for people around you',
-                style: AppTextStyles.bodyS.copyWith(
-                  color: AppColors.textSecondary,
-                ),
-                textAlign: TextAlign.center,
-              ),
-
-              const SizedBox(height: 4),
-
-              // Secondary supporting copy
-              Text(
-                'Same building, venue, or nearby social setting',
-                style: AppTextStyles.caption.copyWith(
-                  color: AppColors.textMuted,
-                ),
-                textAlign: TextAlign.center,
-              ),
-            ],
+        const SizedBox(width: 12),
+        Expanded(
+          child: _StatusPill(
+            icon: Icons.ac_unit_rounded,
+            iconColor: AppColors.brandCyan,
+            count: '3',
+            label: 'Icebreakers',
           ),
         ),
       ],
+    );
+  }
+
+  /// Narrow-width stat layout: single slim card showing both stats inline
+  /// with a divider between them — never overflows on small screens.
+  Widget _buildCompactStatStrip() {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.divider),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _CompactStat(
+              icon: Icons.bolt_rounded,
+              iconColor: AppColors.brandPink,
+              count: '1',
+              label: 'Live Session',
+            ),
+          ),
+          Container(
+            width: 1,
+            height: 22,
+            color: AppColors.divider,
+            margin: const EdgeInsets.symmetric(horizontal: 10),
+          ),
+          Expanded(
+            child: _CompactStat(
+              icon: Icons.ac_unit_rounded,
+              iconColor: AppColors.brandCyan,
+              count: '3',
+              label: 'Icebreakers',
+            ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -639,11 +713,10 @@ class _SelfieExpandedDialog extends StatelessWidget {
   }
 }
 
-// ── Status pill ───────────────────────────────────────────────────────────────
+// ── Status pill (normal width) ────────────────────────────────────────────────
 
-/// Branded counter chip used on the Home offline state.
-/// Displays an icon, a bold count, and a muted label — styled with a dark
-/// surface, a soft colored border, and a matching neon glow shadow.
+/// Branded counter chip used on the Home offline state at normal widths.
+/// Displays an icon badge, a bold count, and a muted label.
 class _StatusPill extends StatelessWidget {
   const _StatusPill({
     required this.icon,
@@ -713,6 +786,53 @@ class _StatusPill extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+// ── Compact stat (narrow width) ───────────────────────────────────────────────
+
+/// Single inline stat entry used inside [_buildCompactStatStrip].
+/// Renders as: icon · bold count · muted label — all on one row.
+class _CompactStat extends StatelessWidget {
+  const _CompactStat({
+    required this.icon,
+    required this.iconColor,
+    required this.count,
+    required this.label,
+  });
+
+  final IconData icon;
+  final Color iconColor;
+  final String count;
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Icon(icon, color: iconColor, size: 15),
+        const SizedBox(width: 5),
+        Text(
+          count,
+          style: AppTextStyles.buttonS.copyWith(
+            fontWeight: FontWeight.w800,
+            color: AppColors.textPrimary,
+            height: 1.0,
+          ),
+        ),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            label,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+            ),
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
+      ],
     );
   }
 }
