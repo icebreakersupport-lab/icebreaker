@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/countdown_timer_widget.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/pill_button.dart';
-import '../../../core/constants/app_constants.dart';
 
 /// Screen shown to the recipient when an icebreaker is received.
 ///
@@ -53,7 +54,15 @@ class _IcebreakerReceivedScreenState
     setState(() => _isResponding = false);
 
     if (accept) {
-      // TODO: navigate to MatchedScreen with conversationId + meetupId
+      context.push(AppRoutes.matched, extra: {
+        'meetupId': 'demo_meetup_${widget.icebreakerId}',
+        'matchColor': AppColors.brandCyan,
+        'otherFirstName': widget.senderFirstName,
+        'otherPhotoUrl': widget.senderPhotoUrl,
+        'myFirstName': widget.myFirstName,
+        'myPhotoUrl': widget.myPhotoUrl,
+        'findSecondsRemaining': AppConstants.findTimerSeconds,
+      });
     } else {
       Navigator.of(context).pop();
     }
@@ -74,23 +83,26 @@ class _IcebreakerReceivedScreenState
             children: [
               const SizedBox(height: 24),
 
-              // ── MATCHED! label ───────────────────────────────────────────
-              ShaderMask(
-                shaderCallback: (bounds) =>
-                    AppColors.brandGradient.createShader(bounds),
-                child: Text(
-                  'MATCHED!',
-                  style: AppTextStyles.displayLabel.copyWith(
-                    fontSize: 44,
-                    letterSpacing: 2.5,
-                    color: Colors.white, // masked by shader
+              // ── Hero label ───────────────────────────────────────────────
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                child: ShaderMask(
+                  shaderCallback: (bounds) =>
+                      AppColors.brandGradient.createShader(bounds),
+                  child: Text(
+                    'New Icebreaker 🧊',
+                    style: AppTextStyles.displayLabel.copyWith(
+                      fontSize: 38,
+                      letterSpacing: 1.0,
+                      color: Colors.white, // masked by shader
+                    ),
                   ),
                 ),
               ),
 
               const SizedBox(height: 8),
               Text(
-                'You caught each other\'s eye',
+                'Respond before time runs out.',
                 style: AppTextStyles.bodyS,
               ),
 

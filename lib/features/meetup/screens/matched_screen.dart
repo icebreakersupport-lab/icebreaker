@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/countdown_timer_widget.dart';
@@ -43,14 +45,24 @@ class _MatchedScreenState extends State<MatchedScreen> {
 
   Future<void> _handleConfirm() async {
     setState(() => _isConfirming = true);
-    // TODO: call confirmMeeting() Cloud Function
     await Future.delayed(const Duration(milliseconds: 600));
     if (!mounted) return;
     setState(() {
       _isConfirming = false;
       _confirmed = true;
     });
-    // TODO: if both confirmed → navigate to ColorMatchScreen
+    // Demo: simulate the other person confirming after a short delay, then advance.
+    await Future.delayed(const Duration(milliseconds: 1500));
+    if (!mounted) return;
+    context.push(AppRoutes.colorMatch, extra: {
+      'meetupId': widget.meetupId,
+      'matchColor': widget.matchColor,
+      'otherFirstName': widget.otherFirstName,
+      'otherPhotoUrl': widget.otherPhotoUrl,
+      'myFirstName': widget.myFirstName,
+      'myPhotoUrl': widget.myPhotoUrl,
+      'conversationSecondsRemaining': AppConstants.conversationTimerSeconds,
+    });
   }
 
   @override
@@ -75,6 +87,18 @@ class _MatchedScreenState extends State<MatchedScreen> {
                     Colors.transparent,
                   ],
                 ),
+              ),
+            ),
+          ),
+
+          // Close button — exits back to Messages without completing the flow.
+          Positioned(
+            top: 0,
+            right: 0,
+            child: SafeArea(
+              child: IconButton(
+                icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                onPressed: () => context.go(AppRoutes.messages),
               ),
             ),
           ),

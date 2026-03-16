@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/pill_button.dart';
-import '../../../core/constants/app_constants.dart';
 
 /// Send Icebreaker screen.
 ///
@@ -63,12 +64,23 @@ class _SendIcebreakerScreenState extends State<SendIcebreakerScreen> {
   Future<void> _handleSend() async {
     if (!_canSend) return;
     setState(() => _isSending = true);
-    // TODO: call sendIcebreaker() Cloud Function with message
     await Future.delayed(const Duration(milliseconds: 800));
     if (!mounted) return;
     setState(() => _isSending = false);
-    Navigator.of(context).pop();
-    // TODO: show confirmation snack / navigate to Messages
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          'Icebreaker sent to ${widget.recipientFirstName}! 🧊',
+          style: AppTextStyles.caption.copyWith(color: Colors.white),
+        ),
+        backgroundColor: AppColors.bgElevated,
+        behavior: SnackBarBehavior.floating,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        margin: const EdgeInsets.all(16),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+    context.go(AppRoutes.messages);
   }
 
   @override

@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -36,7 +38,6 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
 
   Future<void> _submit(String decision) async {
     setState(() => _isSubmitting = true);
-    // TODO: call submitPostMeetDecision() Cloud Function
     await Future.delayed(const Duration(milliseconds: 600));
     if (!mounted) return;
     setState(() {
@@ -44,9 +45,17 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
       _myDecision = decision;
       _isWaiting = true;
     });
-    // TODO: listen for outcome on meetup doc and navigate accordingly
-    // - chat_unlocked → MatchConfirmedScreen
-    // - ended_gracefully → pop/dismiss
+    if (decision == 'we_got_this') {
+      // Demo: simulate the other person also saying yes, then unlock chat.
+      await Future.delayed(const Duration(seconds: 2));
+      if (!mounted) return;
+      context.push(AppRoutes.matchConfirmed, extra: {
+        'conversationId': 'demo_conv_${widget.meetupId}',
+        'otherFirstName': widget.otherFirstName,
+        'otherPhotoUrl': widget.otherPhotoUrl,
+        'matchColor': widget.matchColor,
+      });
+    }
   }
 
   @override
@@ -125,6 +134,7 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
                 _WaitingState(
                   decision: _myDecision!,
                   otherFirstName: widget.otherFirstName,
+                  onDone: () => context.go(AppRoutes.messages),
                 )
               else
                 _DecisionButtons(
@@ -192,10 +202,12 @@ class _WaitingState extends StatelessWidget {
   const _WaitingState({
     required this.decision,
     required this.otherFirstName,
+    this.onDone,
   });
 
   final String decision;
   final String otherFirstName;
+  final VoidCallback? onDone;
 
   @override
   Widget build(BuildContext context) {
@@ -225,6 +237,14 @@ class _WaitingState extends StatelessWidget {
           style: AppTextStyles.bodyS,
           textAlign: TextAlign.center,
         ),
+        if (!choseYes && onDone != null) ...[
+          const SizedBox(height: 24),
+          PillButton.outlined(
+            label: 'Back to Messages',
+            onTap: onDone,
+            width: double.infinity,
+          ),
+        ],
       ],
     );
   }

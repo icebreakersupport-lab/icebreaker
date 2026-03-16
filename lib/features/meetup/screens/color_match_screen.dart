@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/countdown_timer_widget.dart';
@@ -11,9 +13,9 @@ import '../../../shared/widgets/gradient_scaffold.dart';
 ///   - Large countdown timer centre-screen ("4:59")
 ///   - "COLOR MATCH!" label above the timer
 ///   - Both profile photo circles with match colour ring
-///   - "Meet up now!" / "You're together!" subtext
+///   - "You're together — make it count!" subtext
 ///   - Match colour ambient background fill
-class ColorMatchScreen extends StatelessWidget {
+class ColorMatchScreen extends StatefulWidget {
   const ColorMatchScreen({
     super.key,
     required this.meetupId,
@@ -34,129 +36,151 @@ class ColorMatchScreen extends StatelessWidget {
   final int conversationSecondsRemaining;
 
   @override
+  State<ColorMatchScreen> createState() => _ColorMatchScreenState();
+}
+
+class _ColorMatchScreenState extends State<ColorMatchScreen> {
+  @override
   Widget build(BuildContext context) {
     // Back navigation blocked — the conversation timer is active.
-    // The screen must advance forward naturally when the timer expires.
+    // The screen advances forward when the timer expires.
     return PopScope(
       canPop: false,
       child: GradientScaffold(
         body: Stack(
-        children: [
-          // Match colour ambient fill (radial from top)
-          Positioned.fill(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: RadialGradient(
-                  center: Alignment.topCenter,
-                  radius: 1.4,
-                  colors: [
-                    matchColor.withValues(alpha: 0.45),
-                    matchColor.withValues(alpha: 0.15),
-                    Colors.transparent,
-                  ],
-                  stops: const [0.0, 0.5, 1.0],
+          children: [
+            // Match colour ambient fill (radial from top)
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: RadialGradient(
+                    center: Alignment.topCenter,
+                    radius: 1.4,
+                    colors: [
+                      widget.matchColor.withValues(alpha: 0.45),
+                      widget.matchColor.withValues(alpha: 0.15),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.5, 1.0],
+                  ),
                 ),
               ),
             ),
-          ),
 
-          SafeArea(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 32),
-              child: Column(
-                children: [
-                  const SizedBox(height: 24),
+            SafeArea(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 32),
+                child: Column(
+                  children: [
+                    const SizedBox(height: 24),
 
-                  // Profile pair
-                  _MatchPhotoPair(
-                    leftUrl: myPhotoUrl,
-                    leftName: myFirstName,
-                    rightUrl: otherPhotoUrl,
-                    rightName: otherFirstName,
-                    matchColor: matchColor,
-                  ),
+                    // Profile pair
+                    _MatchPhotoPair(
+                      leftUrl: widget.myPhotoUrl,
+                      leftName: widget.myFirstName,
+                      rightUrl: widget.otherPhotoUrl,
+                      rightName: widget.otherFirstName,
+                      matchColor: widget.matchColor,
+                    ),
 
-                  const Spacer(),
+                    const Spacer(),
 
-                  // COLOR MATCH! label — FittedBox prevents overflow on
-                  // narrow screens where fontSize: 40 is too wide.
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    child: Text(
-                      'COLOR MATCH!',
-                      style: AppTextStyles.displayLabel.copyWith(
-                        fontSize: 40,
-                        letterSpacing: 2.0,
-                        foreground: Paint()
-                          ..shader = AppColors.brandGradient.createShader(
-                            const Rect.fromLTWH(0, 0, 360, 60),
-                          ),
+                    // COLOR MATCH! label — FittedBox prevents overflow on
+                    // narrow screens where fontSize: 40 is too wide.
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      child: Text(
+                        'COLOR MATCH!',
+                        style: AppTextStyles.displayLabel.copyWith(
+                          fontSize: 40,
+                          letterSpacing: 2.0,
+                          foreground: Paint()
+                            ..shader = AppColors.brandGradient.createShader(
+                              const Rect.fromLTWH(0, 0, 360, 60),
+                            ),
+                        ),
                       ),
                     ),
-                  ),
 
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 12),
 
-                  // Large countdown — the hero element
-                  CountdownTimerWidget(
-                    initialSeconds: conversationSecondsRemaining,
-                    onExpired: () {
-                      // TODO: move to post_meet when timer fires
-                      // (the server Cloud Task will also fire; client handles
-                      // the visual transition when the conversation doc updates)
-                    },
-                  ),
+                    // Large countdown — the hero element
+                    CountdownTimerWidget(
+                      initialSeconds: widget.conversationSecondsRemaining,
+                      onExpired: () {
+                        if (!mounted) return;
+                        context.push(AppRoutes.postMeet, extra: {
+                          'meetupId': widget.meetupId,
+                          'matchColor': widget.matchColor,
+                          'otherFirstName': widget.otherFirstName,
+                          'otherPhotoUrl': widget.otherPhotoUrl,
+                        });
+                      },
+                    ),
 
-                  const SizedBox(height: 12),
+                    const SizedBox(height: 12),
 
-                  Text(
-                    'You have ${conversationSecondsRemaining ~/ 60} minutes together.\nMake it count!',
-                    style: AppTextStyles.bodyS,
-                    textAlign: TextAlign.center,
-                  ),
+                    Text(
+                      "You're together — make it count!",
+                      style: AppTextStyles.bodyS,
+                      textAlign: TextAlign.center,
+                    ),
 
-                  const Spacer(),
+                    const Spacer(),
 
-                  // Match colour swatch pill
-                  Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-                    decoration: BoxDecoration(
-                      color: matchColor.withValues(alpha: 0.25),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: matchColor.withValues(alpha: 0.5),
+                    // Match colour swatch pill
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 20, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: widget.matchColor.withValues(alpha: 0.25),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(
+                          color: widget.matchColor.withValues(alpha: 0.5),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Container(
+                            width: 14,
+                            height: 14,
+                            decoration: BoxDecoration(
+                              color: widget.matchColor,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          Text(
+                            'Your match colour',
+                            style: AppTextStyles.bodyS
+                                .copyWith(color: widget.matchColor),
+                          ),
+                        ],
                       ),
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          width: 14,
-                          height: 14,
-                          decoration: BoxDecoration(
-                            color: matchColor,
-                            shape: BoxShape.circle,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Your match colour',
-                          style: AppTextStyles.bodyS.copyWith(
-                              color: matchColor),
-                        ),
-                      ],
-                    ),
-                  ),
 
-                  const SizedBox(height: 40),
-                ],
+                    const SizedBox(height: 40),
+                  ],
+                ),
               ),
             ),
-          ),
-        ],
+
+            // Close button — exits back to Messages without completing the flow.
+            Positioned(
+              top: 0,
+              right: 0,
+              child: SafeArea(
+                child: IconButton(
+                  icon: const Icon(Icons.close_rounded, color: Colors.white70),
+                  onPressed: () => context.go(AppRoutes.messages),
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
-    ));
+    );
   }
 }
 
@@ -222,8 +246,8 @@ class _RingedPhoto extends StatelessWidget {
               child: url.isEmpty
                   ? Text(
                       name.isNotEmpty ? name[0].toUpperCase() : '?',
-                      style: AppTextStyles.h2.copyWith(
-                          color: AppColors.textSecondary),
+                      style: AppTextStyles.h2
+                          .copyWith(color: AppColors.textSecondary),
                     )
                   : null,
             ),
