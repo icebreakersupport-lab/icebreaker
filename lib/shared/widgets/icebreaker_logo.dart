@@ -16,16 +16,22 @@ class IcebreakerLogo extends StatefulWidget {
     this.size = 120,
     this.showGlow = true,
     this.glowRadius = 1.4,
+    this.ambientGlow = 0.0,
   });
 
   /// Logical diameter of the bounding box.
   final double size;
 
-  /// Whether to render a radial ambient glow behind the logo.
+  /// Whether to render a radial ambient glow behind the logo when live.
   final bool showGlow;
 
   /// Size multiplier for the glow relative to [size].
   final double glowRadius;
+
+  /// Opacity (0.0–1.0) of a permanent soft glow rendered regardless of live
+  /// state. Use this in the AppBar where the logo should always feel vivid.
+  /// Stacks with [showGlow] when live — does not replace it.
+  final double ambientGlow;
 
   @override
   State<IcebreakerLogo> createState() => _IcebreakerLogoState();
@@ -104,7 +110,28 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
       child: Stack(
         alignment: Alignment.center,
         children: [
-          // Ambient glow — only visible when live for extra signal.
+          // Permanent ambient glow — rendered when ambientGlow > 0,
+          // regardless of live state. Keeps the logo vivid in the AppBar.
+          if (widget.ambientGlow > 0)
+            Container(
+              width: glowSize,
+              height: glowSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: RadialGradient(
+                  colors: [
+                    AppColors.brandPink
+                        .withValues(alpha: widget.ambientGlow * 0.28),
+                    AppColors.brandPurple
+                        .withValues(alpha: widget.ambientGlow * 0.16),
+                    Colors.transparent,
+                  ],
+                  stops: const [0.0, 0.55, 1.0],
+                ),
+              ),
+            ),
+
+          // Live-state glow — additional signal when the user is active.
           if (widget.showGlow && isLive)
             Container(
               width: glowSize,

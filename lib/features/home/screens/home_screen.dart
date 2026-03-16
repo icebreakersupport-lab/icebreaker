@@ -62,7 +62,13 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   void _handleGoLive() {
-    context.push(AppRoutes.liveVerify);
+    final session = LiveSessionScope.of(context);
+    if (session.liveCredits <= 0) {
+      // No credits remaining — send user to Shop to top up.
+      context.push(AppRoutes.shop);
+    } else {
+      context.push(AppRoutes.liveVerify);
+    }
   }
 
   void _handleEndSession() {
@@ -102,11 +108,12 @@ class _HomeScreenState extends State<HomeScreen> {
       // Icebreaker logo in top-left — static when offline, heartbeat when live.
       // Profile is still accessible via the bottom nav tab.
       leading: Padding(
-        padding: const EdgeInsets.only(left: 14),
+        padding: const EdgeInsets.only(left: 10),
         child: Center(
           child: IcebreakerLogo(
-            size: 30,
+            size: 38,
             showGlow: session.isLive,
+            ambientGlow: 1.0,
           ),
         ),
       ),
