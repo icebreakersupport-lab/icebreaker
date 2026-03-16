@@ -29,6 +29,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       bio: 'Enjoys podcasts, brunch and hiking',
       photoUrl: '',
       distanceMeters: 14,
+      lookingFor: 'Casual dating',
     ),
     _MockUser(
       id: '2',
@@ -38,6 +39,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       photoUrl: '',
       distanceMeters: 22,
       isGold: true,
+      lookingFor: 'Open to anything',
     ),
   ];
 
@@ -89,6 +91,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
           photoUrl: u.photoUrl,
           distanceMeters: u.distanceMeters,
           isGold: u.isGold,
+          lookingFor: u.lookingFor,
           onSendIcebreaker: () => _navigateSendIcebreaker(u),
         );
       },
@@ -185,6 +188,7 @@ class _MockUser {
     required this.photoUrl,
     required this.distanceMeters,
     this.isGold = false,
+    this.lookingFor,
   });
   final String id;
   final String firstName;
@@ -193,4 +197,5 @@ class _MockUser {
   final String photoUrl;
   final double distanceMeters;
   final bool isGold;
+  final String? lookingFor;
 }

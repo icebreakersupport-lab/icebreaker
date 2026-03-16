@@ -22,6 +22,7 @@ class CarouselCard extends StatelessWidget {
     this.selfieUrl,
     this.distanceMeters,
     this.isGold = false,
+    this.lookingFor,
     required this.onSendIcebreaker,
   });
 
@@ -32,6 +33,7 @@ class CarouselCard extends StatelessWidget {
   final String? selfieUrl;
   final double? distanceMeters;
   final bool isGold;
+  final String? lookingFor;
   final VoidCallback onSendIcebreaker;
 
   @override
@@ -163,8 +165,14 @@ class CarouselCard extends StatelessWidget {
                     maxLines: 2,
                     overflow: TextOverflow.ellipsis,
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 10),
                 ],
+
+                if (lookingFor != null) ...[
+                  _LookingForPill(value: lookingFor!),
+                  const SizedBox(height: 14),
+                ] else
+                  const SizedBox(height: 6),
 
                 PillButton.primary(
                   label: 'Send Icebreaker 🧊',
@@ -173,6 +181,43 @@ class CarouselCard extends StatelessWidget {
                   height: 56,
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LookingForPill extends StatelessWidget {
+  const _LookingForPill({required this.value});
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: AppColors.brandPink.withValues(alpha: 0.10),
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: AppColors.brandPink.withValues(alpha: 0.30),
+        ),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            Icons.favorite_border_rounded,
+            size: 13,
+            color: AppColors.brandPink.withValues(alpha: 0.85),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            value,
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.brandPink.withValues(alpha: 0.90),
+              fontWeight: FontWeight.w600,
             ),
           ),
         ],

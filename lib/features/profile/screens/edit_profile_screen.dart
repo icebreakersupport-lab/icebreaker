@@ -17,7 +17,7 @@ import '../../../shared/widgets/pill_button.dart';
 ///   4. Interests      — toggleable chip picker (min 3)
 ///   5. Hobbies        — toggleable chip picker (min 2)
 ///   6. Dating Prefs   — looking for, interested in, age range slider
-///   7. Profile Details — occupation, education, height
+///   7. Profile Details — occupation, height
 ///
 /// [initialSection] scrolls to and highlights the relevant section on open.
 /// Values: 'name_age' | 'bio' | 'interests' | 'hobbies' |
@@ -48,7 +48,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   late final TextEditingController _ageCtrl;
   late final TextEditingController _bioCtrl;
   late final TextEditingController _occupationCtrl;
-  late final TextEditingController _educationCtrl;
   late final TextEditingController _heightCtrl;
 
   // Chip-picker state
@@ -70,7 +69,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _ageCtrl = TextEditingController(text: '24');
     _bioCtrl = TextEditingController(text: '');
     _occupationCtrl = TextEditingController(text: 'Product Designer');
-    _educationCtrl = TextEditingController(text: "Bachelor's");
     _heightCtrl = TextEditingController(text: "5'10\"");
 
     _highlightedSection = widget.initialSection;
@@ -127,7 +125,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _ageCtrl.dispose();
     _bioCtrl.dispose();
     _occupationCtrl.dispose();
-    _educationCtrl.dispose();
     _heightCtrl.dispose();
     super.dispose();
   }
@@ -297,7 +294,6 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               highlight: _isHighlighted('details'),
               child: _DetailsSection(
                 occupationCtrl: _occupationCtrl,
-                educationCtrl: _educationCtrl,
                 heightCtrl: _heightCtrl,
               ),
             ),
@@ -973,10 +969,11 @@ class _PreferencesSection extends StatelessWidget {
           label: 'Looking for',
           value: lookingFor,
           options: const [
+            'Meet someone tonight',
             'Casual dating',
-            'Serious relationship',
-            'Friendship',
+            'Serious dating',
             'Open to anything',
+            'Friends / social',
           ],
           onChanged: onLookingForChanged,
         ),
@@ -1237,12 +1234,10 @@ class _PickerSheet extends StatelessWidget {
 class _DetailsSection extends StatelessWidget {
   const _DetailsSection({
     required this.occupationCtrl,
-    required this.educationCtrl,
     required this.heightCtrl,
   });
 
   final TextEditingController occupationCtrl;
-  final TextEditingController educationCtrl;
   final TextEditingController heightCtrl;
 
   @override
@@ -1253,12 +1248,6 @@ class _DetailsSection extends StatelessWidget {
           label: 'Occupation',
           ctrl: occupationCtrl,
           hint: 'e.g. Software Engineer',
-        ),
-        const SizedBox(height: 14),
-        _LabeledField(
-          label: 'Education',
-          ctrl: educationCtrl,
-          hint: "e.g. Bachelor's",
         ),
         const SizedBox(height: 14),
         _LabeledField(
