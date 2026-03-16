@@ -391,81 +391,68 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── Live state ────────────────────────────────────────────────────────────
 
+  /// Premium live-dashboard layout.
+  ///
+  /// Top-to-bottom:
+  ///   1. YOU'RE LIVE badge
+  ///   2. Branded countdown card
+  ///   3. Icebreakers / Live Sessions stat strip
+  ///   4. [flexible] pulsing logo + selfie avatar
+  ///   5. Supporting copy
+  ///   6. End Session button
   Widget _buildLiveState(LiveSession session) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        // All sizes derived from available height — clamp keeps them
-        // reasonable on both tiny phones and large macOS windows.
         final h = constraints.maxHeight;
-        final logoSz = (h * 0.20).clamp(60.0, 120.0);
-        final selfSz = (h * 0.25).clamp(72.0, 150.0);
-        final vSm = (h * 0.025).clamp(6.0, 14.0);
-        final vMd = (h * 0.045).clamp(10.0, 28.0);
+        // Sizes derived from available height — clamped for phones + macOS.
+        final logoSz = (h * 0.12).clamp(44.0, 80.0);
+        final selfSz = (h * 0.20).clamp(76.0, 140.0);
+        final vSm = (h * 0.020).clamp(5.0, 12.0);
+        final vMd = (h * 0.036).clamp(8.0, 20.0);
 
         return Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
+          padding: const EdgeInsets.symmetric(horizontal: 24),
           child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
+            crossAxisAlignment: CrossAxisAlignment.center,
             children: [
-              SizedBox(height: vMd),
+              SizedBox(height: vSm),
 
-              // Logo — heartbeat driven by LiveSession
-              IcebreakerLogo(size: logoSz, showGlow: true),
+              // ── 1. YOU'RE LIVE badge ───────────────────────────────────
+              const _LiveBadge(),
 
               SizedBox(height: vSm),
 
-              // Live badge
-              Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 20, vertical: 8),
-                decoration: BoxDecoration(
-                  gradient: AppColors.brandGradient,
-                  borderRadius: BorderRadius.circular(20),
-                ),
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
+              // ── 2. Branded countdown card ──────────────────────────────
+              _CountdownCard(duration: session.remainingDuration),
+
+              SizedBox(height: vMd),
+
+              // ── 3. Stat strip ──────────────────────────────────────────
+              _LiveStatStrip(session: session),
+
+              // ── 4. Logo + selfie (fills remaining vertical space) ──────
+              Expanded(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Container(
-                      width: 8,
-                      height: 8,
-                      decoration: const BoxDecoration(
-                        color: Colors.white,
-                        shape: BoxShape.circle,
-                      ),
-                    ),
-                    const SizedBox(width: 8),
+                    IcebreakerLogo(size: logoSz, showGlow: true),
+                    SizedBox(height: vSm * 0.9),
+                    _buildLiveSelfieAvatar(session, selfSz),
+                    SizedBox(height: vSm),
+
+                    // ── 5. Supporting copy ─────────────────────────────
                     Text(
-                      "YOU'RE LIVE",
-                      style: AppTextStyles.buttonS
-                          .copyWith(letterSpacing: 1.2),
+                      'People nearby can see you now',
+                      style: AppTextStyles.bodyS.copyWith(
+                        color: AppColors.textSecondary,
+                      ),
+                      textAlign: TextAlign.center,
                     ),
                   ],
                 ),
               ),
 
-              SizedBox(height: vSm),
-
-              // Live selfie avatar — size scales with available height
-              _buildLiveSelfieAvatar(session, selfSz),
-
-              SizedBox(height: vSm * 0.6),
-
-              Text(
-                'People nearby can see you now',
-                style: AppTextStyles.bodyS,
-                textAlign: TextAlign.center,
-              ),
-
-              SizedBox(height: vMd * 1.6),
-
-              // Live countdown
-              Text(
-                'Session expires in ${_formatDuration(session.remainingDuration)}',
-                style: AppTextStyles.caption,
-              ),
-
-              SizedBox(height: vSm),
-
+              // ── 6. End Session ─────────────────────────────────────────
               PillButton.outlined(
                 label: 'End Session',
                 onTap: _handleEndSession,
@@ -480,59 +467,41 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
+  /// Live selfie avatar — tappable to expand.
+  /// Label intentionally omitted; the selfie context is clear from the layout.
   Widget _buildLiveSelfieAvatar(LiveSession session, double size) {
     final path = session.selfieFilePath;
 
     return GestureDetector(
       onTap: path != null ? () => _showSelfieExpanded(context, session) : null,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: size,
-            height: size,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.brandPink, width: 2.5),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.brandPink.withValues(alpha: 0.38),
-                  blurRadius: 32,
-                  spreadRadius: 4,
-                ),
-                BoxShadow(
-                  color: AppColors.brandPurple.withValues(alpha: 0.22),
-                  blurRadius: 56,
-                  spreadRadius: 6,
-                ),
-              ],
+      child: Container(
+        width: size,
+        height: size,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(color: AppColors.brandPink, width: 2.5),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.brandPink.withValues(alpha: 0.38),
+              blurRadius: 32,
+              spreadRadius: 4,
             ),
-            child: ClipOval(
-              child: path != null
-                  ? Image.file(File(path), fit: BoxFit.cover)
-                  : Icon(
-                      Icons.person_rounded,
-                      color: AppColors.textMuted,
-                      size: (size * 0.4).clamp(24.0, 72.0),
-                    ),
+            BoxShadow(
+              color: AppColors.brandPurple.withValues(alpha: 0.22),
+              blurRadius: 56,
+              spreadRadius: 6,
             ),
-          ),
-          const SizedBox(height: 8),
-          Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text('Your live photo', style: AppTextStyles.caption),
-              if (path != null) ...[
-                const SizedBox(width: 5),
-                Icon(
-                  Icons.open_in_full_rounded,
-                  size: 11,
-                  color: AppColors.textMuted.withValues(alpha: 0.6),
+          ],
+        ),
+        child: ClipOval(
+          child: path != null
+              ? Image.file(File(path), fit: BoxFit.cover)
+              : Icon(
+                  Icons.person_rounded,
+                  color: AppColors.textMuted,
+                  size: (size * 0.4).clamp(24.0, 72.0),
                 ),
-              ],
-            ],
-          ),
-        ],
+        ),
       ),
     );
   }
@@ -551,14 +520,180 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  // ── Helpers ───────────────────────────────────────────────────────────────
+}
 
-  String _formatDuration(Duration d) {
+// ── Live badge ────────────────────────────────────────────────────────────────
+
+/// Gradient pill showing "YOU'RE LIVE" with a pulsing-white status dot.
+class _LiveBadge extends StatelessWidget {
+  const _LiveBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+      decoration: BoxDecoration(
+        gradient: AppColors.brandGradient,
+        borderRadius: BorderRadius.circular(22),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.brandPink.withValues(alpha: 0.35),
+            blurRadius: 18,
+            spreadRadius: 0,
+            offset: const Offset(0, 2),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 8,
+            height: 8,
+            decoration: const BoxDecoration(
+              color: Colors.white,
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 9),
+          Text(
+            "YOU'RE LIVE",
+            style: AppTextStyles.buttonS.copyWith(
+              letterSpacing: 1.4,
+              fontWeight: FontWeight.w800,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Countdown card ────────────────────────────────────────────────────────────
+
+/// Branded session-time card — the centrepiece of the live status header.
+///
+/// Shows: "SESSION TIME" overline · large gradient countdown · "remaining" label.
+/// Pink border + glow makes it feel like an active, important system readout.
+class _CountdownCard extends StatelessWidget {
+  const _CountdownCard({required this.duration});
+  final Duration duration;
+
+  String _format(Duration d) {
     if (d <= Duration.zero) return '0:00:00';
     final h = d.inHours;
     final m = d.inMinutes.remainder(60).toString().padLeft(2, '0');
     final s = d.inSeconds.remainder(60).toString().padLeft(2, '0');
     return '$h:$m:$s';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: AppColors.brandPink.withValues(alpha: 0.38),
+          width: 1.5,
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.brandPink.withValues(alpha: 0.14),
+            blurRadius: 24,
+            spreadRadius: 0,
+          ),
+          BoxShadow(
+            color: AppColors.brandPurple.withValues(alpha: 0.10),
+            blurRadius: 40,
+            spreadRadius: 4,
+          ),
+        ],
+      ),
+      child: Column(
+        children: [
+          Text(
+            'SESSION TIME',
+            style: AppTextStyles.overline.copyWith(
+              color: AppColors.textMuted,
+              letterSpacing: 1.6,
+            ),
+          ),
+          const SizedBox(height: 6),
+          ShaderMask(
+            shaderCallback: (bounds) =>
+                AppColors.brandGradient.createShader(bounds),
+            blendMode: BlendMode.srcIn,
+            child: Text(
+              _format(duration),
+              style: AppTextStyles.h1.copyWith(
+                fontSize: 40,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 2.5,
+                color: Colors.white,
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'remaining',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Live stat strip ───────────────────────────────────────────────────────────
+
+/// Compact two-stat strip shown on the live-state Home screen.
+/// Mirrors the offline compact strip but is always shown (never switches
+/// to the tall two-card layout) since screen real estate is tighter.
+class _LiveStatStrip extends StatelessWidget {
+  const _LiveStatStrip({required this.session});
+  final LiveSession session;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.divider),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _CompactStat(
+              icon: Icons.ac_unit_rounded,
+              iconColor: AppColors.brandCyan,
+              count: '3',
+              label: 'Icebreakers',
+            ),
+          ),
+          Container(
+            width: 1,
+            height: 22,
+            color: AppColors.divider,
+            margin: const EdgeInsets.symmetric(horizontal: 10),
+          ),
+          Expanded(
+            child: _CompactStat(
+              icon: Icons.bolt_rounded,
+              iconColor: AppColors.brandPink,
+              count: '${session.liveCredits}',
+              label: 'Live Sessions',
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
