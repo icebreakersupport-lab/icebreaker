@@ -12,23 +12,17 @@ import 'camera_capture_screen.dart';
 /// My Gallery screen — fully functional photo and video management.
 ///
 /// Photos (up to 6):
-///   - Tap an empty slot → bottom sheet: "Choose from Files" or "Take with Camera"
+///   - Tap an empty slot → bottom sheet: "Choose from Files" / "Take with Camera"
 ///   - Tap a filled slot → bottom sheet: "Replace", "Set as Main", "Remove"
-///   - Slot 0 is always the main profile photo (shown with MAIN badge)
-///   - Real thumbnails displayed via [Image.file]
+///   - Long-press drag a filled slot onto any other slot to swap positions.
+///   - Slot 0 is always the main profile photo (MAIN badge + pink border).
 ///
 /// Intro Video (1 optional):
-///   - Tap empty → bottom sheet: "Choose Video File"
-///   - Tap filled → bottom sheet: "Replace", "Remove"
-///   - On macOS, camera video recording is not available (file picker only).
-///     The action sheet explains this clearly rather than silently failing.
+///   - Tap empty → "Choose Video File" (file picker only on macOS)
+///   - Tap filled → "Replace", "Remove"
+///   - macOS: camera video recording is not available; info note explains this.
 ///
-/// [scrollToVideo] jumps to the video section on open — used when the
-/// user taps the "Intro Video" checklist item.
-///
-/// macOS sandbox:
-///   Requires com.apple.security.files.user-selected.read-write entitlement.
-///   [image_picker] opens NSOpenPanel; [camera] uses AVFoundation for photos.
+/// [scrollToVideo] jumps to the video section on open (used from checklist).
 class GalleryScreen extends StatefulWidget {
   const GalleryScreen({super.key, this.scrollToVideo = false});
   final bool scrollToVideo;
@@ -42,7 +36,6 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final _videoKey = GlobalKey();
   final _picker = ImagePicker();
 
-  // Convenience accessor — photos and video live in DemoProfileScope.
   DemoProfile get _profile => DemoProfileScope.of(context);
   List<XFile?> get _photos => _profile.photos;
   XFile? get _video => _profile.video;
@@ -72,15 +65,12 @@ class _GalleryScreenState extends State<GalleryScreen> {
 
   // ── Media actions ──────────────────────────────────────────────────────────
 
-  /// Opens the system file picker and returns a picked image, or null.
   Future<XFile?> _pickImageFromFiles() =>
       _picker.pickImage(source: ImageSource.gallery, imageQuality: 90);
 
-  /// Opens the system file picker and returns a picked video, or null.
   Future<XFile?> _pickVideoFromFiles() =>
       _picker.pickVideo(source: ImageSource.gallery);
 
-  /// Navigates to [CameraPhotoScreen] and returns the captured [XFile], or null.
   Future<XFile?> _takePhotoWithCamera() {
     return Navigator.of(context).push<XFile?>(
       MaterialPageRoute<XFile?>(
@@ -90,7 +80,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
     );
   }
 
-  // ── Photo slot handlers ────────────────────────────────────────────────────
+  // ── Photo slot handler ─────────────────────────────────────────────────────
 
   void _onPhotoSlotTap(int index) {
     final isEmpty = _photos[index] == null;
@@ -103,19 +93,16 @@ class _GalleryScreenState extends State<GalleryScreen> {
       builder: (sheetCtx) => _PhotoActionSheet(
         isEmpty: isEmpty,
         isMainSlot: index == 0,
+        showCamera: !Platform.isMacOS,
         onChooseFile: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _pickImageFromFiles();
-          if (xFile != null && mounted) {
-            _profile.setPhoto(index, xFile);
-          }
+          if (xFile != null && mounted) _profile.setPhoto(index, xFile);
         },
         onTakePhoto: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _takePhotoWithCamera();
-          if (xFile != null && mounted) {
-            _profile.setPhoto(index, xFile);
-          }
+          if (xFile != null && mounted) _profile.setPhoto(index, xFile);
         },
         onSetAsMain: (isEmpty || index == 0)
             ? null
@@ -147,9 +134,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
         onChooseFile: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _pickVideoFromFiles();
-          if (xFile != null && mounted) {
-            _profile.setVideo(xFile);
-          }
+          if (xFile != null && mounted) _profile.setVideo(xFile);
         },
         onRemove: _video == null
             ? null
@@ -158,6 +143,97 @@ class _GalleryScreenState extends State<GalleryScreen> {
                 _profile.setVideo(null);
               },
       ),
+    );
+  }
+
+  // ── Photo grid ─────────────────────────────────────────────────────────────
+
+  /// Builds the 3-column (or 2-column on narrow screens) drag-reorderable grid.
+  ///
+  /// Each cell is wrapped in [DragTarget] (accepts drop) AND [LongPressDraggable]
+  /// (initiates drag on filled slots). Swapping is done via [DemoProfile.swapPhotos]
+  /// which triggers [notifyListeners] so the entire tree rebuilds.
+  Widget _buildPhotoGrid() {
+    return LayoutBuilder(
+      builder: (ctx, constraints) {
+        final cols = constraints.maxWidth < 300 ? 2 : 3;
+        // Slot dimensions — needed for the floating drag feedback widget.
+        final slotW = (constraints.maxWidth - 10.0 * (cols - 1)) / cols;
+        final slotH = slotW * (4 / 3);
+
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: cols,
+            crossAxisSpacing: 10,
+            mainAxisSpacing: 10,
+            childAspectRatio: 3 / 4,
+          ),
+          itemCount: 6,
+          itemBuilder: (_, i) => _buildPhotoCell(i, slotW, slotH),
+        );
+      },
+    );
+  }
+
+  Widget _buildPhotoCell(int index, double slotW, double slotH) {
+    final hasPhoto = _photos[index] != null;
+
+    // DragTarget is outermost so every cell can receive a drop regardless of
+    // whether it's a drag source. onWillAccept returning false moves the data
+    // to rejectedData, keeping candidateData empty for the source slot itself
+    // — so isDropHover stays false on the cell being dragged.
+    return DragTarget<int>(
+      onWillAcceptWithDetails: (details) => details.data != index,
+      onAcceptWithDetails: (details) {
+        if (details.data != index) _profile.swapPhotos(details.data, index);
+      },
+      builder: (ctx, candidateData, rejectedData) {
+        final isDropHover = candidateData.isNotEmpty;
+
+        final photoSlot = _PhotoSlot(
+          index: index,
+          xFile: _photos[index],
+          onTap: () => _onPhotoSlotTap(index),
+          isDropTarget: isDropHover,
+        );
+
+        // Empty slots are drop targets only — no dragging from them.
+        if (!hasPhoto) return photoSlot;
+
+        return LongPressDraggable<int>(
+          data: index,
+          delay: const Duration(milliseconds: 350),
+
+          // Floating image that follows the pointer during drag.
+          feedback: Material(
+            color: Colors.transparent,
+            elevation: 10,
+            shadowColor: Colors.black.withValues(alpha: 0.35),
+            borderRadius: BorderRadius.circular(14),
+            child: SizedBox(
+              width: slotW,
+              height: slotH,
+              child: Opacity(
+                opacity: 0.92,
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(14),
+                  child: Image.file(
+                    File(_photos[index]!.path),
+                    fit: BoxFit.cover,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          // Placeholder shown in the source slot while dragging.
+          childWhenDragging: const _DragPlaceholder(),
+
+          child: photoSlot,
+        );
+      },
     );
   }
 
@@ -187,18 +263,14 @@ class _GalleryScreenState extends State<GalleryScreen> {
             Row(
               children: [
                 Text('Photos', style: AppTextStyles.h3),
-                const SizedBox(width: 8),
+                const SizedBox(width: 10),
+                // Animated photo-count badge
                 AnimatedSwitcher(
                   duration: const Duration(milliseconds: 250),
-                  child: Text(
-                    '$_photoCount / 6',
+                  child: _CountBadge(
                     key: ValueKey(_photoCount),
-                    style: AppTextStyles.caption.copyWith(
-                      color: _photoCount > 0
-                          ? AppColors.success
-                          : AppColors.textMuted,
-                      fontWeight: FontWeight.w600,
-                    ),
+                    count: _photoCount,
+                    total: 6,
                   ),
                 ),
               ],
@@ -206,34 +278,38 @@ class _GalleryScreenState extends State<GalleryScreen> {
             const SizedBox(height: 4),
             Text(
               'First photo is your main profile photo. Up to 6 total.',
-              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+              style: AppTextStyles.caption
+                  .copyWith(color: AppColors.textMuted),
             ),
             const SizedBox(height: 14),
 
             // ── Photo grid ─────────────────────────────────────────────────
-            LayoutBuilder(
-              builder: (ctx, constraints) {
-                final cols = constraints.maxWidth < 300 ? 2 : 3;
-                return GridView.builder(
-                  shrinkWrap: true,
-                  physics: const NeverScrollableScrollPhysics(),
-                  gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                    crossAxisCount: cols,
-                    crossAxisSpacing: 10,
-                    mainAxisSpacing: 10,
-                    childAspectRatio: 3 / 4,
-                  ),
-                  itemCount: 6,
-                  itemBuilder: (_, i) => _PhotoSlot(
-                    index: i,
-                    xFile: _photos[i],
-                    onTap: () => _onPhotoSlotTap(i),
-                  ),
-                );
-              },
-            ),
+            _buildPhotoGrid(),
 
-            const SizedBox(height: 28),
+            // Reorder hint — only when ≥ 2 photos so hint is actionable.
+            if (_photoCount >= 2) ...[
+              const SizedBox(height: 10),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.drag_indicator_rounded,
+                    size: 13,
+                    color: AppColors.textMuted.withValues(alpha: 0.50),
+                  ),
+                  const SizedBox(width: 5),
+                  Text(
+                    'Long press to reorder',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textMuted.withValues(alpha: 0.60),
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ],
+
+            const SizedBox(height: 32),
 
             // ── Video header ───────────────────────────────────────────────
             Row(
@@ -247,7 +323,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
             const SizedBox(height: 4),
             Text(
               'A short intro video (up to 30 s) shows on your profile card.',
-              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+              style: AppTextStyles.caption
+                  .copyWith(color: AppColors.textMuted),
             ),
             const SizedBox(height: 14),
 
@@ -267,41 +344,64 @@ class _PhotoSlot extends StatelessWidget {
     required this.index,
     required this.xFile,
     required this.onTap,
+    this.isDropTarget = false,
   });
 
   final int index;
   final XFile? xFile;
   final VoidCallback onTap;
 
+  /// Highlight this slot as a valid drop target while a drag hovers over it.
+  final bool isDropTarget;
+
   @override
   Widget build(BuildContext context) {
     final isMain = index == 0;
     final hasPhoto = xFile != null;
 
+    final borderColor = isDropTarget
+        ? AppColors.brandCyan.withValues(alpha: 0.85)
+        : isMain
+            ? AppColors.brandPink
+                .withValues(alpha: hasPhoto ? 0.60 : 0.40)
+            : hasPhoto
+                ? AppColors.success.withValues(alpha: 0.30)
+                : AppColors.divider;
+
+    final borderWidth = isDropTarget ? 2.0 : (isMain || hasPhoto) ? 1.5 : 1.0;
+
     return GestureDetector(
       onTap: onTap,
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 200),
+        duration: const Duration(milliseconds: 180),
         decoration: BoxDecoration(
-          color: AppColors.bgSurface,
+          color: isDropTarget
+              ? AppColors.brandCyan.withValues(alpha: 0.08)
+              : AppColors.bgSurface,
           borderRadius: BorderRadius.circular(14),
-          border: Border.all(
-            color: isMain
-                ? AppColors.brandPink.withValues(alpha: hasPhoto ? 0.60 : 0.40)
-                : hasPhoto
-                    ? AppColors.success.withValues(alpha: 0.30)
-                    : AppColors.divider,
-            width: (isMain || hasPhoto) ? 1.5 : 1.0,
-          ),
+          border: Border.all(color: borderColor, width: borderWidth),
+          boxShadow: isDropTarget
+              ? [
+                  BoxShadow(
+                    color: AppColors.brandCyan.withValues(alpha: 0.28),
+                    blurRadius: 14,
+                    spreadRadius: 0,
+                  ),
+                ]
+              : null,
         ),
         child: ClipRRect(
           borderRadius: BorderRadius.circular(13),
-          child: hasPhoto ? _FilledSlot(xFile: xFile!, isMain: isMain) : _EmptySlot(isMain: isMain),
+          child: hasPhoto
+              ? _FilledSlot(xFile: xFile!, isMain: isMain)
+              : _EmptySlot(index: index),
         ),
       ),
     );
   }
 }
+
+// ── Filled slot ───────────────────────────────────────────────────────────────
 
 class _FilledSlot extends StatelessWidget {
   const _FilledSlot({required this.xFile, required this.isMain});
@@ -313,15 +413,13 @@ class _FilledSlot extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        // Thumbnail
+        // Full-bleed thumbnail
         Image.file(File(xFile.path), fit: BoxFit.cover),
 
-        // Scrim so overlays are readable
+        // Bottom scrim so badges are readable
         Positioned(
-          bottom: 0,
-          left: 0,
-          right: 0,
-          height: 40,
+          bottom: 0, left: 0, right: 0,
+          height: 48,
           child: DecoratedBox(
             decoration: BoxDecoration(
               gradient: LinearGradient(
@@ -329,21 +427,20 @@ class _FilledSlot extends StatelessWidget {
                 end: Alignment.bottomCenter,
                 colors: [
                   Colors.transparent,
-                  Colors.black.withValues(alpha: 0.55),
+                  Colors.black.withValues(alpha: 0.62),
                 ],
               ),
             ),
           ),
         ),
 
-        // MAIN badge
+        // MAIN badge — bottom-left
         if (isMain)
           Positioned(
             bottom: 6,
             left: 6,
             child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
               decoration: BoxDecoration(
                 gradient: AppColors.brandGradient,
                 borderRadius: BorderRadius.circular(8),
@@ -360,19 +457,33 @@ class _FilledSlot extends StatelessWidget {
             ),
           ),
 
-        // Edit icon
+        // Edit icon — top-right
         Positioned(
-          top: 6,
-          right: 6,
+          top: 6, right: 6,
           child: Container(
-            width: 24,
-            height: 24,
+            width: 26, height: 26,
             decoration: BoxDecoration(
-              color: Colors.black.withValues(alpha: 0.50),
+              color: Colors.black.withValues(alpha: 0.52),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.edit_rounded,
-                size: 12, color: Colors.white),
+            child: const Icon(Icons.edit_rounded, size: 13, color: Colors.white),
+          ),
+        ),
+
+        // Drag handle — top-left (visual affordance for reorder)
+        Positioned(
+          top: 6, left: 6,
+          child: Container(
+            width: 22, height: 22,
+            decoration: BoxDecoration(
+              color: Colors.black.withValues(alpha: 0.40),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Icon(
+              Icons.drag_indicator_rounded,
+              size: 13,
+              color: Colors.white.withValues(alpha: 0.75),
+            ),
           ),
         ),
       ],
@@ -380,12 +491,15 @@ class _FilledSlot extends StatelessWidget {
   }
 }
 
+// ── Empty slot ────────────────────────────────────────────────────────────────
+
 class _EmptySlot extends StatelessWidget {
-  const _EmptySlot({required this.isMain});
-  final bool isMain;
+  const _EmptySlot({required this.index});
+  final int index;
 
   @override
   Widget build(BuildContext context) {
+    final isMain = index == 0;
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
@@ -405,7 +519,92 @@ class _EmptySlot extends StatelessWidget {
           ),
           textAlign: TextAlign.center,
         ),
+        // Slot number hint on non-main empty slots
+        if (!isMain) ...[
+          const SizedBox(height: 3),
+          Text(
+            '${index + 1} of 6',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted.withValues(alpha: 0.40),
+              fontSize: 9,
+            ),
+          ),
+        ],
       ],
+    );
+  }
+}
+
+// ── Drag placeholder ──────────────────────────────────────────────────────────
+
+/// Shown in-place in the original grid cell while a photo is being dragged.
+/// Fills the grid cell (no explicit dimensions — constrained by grid delegate).
+class _DragPlaceholder extends StatelessWidget {
+  const _DragPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.bgElevated,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppColors.brandPink.withValues(alpha: 0.40),
+          width: 1.5,
+        ),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.swap_vert_rounded,
+            size: 22,
+            color: AppColors.brandPink.withValues(alpha: 0.50),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Moving…',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.brandPink.withValues(alpha: 0.55),
+              fontSize: 10,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Count badge ───────────────────────────────────────────────────────────────
+
+class _CountBadge extends StatelessWidget {
+  const _CountBadge({super.key, required this.count, required this.total});
+  final int count;
+  final int total;
+
+  @override
+  Widget build(BuildContext context) {
+    final filled = count > 0;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+      decoration: BoxDecoration(
+        color: filled
+            ? AppColors.success.withValues(alpha: 0.12)
+            : AppColors.bgElevated,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(
+          color: filled
+              ? AppColors.success.withValues(alpha: 0.35)
+              : AppColors.divider,
+        ),
+      ),
+      child: Text(
+        '$count / $total',
+        style: AppTextStyles.caption.copyWith(
+          color: filled ? AppColors.success : AppColors.textMuted,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
     );
   }
 }
@@ -431,22 +630,35 @@ class _VideoSlot extends StatelessWidget {
         duration: const Duration(milliseconds: 200),
         padding: hasVideo
             ? const EdgeInsets.all(16)
-            : const EdgeInsets.symmetric(vertical: 32, horizontal: 16),
+            : const EdgeInsets.symmetric(vertical: 28, horizontal: 16),
         decoration: BoxDecoration(
           color: AppColors.bgSurface,
           borderRadius: BorderRadius.circular(16),
           border: Border.all(
             color: hasVideo
                 ? AppColors.brandCyan.withValues(alpha: 0.55)
-                : AppColors.brandCyan.withValues(alpha: 0.30),
+                : AppColors.brandCyan.withValues(alpha: 0.28),
             width: hasVideo ? 1.5 : 1.0,
           ),
+          boxShadow: hasVideo
+              ? [
+                  BoxShadow(
+                    color: AppColors.brandCyan.withValues(alpha: 0.10),
+                    blurRadius: 18,
+                    spreadRadius: 0,
+                  ),
+                ]
+              : null,
         ),
-        child: hasVideo ? _VideoPresent(filename: _filename) : _VideoEmpty(),
+        child: hasVideo
+            ? _VideoPresent(filename: _filename)
+            : const _VideoEmpty(),
       ),
     );
   }
 }
+
+// ── Video present state ───────────────────────────────────────────────────────
 
 class _VideoPresent extends StatelessWidget {
   const _VideoPresent({required this.filename});
@@ -456,15 +668,19 @@ class _VideoPresent extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
+        // Gradient video icon box — signals the file is active
         Container(
-          width: 52,
-          height: 52,
+          width: 54, height: 54,
           decoration: BoxDecoration(
-            color: AppColors.brandCyan.withValues(alpha: 0.10),
-            borderRadius: BorderRadius.circular(12),
+            gradient: const LinearGradient(
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+              colors: [AppColors.brandCyan, AppColors.brandPurple],
+            ),
+            borderRadius: BorderRadius.circular(14),
           ),
           child: const Icon(Icons.videocam_rounded,
-              color: AppColors.brandCyan, size: 28),
+              color: Colors.white, size: 26),
         ),
         const SizedBox(width: 14),
         Expanded(
@@ -474,7 +690,7 @@ class _VideoPresent extends StatelessWidget {
               Row(
                 children: [
                   const Icon(Icons.check_circle_rounded,
-                      color: AppColors.success, size: 14),
+                      color: AppColors.success, size: 15),
                   const SizedBox(width: 5),
                   Text(
                     'Intro video added',
@@ -485,12 +701,20 @@ class _VideoPresent extends StatelessWidget {
                   ),
                 ],
               ),
-              const SizedBox(height: 3),
+              const SizedBox(height: 4),
               Text(
                 filename,
                 style: AppTextStyles.caption
                     .copyWith(color: AppColors.textMuted),
                 overflow: TextOverflow.ellipsis,
+              ),
+              const SizedBox(height: 3),
+              Text(
+                'Tap to replace or remove',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted.withValues(alpha: 0.50),
+                  fontSize: 10,
+                ),
               ),
             ],
           ),
@@ -498,29 +722,57 @@ class _VideoPresent extends StatelessWidget {
         const SizedBox(width: 8),
         Icon(Icons.edit_rounded,
             size: 16,
-            color: AppColors.textMuted.withValues(alpha: 0.70)),
+            color: AppColors.textMuted.withValues(alpha: 0.55)),
       ],
     );
   }
 }
 
+// ── Video empty state ─────────────────────────────────────────────────────────
+
 class _VideoEmpty extends StatelessWidget {
+  const _VideoEmpty();
+
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(Icons.videocam_rounded,
-            size: 32, color: AppColors.brandCyan.withValues(alpha: 0.55)),
-        const SizedBox(height: 10),
+        Container(
+          width: 54, height: 54,
+          decoration: BoxDecoration(
+            color: AppColors.brandCyan.withValues(alpha: 0.10),
+            shape: BoxShape.circle,
+            border: Border.all(
+              color: AppColors.brandCyan.withValues(alpha: 0.28),
+            ),
+          ),
+          child: Icon(
+            Icons.videocam_rounded,
+            size: 26,
+            color: AppColors.brandCyan.withValues(alpha: 0.65),
+          ),
+        ),
+        const SizedBox(height: 12),
         Text(
-          'Tap to add an intro video',
-          style: AppTextStyles.bodyS.copyWith(color: AppColors.textMuted),
+          'Add an intro video',
+          style: AppTextStyles.bodyS.copyWith(
+            color: AppColors.textPrimary,
+            fontWeight: FontWeight.w600,
+          ),
         ),
         const SizedBox(height: 4),
         Text(
           'Max 30 seconds · MP4 or MOV',
           style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+        ),
+        const SizedBox(height: 3),
+        Text(
+          'Plays on your profile card',
+          style: AppTextStyles.caption.copyWith(
+            color: AppColors.textMuted.withValues(alpha: 0.55),
+            fontSize: 10,
+          ),
         ),
       ],
     );
@@ -537,8 +789,9 @@ class _OptionalBadge extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.brandCyan.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(8),
-        border:
-            Border.all(color: AppColors.brandCyan.withValues(alpha: 0.30)),
+        border: Border.all(
+          color: AppColors.brandCyan.withValues(alpha: 0.30),
+        ),
       ),
       child: Text(
         'Optional',
@@ -557,6 +810,7 @@ class _PhotoActionSheet extends StatelessWidget {
   const _PhotoActionSheet({
     required this.isEmpty,
     required this.isMainSlot,
+    required this.showCamera,
     required this.onChooseFile,
     required this.onTakePhoto,
     this.onSetAsMain,
@@ -565,6 +819,10 @@ class _PhotoActionSheet extends StatelessWidget {
 
   final bool isEmpty;
   final bool isMainSlot;
+
+  /// False on macOS — camera photo capture is not available on desktop.
+  final bool showCamera;
+
   final VoidCallback onChooseFile;
   final VoidCallback onTakePhoto;
   final VoidCallback? onSetAsMain;
@@ -591,12 +849,13 @@ class _PhotoActionSheet extends StatelessWidget {
               color: AppColors.brandCyan,
               onTap: onChooseFile,
             ),
-            _ActionTile(
-              icon: Icons.camera_alt_rounded,
-              label: 'Take with Camera',
-              color: AppColors.brandPink,
-              onTap: onTakePhoto,
-            ),
+            if (showCamera)
+              _ActionTile(
+                icon: Icons.camera_alt_rounded,
+                label: 'Take with Camera',
+                color: AppColors.brandPink,
+                onTap: onTakePhoto,
+              ),
             if (onSetAsMain != null)
               _ActionTile(
                 icon: Icons.star_rounded,
@@ -651,7 +910,7 @@ class _VideoActionSheet extends StatelessWidget {
               color: AppColors.brandCyan,
               onTap: onChooseFile,
             ),
-            // macOS demo note — honest about limitation
+            // Platform-specific info note
             Padding(
               padding:
                   const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
@@ -671,11 +930,16 @@ class _VideoActionSheet extends StatelessWidget {
                     const SizedBox(width: 8),
                     Expanded(
                       child: Text(
-                        'Camera video recording is not available in '
-                        'this demo build on macOS. Use "Choose Video '
-                        'File" to pick a local MP4 or MOV.',
-                        style: AppTextStyles.caption
-                            .copyWith(color: AppColors.textMuted, height: 1.45),
+                        Platform.isMacOS
+                            ? 'Camera video recording is not available in '
+                                'this macOS demo build. Use "Choose Video File" '
+                                'to select a local MP4 or MOV file.'
+                            : 'For best results, use a short clip under 30 s '
+                                'in MP4 or MOV format.',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.textMuted,
+                          height: 1.45,
+                        ),
                       ),
                     ),
                   ],
@@ -697,14 +961,13 @@ class _VideoActionSheet extends StatelessWidget {
   }
 }
 
-// ── Shared components ─────────────────────────────────────────────────────────
+// ── Shared sheet components ───────────────────────────────────────────────────
 
 class _Handle extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 40,
-      height: 4,
+      width: 40, height: 4,
       decoration: BoxDecoration(
         color: AppColors.divider,
         borderRadius: BorderRadius.circular(2),
@@ -731,8 +994,7 @@ class _ActionTile extends StatelessWidget {
     return ListTile(
       contentPadding: const EdgeInsets.symmetric(horizontal: 20),
       leading: Container(
-        width: 38,
-        height: 38,
+        width: 38, height: 38,
         decoration: BoxDecoration(
           color: color.withValues(alpha: 0.12),
           borderRadius: BorderRadius.circular(10),

@@ -552,9 +552,9 @@ class _MediaSection extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final filled = photos.where((p) => p != null).toList();
-    final hasMedia = filled.isNotEmpty || video != null;
-
-    if (!hasMedia) return const SizedBox.shrink();
+    final hasPhotos = filled.isNotEmpty;
+    final hasMedia = hasPhotos || video != null;
+    final photoCount = filled.length;
 
     return Container(
       width: double.infinity,
@@ -569,7 +569,7 @@ class _MediaSection extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header row
+          // Header row — title + count badge + Manage link
           Row(
             children: [
               Text(
@@ -579,11 +579,38 @@ class _MediaSection extends StatelessWidget {
                   fontSize: 16,
                 ),
               ),
+              const SizedBox(width: 8),
+              // Live photo count badge
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 7, vertical: 2),
+                decoration: BoxDecoration(
+                  color: photoCount > 0
+                      ? AppColors.success.withValues(alpha: 0.12)
+                      : AppColors.bgElevated,
+                  borderRadius: BorderRadius.circular(7),
+                  border: Border.all(
+                    color: photoCount > 0
+                        ? AppColors.success.withValues(alpha: 0.30)
+                        : AppColors.divider,
+                  ),
+                ),
+                child: Text(
+                  '$photoCount / 6',
+                  style: AppTextStyles.caption.copyWith(
+                    color: photoCount > 0
+                        ? AppColors.success
+                        : AppColors.textMuted,
+                    fontWeight: FontWeight.w700,
+                    fontSize: 10,
+                  ),
+                ),
+              ),
               const Spacer(),
               GestureDetector(
                 onTap: onManage,
                 child: Text(
-                  'Manage',
+                  hasMedia ? 'Manage' : 'Add',
                   style: AppTextStyles.caption.copyWith(
                     color: AppColors.brandCyan,
                     fontWeight: FontWeight.w600,
@@ -593,18 +620,66 @@ class _MediaSection extends StatelessWidget {
             ],
           ),
 
-          if (filled.isNotEmpty) ...[
+          // Empty state — visible prompt when no media has been added yet.
+          if (!hasMedia) ...[
+            const SizedBox(height: 14),
+            GestureDetector(
+              onTap: onManage,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(
+                    vertical: 22, horizontal: 16),
+                decoration: BoxDecoration(
+                  color: AppColors.brandPurple.withValues(alpha: 0.05),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.brandPurple.withValues(alpha: 0.18),
+                  ),
+                ),
+                child: Column(
+                  children: [
+                    Icon(
+                      Icons.add_photo_alternate_rounded,
+                      size: 30,
+                      color: AppColors.brandPurple.withValues(alpha: 0.50),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Add your photos',
+                      style: AppTextStyles.bodyS.copyWith(
+                        color: AppColors.textSecondary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Up to 6 photos + optional intro video',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+
+          // Photo thumbnail strip — tapping anywhere opens gallery.
+          if (hasPhotos) ...[
             const SizedBox(height: 12),
-            SizedBox(
-              height: 90,
-              child: ListView.separated(
-                scrollDirection: Axis.horizontal,
-                itemCount: filled.length,
-                separatorBuilder: (context, i) => const SizedBox(width: 8),
-                itemBuilder: (_, i) {
-                  final isMain = photos.indexOf(filled[i]) == 0;
-                  return _PhotoThumb(xFile: filled[i]!, isMain: isMain);
-                },
+            GestureDetector(
+              onTap: onManage,
+              child: SizedBox(
+                height: 96,
+                child: ListView.separated(
+                  scrollDirection: Axis.horizontal,
+                  itemCount: filled.length,
+                  separatorBuilder: (context, _) => const SizedBox(width: 8),
+                  itemBuilder: (_, i) {
+                    final isMain = photos.indexOf(filled[i]) == 0;
+                    return _PhotoThumb(xFile: filled[i]!, isMain: isMain);
+                  },
+                ),
               ),
             ),
           ],
