@@ -61,8 +61,12 @@ class _IcebreakerReceivedScreenState
 
   @override
   Widget build(BuildContext context) {
-    return GradientScaffold(
-      showTopGlow: true,
+    // Back navigation is blocked for the entire screen.
+    // Accept and Pass are the only intentional exits; Pass is the cancel action.
+    return PopScope(
+      canPop: false,
+      child: GradientScaffold(
+        showTopGlow: true,
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -166,7 +170,7 @@ class _IcebreakerReceivedScreenState
           ),
         ),
       ),
-    );
+    ));
   }
 }
 

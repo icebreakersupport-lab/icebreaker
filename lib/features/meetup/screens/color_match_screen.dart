@@ -35,8 +35,12 @@ class ColorMatchScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GradientScaffold(
-      body: Stack(
+    // Back navigation blocked — the conversation timer is active.
+    // The screen must advance forward naturally when the timer expires.
+    return PopScope(
+      canPop: false,
+      child: GradientScaffold(
+        body: Stack(
         children: [
           // Match colour ambient fill (radial from top)
           Positioned.fill(
@@ -152,7 +156,7 @@ class ColorMatchScreen extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 

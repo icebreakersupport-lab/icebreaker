@@ -55,7 +55,13 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
     // Avatar scales with screen height; clamped so it stays usable on all sizes.
     final avatarRadius = (h * 0.11).clamp(56.0, 80.0);
 
-    return GradientScaffold(
+    // Back navigation is blocked while the user still needs to make their
+    // decision (_isWaiting == false).  Once submitted (_isWaiting == true)
+    // back is allowed — in a real build the screen auto-advances on the
+    // server response; in the demo this prevents a dead-end.
+    return PopScope(
+      canPop: _isWaiting,
+      child: GradientScaffold(
       body: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
@@ -132,7 +138,7 @@ class _PostMeetScreenState extends State<PostMeetScreen> {
           ),
         ),
       ),
-    );
+    ));
   }
 }
 

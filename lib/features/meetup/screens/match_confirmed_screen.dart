@@ -27,8 +27,13 @@ class MatchConfirmedScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return GradientScaffold(
-      showTopGlow: true,
+    // Back navigation blocked — this is the terminal success screen.
+    // Going back to PostMeetScreen after a mutual match makes no sense.
+    // "Start Chatting" and "Done" are the intended exits.
+    return PopScope(
+      canPop: false,
+      child: GradientScaffold(
+        showTopGlow: true,
       body: Stack(
         children: [
           // Match colour ambient
@@ -106,6 +111,6 @@ class MatchConfirmedScreen extends StatelessWidget {
           ),
         ],
       ),
-    );
+    ));
   }
 }

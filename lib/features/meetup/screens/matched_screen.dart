@@ -55,8 +55,12 @@ class _MatchedScreenState extends State<MatchedScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return GradientScaffold(
-      showTopGlow: false,
+    // Back navigation blocked — the find timer and "I found them" button
+    // are the only intended exits from this active-flow screen.
+    return PopScope(
+      canPop: false,
+      child: GradientScaffold(
+        showTopGlow: false,
       body: Stack(
         children: [
           // Match colour ambient glow
@@ -162,7 +166,7 @@ class _MatchedScreenState extends State<MatchedScreen> {
           ),
         ],
       ),
-    );
+    ));
   }
 }
 
