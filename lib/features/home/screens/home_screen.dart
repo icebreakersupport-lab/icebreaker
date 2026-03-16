@@ -404,11 +404,17 @@ class _HomeScreenState extends State<HomeScreen> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final h = constraints.maxHeight;
-        // Sizes derived from available height — clamped for phones + macOS.
-        final logoSz = (h * 0.12).clamp(44.0, 80.0);
-        final selfSz = (h * 0.20).clamp(76.0, 140.0);
-        final vSm = (h * 0.020).clamp(5.0, 12.0);
-        final vMd = (h * 0.036).clamp(8.0, 20.0);
+        // All sizes are proportional to available height so the layout
+        // stays overflow-free from small phones (~380dp) to macOS windows.
+        //
+        // Budget breakdown (h ≈ 450dp on an iPhone SE):
+        //   Fixed non-Expanded content: badge + card + strip + button ≈ 230dp
+        //   Expanded (logo + selfie + copy)                           ≈ 220dp
+        final logoSz = (h * 0.10).clamp(38.0, 68.0);
+        final selfSz = (h * 0.18).clamp(68.0, 120.0);
+        final timerFontSize = (h * 0.058).clamp(20.0, 30.0);
+        final vSm = (h * 0.018).clamp(4.0, 10.0);
+        final vMd = (h * 0.030).clamp(6.0, 14.0);
 
         return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24),
@@ -423,7 +429,10 @@ class _HomeScreenState extends State<HomeScreen> {
               SizedBox(height: vSm),
 
               // ── 2. Branded countdown card ──────────────────────────────
-              _CountdownCard(duration: session.remainingDuration),
+              _CountdownCard(
+                duration: session.remainingDuration,
+                timerFontSize: timerFontSize,
+              ),
 
               SizedBox(height: vMd),
 
@@ -436,7 +445,7 @@ class _HomeScreenState extends State<HomeScreen> {
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
                     IcebreakerLogo(size: logoSz, showGlow: true),
-                    SizedBox(height: vSm * 0.9),
+                    SizedBox(height: vSm * 0.8),
                     _buildLiveSelfieAvatar(session, selfSz),
                     SizedBox(height: vSm),
 
@@ -457,6 +466,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 label: 'End Session',
                 onTap: _handleEndSession,
                 width: double.infinity,
+                height: 44,
               ),
 
               SizedBox(height: vMd),
@@ -531,14 +541,14 @@ class _LiveBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 22, vertical: 9),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
       decoration: BoxDecoration(
         gradient: AppColors.brandGradient,
-        borderRadius: BorderRadius.circular(22),
+        borderRadius: BorderRadius.circular(16),
         boxShadow: [
           BoxShadow(
-            color: AppColors.brandPink.withValues(alpha: 0.35),
-            blurRadius: 18,
+            color: AppColors.brandPink.withValues(alpha: 0.32),
+            blurRadius: 12,
             spreadRadius: 0,
             offset: const Offset(0, 2),
           ),
@@ -548,18 +558,19 @@ class _LiveBadge extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 8,
-            height: 8,
+            width: 6,
+            height: 6,
             decoration: const BoxDecoration(
               color: Colors.white,
               shape: BoxShape.circle,
             ),
           ),
-          const SizedBox(width: 9),
+          const SizedBox(width: 7),
           Text(
             "YOU'RE LIVE",
-            style: AppTextStyles.buttonS.copyWith(
-              letterSpacing: 1.4,
+            style: AppTextStyles.caption.copyWith(
+              color: Colors.white,
+              letterSpacing: 1.2,
               fontWeight: FontWeight.w800,
             ),
           ),
@@ -576,8 +587,12 @@ class _LiveBadge extends StatelessWidget {
 /// Shows: "SESSION TIME" overline · large gradient countdown · "remaining" label.
 /// Pink border + glow makes it feel like an active, important system readout.
 class _CountdownCard extends StatelessWidget {
-  const _CountdownCard({required this.duration});
+  const _CountdownCard({
+    required this.duration,
+    required this.timerFontSize,
+  });
   final Duration duration;
+  final double timerFontSize;
 
   String _format(Duration d) {
     if (d <= Duration.zero) return '0:00:00';
@@ -591,24 +606,24 @@ class _CountdownCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
       decoration: BoxDecoration(
         color: AppColors.bgSurface,
-        borderRadius: BorderRadius.circular(20),
+        borderRadius: BorderRadius.circular(18),
         border: Border.all(
           color: AppColors.brandPink.withValues(alpha: 0.38),
           width: 1.5,
         ),
         boxShadow: [
           BoxShadow(
-            color: AppColors.brandPink.withValues(alpha: 0.14),
-            blurRadius: 24,
+            color: AppColors.brandPink.withValues(alpha: 0.12),
+            blurRadius: 20,
             spreadRadius: 0,
           ),
           BoxShadow(
-            color: AppColors.brandPurple.withValues(alpha: 0.10),
-            blurRadius: 40,
-            spreadRadius: 4,
+            color: AppColors.brandPurple.withValues(alpha: 0.08),
+            blurRadius: 32,
+            spreadRadius: 2,
           ),
         ],
       ),
@@ -618,10 +633,10 @@ class _CountdownCard extends StatelessWidget {
             'SESSION TIME',
             style: AppTextStyles.overline.copyWith(
               color: AppColors.textMuted,
-              letterSpacing: 1.6,
+              letterSpacing: 1.4,
             ),
           ),
-          const SizedBox(height: 6),
+          const SizedBox(height: 4),
           ShaderMask(
             shaderCallback: (bounds) =>
                 AppColors.brandGradient.createShader(bounds),
@@ -629,14 +644,14 @@ class _CountdownCard extends StatelessWidget {
             child: Text(
               _format(duration),
               style: AppTextStyles.h1.copyWith(
-                fontSize: 40,
+                fontSize: timerFontSize,
                 fontWeight: FontWeight.w800,
-                letterSpacing: 2.5,
+                letterSpacing: 2.0,
                 color: Colors.white,
               ),
             ),
           ),
-          const SizedBox(height: 4),
+          const SizedBox(height: 2),
           Text(
             'remaining',
             style: AppTextStyles.caption.copyWith(
@@ -661,7 +676,7 @@ class _LiveStatStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       decoration: BoxDecoration(
         color: AppColors.bgSurface,
         borderRadius: BorderRadius.circular(14),
