@@ -111,7 +111,7 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.only(left: 10),
         child: Center(
           child: IcebreakerLogo(
-            size: 38,
+            size: 42,
             showGlow: session.isLive,
             ambientGlow: 1.0,
           ),

@@ -121,9 +121,9 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
                 gradient: RadialGradient(
                   colors: [
                     AppColors.brandPink
-                        .withValues(alpha: widget.ambientGlow * 0.28),
+                        .withValues(alpha: widget.ambientGlow * 0.45),
                     AppColors.brandPurple
-                        .withValues(alpha: widget.ambientGlow * 0.16),
+                        .withValues(alpha: widget.ambientGlow * 0.30),
                     Colors.transparent,
                   ],
                   stops: const [0.0, 0.55, 1.0],

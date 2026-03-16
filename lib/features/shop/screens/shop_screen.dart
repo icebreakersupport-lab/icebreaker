@@ -329,11 +329,14 @@ class _EarnCard extends StatelessWidget {
                   ),
                 ],
                 const SizedBox(width: 6),
-                Text(
-                  '$adsRequired ads required',
-                  style: AppTextStyles.caption.copyWith(
-                    color: AppColors.textMuted,
-                    fontSize: 10,
+                Flexible(
+                  child: Text(
+                    '$adsRequired ads required',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textMuted,
+                      fontSize: 10,
+                    ),
+                    overflow: TextOverflow.ellipsis,
                   ),
                 ),
               ],
@@ -547,7 +550,7 @@ class _SubscriptionCarouselState extends State<_SubscriptionCarousel> {
   @override
   Widget build(BuildContext context) {
     final carouselH = (MediaQuery.of(context).size.height * 0.32)
-        .clamp(210.0, 280.0);
+        .clamp(244.0, 290.0);
     return Column(
       children: [
         SizedBox(
@@ -628,22 +631,25 @@ class _PlusPlanCard extends StatelessWidget {
         children: [
           // Header row
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Plus', style: AppTextStyles.h2),
-                  const SizedBox(height: 2),
-                  Text(
-                    r'$4.99 / month · 10 Icebreakers/day',
-                    style: AppTextStyles.bodyS.copyWith(
-                      color: AppColors.brandCyan,
-                      fontWeight: FontWeight.w600,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Plus', style: AppTextStyles.h2),
+                    const SizedBox(height: 2),
+                    Text(
+                      r'$4.99 / month · 10 Icebreakers/day',
+                      style: AppTextStyles.bodyS.copyWith(
+                        color: AppColors.brandCyan,
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 5),
@@ -733,22 +739,25 @@ class _GoldPlanCard extends StatelessWidget {
         children: [
           // Header row
           Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('Gold', style: AppTextStyles.h2),
-                  const SizedBox(height: 2),
-                  Text(
-                    r'$9.99 / month',
-                    style: AppTextStyles.bodyS.copyWith(
-                      color: Colors.white.withValues(alpha: 0.80),
-                      fontWeight: FontWeight.w600,
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Gold', style: AppTextStyles.h2),
+                    const SizedBox(height: 2),
+                    Text(
+                      r'$9.99 / month',
+                      style: AppTextStyles.bodyS.copyWith(
+                        color: Colors.white.withValues(alpha: 0.80),
+                        fontWeight: FontWeight.w600,
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
               Container(
                 padding: const EdgeInsets.symmetric(
                     horizontal: 10, vertical: 5),
@@ -835,12 +844,15 @@ class _Feature extends StatelessWidget {
               : AppColors.success,
         ),
         const SizedBox(width: 7),
-        Text(
-          text,
-          style: AppTextStyles.bodyS.copyWith(
-            color: bright
-                ? Colors.white.withValues(alpha: 0.85)
-                : AppColors.textSecondary,
+        Expanded(
+          child: Text(
+            text,
+            style: AppTextStyles.bodyS.copyWith(
+              color: bright
+                  ? Colors.white.withValues(alpha: 0.85)
+                  : AppColors.textSecondary,
+            ),
+            overflow: TextOverflow.ellipsis,
           ),
         ),
       ],
