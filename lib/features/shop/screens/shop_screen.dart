@@ -107,31 +107,33 @@ class ShopScreen extends StatelessWidget {
             // ── Section 1: Earn Free ──────────────────────────────────────
             const _SectionLabel('Earn Free'),
             const SizedBox(height: 12),
-            Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Icebreaker earn — 2 ads required
-                Expanded(
-                  child: _EarnCard(
-                    iconColor: AppColors.brandCyan,
-                    icon: Icons.ac_unit_rounded,
-                    reward: '1 Icebreaker 🧊',
-                    adsRequired: 2,
-                    onTap: () => _mockWatch(context, '1 Icebreaker'),
+            IntrinsicHeight(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  // Icebreaker earn — 2 ads required
+                  Expanded(
+                    child: _EarnCard(
+                      iconColor: AppColors.brandCyan,
+                      icon: Icons.ac_unit_rounded,
+                      reward: '1 Icebreaker 🧊',
+                      adsRequired: 2,
+                      onTap: () => _mockWatch(context, '1 Icebreaker'),
+                    ),
                   ),
-                ),
-                const SizedBox(width: 12),
-                // Live session earn — 1 ad
-                Expanded(
-                  child: _EarnCard(
-                    iconColor: AppColors.brandPink,
-                    icon: Icons.favorite_rounded,
-                    reward: '1 Live Session',
-                    adsRequired: 1,
-                    onTap: () => _mockWatch(context, '1 Live Session'),
+                  const SizedBox(width: 12),
+                  // Live session earn — 1 ad
+                  Expanded(
+                    child: _EarnCard(
+                      iconColor: AppColors.brandPink,
+                      icon: Icons.favorite_rounded,
+                      reward: '1 Live Session',
+                      adsRequired: 1,
+                      onTap: () => _mockWatch(context, '1 Live Session'),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
 
             const SizedBox(height: 32),
@@ -338,6 +340,7 @@ class _EarnCard extends StatelessWidget {
             ),
           ],
 
+          const Spacer(),
           const SizedBox(height: 14),
 
           // WATCH button

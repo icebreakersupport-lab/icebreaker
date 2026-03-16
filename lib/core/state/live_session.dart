@@ -12,6 +12,7 @@ import 'package:flutter/widgets.dart';
 class LiveSession extends ChangeNotifier {
   bool _isLive = false;
   DateTime? _expiresAt;
+  int _liveCredits = 1;
 
   /// Local file path of the most-recently verified live selfie.
   /// Null until the first successful go-live verification.
@@ -20,6 +21,7 @@ class LiveSession extends ChangeNotifier {
   bool get isLive => _isLive;
   DateTime? get expiresAt => _expiresAt;
   String? get selfieFilePath => _selfieFilePath;
+  int get liveCredits => _liveCredits;
 
   /// Time remaining in the current session. Zero when not live or expired.
   Duration get remainingDuration {
@@ -34,6 +36,7 @@ class LiveSession extends ChangeNotifier {
     _isLive = true;
     _expiresAt = DateTime.now().add(const Duration(hours: 1));
     if (selfieFilePath != null) _selfieFilePath = selfieFilePath;
+    if (_liveCredits > 0) _liveCredits--;
     notifyListeners();
   }
 

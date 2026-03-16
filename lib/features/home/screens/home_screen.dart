@@ -84,7 +84,7 @@ class _HomeScreenState extends State<HomeScreen> {
         top: false,
         child: session.isLive
             ? _buildLiveState(session)
-            : _buildOfflineState(),
+            : _buildOfflineState(session),
       ),
     );
   }
@@ -216,7 +216,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── Offline state ─────────────────────────────────────────────────────────
 
-  Widget _buildOfflineState() {
+  Widget _buildOfflineState(LiveSession session) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final isNarrow = constraints.maxWidth < _kNarrow;
@@ -232,8 +232,8 @@ class _HomeScreenState extends State<HomeScreen> {
             Padding(
               padding: EdgeInsets.symmetric(horizontal: hPad),
               child: isNarrow
-                  ? _buildCompactStatStrip()
-                  : _buildFullStatRow(),
+                  ? _buildCompactStatStrip(session)
+                  : _buildFullStatRow(session),
             ),
 
             // ── Hero logo ─────────────────────────────────────────────────
@@ -326,14 +326,14 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   /// Normal-width stat layout: two tall branded cards side by side.
-  Widget _buildFullStatRow() {
+  Widget _buildFullStatRow(LiveSession session) {
     return Row(
       children: [
         Expanded(
           child: _StatusPill(
             icon: Icons.bolt_rounded,
             iconColor: AppColors.brandPink,
-            count: '1',
+            count: '${session.liveCredits}',
             label: 'Live Session',
           ),
         ),
@@ -352,7 +352,7 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Narrow-width stat layout: single slim card showing both stats inline
   /// with a divider between them — never overflows on small screens.
-  Widget _buildCompactStatStrip() {
+  Widget _buildCompactStatStrip(LiveSession session) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
       decoration: BoxDecoration(
@@ -366,7 +366,7 @@ class _HomeScreenState extends State<HomeScreen> {
             child: _CompactStat(
               icon: Icons.bolt_rounded,
               iconColor: AppColors.brandPink,
-              count: '1',
+              count: '${session.liveCredits}',
               label: 'Live Session',
             ),
           ),
@@ -394,89 +394,86 @@ class _HomeScreenState extends State<HomeScreen> {
   Widget _buildLiveState(LiveSession session) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final h = constraints.maxHeight;
         // All sizes derived from available height — clamp keeps them
         // reasonable on both tiny phones and large macOS windows.
+        final h = constraints.maxHeight;
         final logoSz = (h * 0.20).clamp(60.0, 120.0);
         final selfSz = (h * 0.25).clamp(72.0, 150.0);
         final vSm = (h * 0.025).clamp(6.0, 14.0);
         final vMd = (h * 0.045).clamp(10.0, 28.0);
 
-        return SingleChildScrollView(
+        return Padding(
           padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: ConstrainedBox(
-            constraints: BoxConstraints(minHeight: h),
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                SizedBox(height: vMd),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(height: vMd),
 
-                // Logo — heartbeat driven by LiveSession
-                IcebreakerLogo(size: logoSz, showGlow: true),
+              // Logo — heartbeat driven by LiveSession
+              IcebreakerLogo(size: logoSz, showGlow: true),
 
-                SizedBox(height: vSm),
+              SizedBox(height: vSm),
 
-                // Live badge
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                      horizontal: 20, vertical: 8),
-                  decoration: BoxDecoration(
-                    gradient: AppColors.brandGradient,
-                    borderRadius: BorderRadius.circular(20),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: const BoxDecoration(
-                          color: Colors.white,
-                          shape: BoxShape.circle,
-                        ),
+              // Live badge
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 20, vertical: 8),
+                decoration: BoxDecoration(
+                  gradient: AppColors.brandGradient,
+                  borderRadius: BorderRadius.circular(20),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: Colors.white,
+                        shape: BoxShape.circle,
                       ),
-                      const SizedBox(width: 8),
-                      Text(
-                        "YOU'RE LIVE",
-                        style: AppTextStyles.buttonS
-                            .copyWith(letterSpacing: 1.2),
-                      ),
-                    ],
-                  ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      "YOU'RE LIVE",
+                      style: AppTextStyles.buttonS
+                          .copyWith(letterSpacing: 1.2),
+                    ),
+                  ],
                 ),
+              ),
 
-                SizedBox(height: vSm),
+              SizedBox(height: vSm),
 
-                // Live selfie avatar — size scales with available height
-                _buildLiveSelfieAvatar(session, selfSz),
+              // Live selfie avatar — size scales with available height
+              _buildLiveSelfieAvatar(session, selfSz),
 
-                SizedBox(height: vSm * 0.6),
+              SizedBox(height: vSm * 0.6),
 
-                Text(
-                  'People nearby can see you now',
-                  style: AppTextStyles.bodyS,
-                  textAlign: TextAlign.center,
-                ),
+              Text(
+                'People nearby can see you now',
+                style: AppTextStyles.bodyS,
+                textAlign: TextAlign.center,
+              ),
 
-                SizedBox(height: vMd * 1.6),
+              SizedBox(height: vMd * 1.6),
 
-                // Live countdown
-                Text(
-                  'Session expires in ${_formatDuration(session.remainingDuration)}',
-                  style: AppTextStyles.caption,
-                ),
+              // Live countdown
+              Text(
+                'Session expires in ${_formatDuration(session.remainingDuration)}',
+                style: AppTextStyles.caption,
+              ),
 
-                SizedBox(height: vSm),
+              SizedBox(height: vSm),
 
-                PillButton.outlined(
-                  label: 'End Session',
-                  onTap: _handleEndSession,
-                  width: double.infinity,
-                ),
+              PillButton.outlined(
+                label: 'End Session',
+                onTap: _handleEndSession,
+                width: double.infinity,
+              ),
 
-                SizedBox(height: vMd),
-              ],
-            ),
+              SizedBox(height: vMd),
+            ],
           ),
         );
       },
