@@ -41,6 +41,9 @@ dependencies:
   # Camera (used for live selfie capture on macOS demo)
   camera: ^0.11.0
 
+  # Image & video picker — file-picker on macOS, camera+gallery on mobile
+  image_picker: ^1.1.2
+
 
 dev_dependencies:
   flutter_test:
