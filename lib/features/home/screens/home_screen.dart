@@ -99,50 +99,14 @@ class _HomeScreenState extends State<HomeScreen> {
       backgroundColor: Colors.transparent,
       elevation: 0,
       centerTitle: true,
-      // Profile avatar — shows live selfie when available; taps into preview.
+      // Icebreaker logo in top-left — static when offline, heartbeat when live.
+      // Profile is still accessible via the bottom nav tab.
       leading: Padding(
-        padding: const EdgeInsets.only(left: 12),
+        padding: const EdgeInsets.only(left: 14),
         child: Center(
-          child: GestureDetector(
-            onTap: () => context.go(AppRoutes.profile),
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                border: Border.all(
-                  color: session.isLive
-                      ? AppColors.brandPink
-                      : AppColors.textMuted.withValues(alpha: 0.35),
-                  width: session.isLive ? 2.0 : 1.0,
-                ),
-                boxShadow: session.isLive
-                    ? [
-                        BoxShadow(
-                          color: AppColors.brandPink.withValues(alpha: 0.30),
-                          blurRadius: 12,
-                          spreadRadius: 0,
-                        ),
-                      ]
-                    : null,
-              ),
-              child: ClipOval(
-                child: session.selfieFilePath != null
-                    ? Image.file(
-                        File(session.selfieFilePath!),
-                        fit: BoxFit.cover,
-                        width: 36,
-                        height: 36,
-                      )
-                    : const Center(
-                        child: Icon(
-                          Icons.person_outline_rounded,
-                          color: AppColors.textMuted,
-                          size: 20,
-                        ),
-                      ),
-              ),
-            ),
+          child: IcebreakerLogo(
+            size: 30,
+            showGlow: session.isLive,
           ),
         ),
       ),
@@ -393,26 +357,26 @@ class _HomeScreenState extends State<HomeScreen> {
 
   /// Premium live-dashboard layout.
   ///
-  /// Top-to-bottom:
-  ///   1. YOU'RE LIVE badge
-  ///   2. Branded countdown card
-  ///   3. Icebreakers / Live Sessions stat strip
-  ///   4. [flexible] pulsing logo + selfie avatar
-  ///   5. Supporting copy
-  ///   6. End Session button
+  /// The Icebreaker logo lives in the AppBar (pulsing) so the body is freed
+  /// up for content. Top-to-bottom:
+  ///
+  ///   1. Branded countdown card    (SESSION TIME + gradient timer)
+  ///   2. Stat strip                (Icebreakers | Live Sessions)
+  ///   3. [flexible] selfie avatar  (visual hero of the live screen)
+  ///   4. YOU'RE LIVE badge         (status label beneath the selfie)
+  ///   5. End Session button        (compact, centred)
   Widget _buildLiveState(LiveSession session) {
     return LayoutBuilder(
       builder: (context, constraints) {
         final h = constraints.maxHeight;
-        // All sizes are proportional to available height so the layout
-        // stays overflow-free from small phones (~380dp) to macOS windows.
+        // All sizes proportional to available height — overflow-free from
+        // ~380dp phones to wide macOS windows.
         //
         // Budget breakdown (h ≈ 450dp on an iPhone SE):
-        //   Fixed non-Expanded content: badge + card + strip + button ≈ 230dp
-        //   Expanded (logo + selfie + copy)                           ≈ 220dp
-        final logoSz = (h * 0.10).clamp(38.0, 68.0);
-        final selfSz = (h * 0.18).clamp(68.0, 120.0);
-        final timerFontSize = (h * 0.058).clamp(20.0, 30.0);
+        //   Fixed non-Expanded: card + strip + button + gaps  ≈ 155dp
+        //   Expanded (selfie + badge)                         ≈ 295dp
+        final selfSz = (h * 0.22).clamp(80.0, 148.0);
+        final timerFontSize = (h * 0.050).clamp(18.0, 26.0);
         final vSm = (h * 0.018).clamp(4.0, 10.0);
         final vMd = (h * 0.030).clamp(6.0, 14.0);
 
@@ -423,12 +387,7 @@ class _HomeScreenState extends State<HomeScreen> {
             children: [
               SizedBox(height: vSm),
 
-              // ── 1. YOU'RE LIVE badge ───────────────────────────────────
-              const _LiveBadge(),
-
-              SizedBox(height: vSm),
-
-              // ── 2. Branded countdown card ──────────────────────────────
+              // ── 1. Branded countdown card ──────────────────────────────
               _CountdownCard(
                 duration: session.remainingDuration,
                 timerFontSize: timerFontSize,
@@ -436,37 +395,29 @@ class _HomeScreenState extends State<HomeScreen> {
 
               SizedBox(height: vMd),
 
-              // ── 3. Stat strip ──────────────────────────────────────────
+              // ── 2. Stat strip ──────────────────────────────────────────
               _LiveStatStrip(session: session),
 
-              // ── 4. Logo + selfie (fills remaining vertical space) ──────
+              // ── 3 & 4. Selfie + badge (fills remaining space) ──────────
               Expanded(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    IcebreakerLogo(size: logoSz, showGlow: true),
-                    SizedBox(height: vSm * 0.8),
                     _buildLiveSelfieAvatar(session, selfSz),
                     SizedBox(height: vSm),
 
-                    // ── 5. Supporting copy ─────────────────────────────
-                    Text(
-                      'People nearby can see you now',
-                      style: AppTextStyles.bodyS.copyWith(
-                        color: AppColors.textSecondary,
-                      ),
-                      textAlign: TextAlign.center,
-                    ),
+                    // ── 4. YOU'RE LIVE badge below the selfie ──────────
+                    const _LiveBadge(),
                   ],
                 ),
               ),
 
-              // ── 6. End Session ─────────────────────────────────────────
+              // ── 5. End Session ─────────────────────────────────────────
               PillButton.outlined(
                 label: 'End Session',
                 onTap: _handleEndSession,
-                width: double.infinity,
-                height: 44,
+                width: 200,
+                height: 40,
               ),
 
               SizedBox(height: vMd),
@@ -606,10 +557,10 @@ class _CountdownCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
       decoration: BoxDecoration(
         color: AppColors.bgSurface,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
           color: AppColors.brandPink.withValues(alpha: 0.38),
           width: 1.5,
@@ -627,16 +578,18 @@ class _CountdownCard extends StatelessWidget {
           ),
         ],
       ),
-      child: Column(
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        crossAxisAlignment: CrossAxisAlignment.baseline,
+        textBaseline: TextBaseline.alphabetic,
         children: [
           Text(
-            'SESSION TIME',
+            'SESSION  ',
             style: AppTextStyles.overline.copyWith(
               color: AppColors.textMuted,
-              letterSpacing: 1.4,
+              letterSpacing: 1.2,
             ),
           ),
-          const SizedBox(height: 4),
           ShaderMask(
             shaderCallback: (bounds) =>
                 AppColors.brandGradient.createShader(bounds),
@@ -649,13 +602,6 @@ class _CountdownCard extends StatelessWidget {
                 letterSpacing: 2.0,
                 color: Colors.white,
               ),
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            'remaining',
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.textMuted,
             ),
           ),
         ],
