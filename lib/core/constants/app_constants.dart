@@ -68,6 +68,13 @@ abstract final class AppRoutes {
   static const String postMeet = '/meetup/post-meet';
   static const String matchConfirmed = '/meetup/confirmed';
   static const String chat = '/messages/chat';
+
+  // Sub-screens (pushed over shell; no bottom nav)
+  static const String shop = '/home/shop';
+  static const String liveVerify = '/home/verify';
+  static const String editProfile = '/profile/edit';
+  static const String gallery = '/profile/gallery';
+  static const String profileChecklist = '/profile/checklist';
 }
 
 // ─── Gender / Orientation enums ───────────────────────────────────────────────

@@ -1,12 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/models/profile_completion.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
-import '../../home/screens/live_verification_screen.dart';
-import 'edit_profile_screen.dart';
-import 'gallery_screen.dart';
 
 /// Profile Checklist screen.
 ///
@@ -325,22 +324,14 @@ class _ChecklistItem extends StatelessWidget {
       case 'interests':
       case 'hobbies':
       case 'preferences':
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => EditProfileScreen(initialSection: item.id),
-        ));
+        context.push(AppRoutes.editProfile, extra: item.id);
       case 'photo_first':
       case 'photo_three':
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => const GalleryScreen(),
-        ));
+        context.push(AppRoutes.gallery);
       case 'video':
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => const GalleryScreen(scrollToVideo: true),
-        ));
+        context.push(AppRoutes.gallery, extra: {'scrollToVideo': true});
       case 'live_selfie':
-        Navigator.of(context).push(MaterialPageRoute<void>(
-          builder: (_) => const LiveVerificationScreen(),
-        ));
+        context.push(AppRoutes.liveVerify);
       // name_age, email, location, phone — complete; no action
     }
   }

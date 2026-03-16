@@ -2,16 +2,15 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../../../shared/widgets/pill_button.dart';
-import '../../profile/screens/profile_screen.dart';
-import '../../shop/screens/shop_screen.dart';
-import 'live_verification_screen.dart';
 
 /// Below this width the Home screen switches to its compact layout mode.
 /// 400 dp covers all small phones and narrow macOS windows.
@@ -63,11 +62,7 @@ class _HomeScreenState extends State<HomeScreen> {
   // ── Actions ───────────────────────────────────────────────────────────────
 
   void _handleGoLive() {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => const LiveVerificationScreen(),
-      ),
-    );
+    context.push(AppRoutes.liveVerify);
   }
 
   void _handleEndSession() {
@@ -109,11 +104,7 @@ class _HomeScreenState extends State<HomeScreen> {
         padding: const EdgeInsets.only(left: 12),
         child: Center(
           child: GestureDetector(
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const ProfileScreen(),
-              ),
-            ),
+            onTap: () => context.go(AppRoutes.profile),
             child: Container(
               width: 36,
               height: 36,
@@ -190,11 +181,7 @@ class _HomeScreenState extends State<HomeScreen> {
             bottom: 9,
           ),
           child: GestureDetector(
-            onTap: () => Navigator.of(context).push(
-              MaterialPageRoute<void>(
-                builder: (_) => const ShopScreen(),
-              ),
-            ),
+            onTap: () => context.push(AppRoutes.shop),
             child: Container(
               padding: EdgeInsets.symmetric(
                 horizontal: isNarrow ? 10 : 16,
@@ -561,11 +548,7 @@ class _HomeScreenState extends State<HomeScreen> {
         session: session,
         onRedo: () {
           Navigator.of(dialogCtx).pop();
-          Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => const LiveVerificationScreen(isRedo: true),
-            ),
-          );
+          context.push(AppRoutes.liveVerify, extra: true);
         },
       ),
     );

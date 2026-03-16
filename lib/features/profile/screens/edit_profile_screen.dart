@@ -1,11 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/pill_button.dart';
-import 'gallery_screen.dart';
 
 /// Edit Profile screen — full-featured profile editing flow.
 ///
@@ -672,9 +673,7 @@ class _MediaSection extends StatelessWidget {
           color: AppColors.brandCyan,
           title: 'Manage Photos',
           subtitle: '0 of 6 photos — first photo is your profile photo',
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(builder: (_) => const GalleryScreen()),
-          ),
+          onTap: () => context.push(AppRoutes.gallery),
         ),
         const SizedBox(height: 10),
         _MediaTile(
@@ -682,10 +681,9 @@ class _MediaSection extends StatelessWidget {
           color: AppColors.brandPurple,
           title: 'Upload Intro Video',
           subtitle: 'Max 30 seconds · boosts profile visibility',
-          onTap: () => Navigator.of(context).push(
-            MaterialPageRoute<void>(
-              builder: (_) => const GalleryScreen(scrollToVideo: true),
-            ),
+          onTap: () => context.push(
+            AppRoutes.gallery,
+            extra: {'scrollToVideo': true},
           ),
         ),
       ],

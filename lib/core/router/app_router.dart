@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../features/shell/main_shell.dart';
 import '../../features/home/screens/home_screen.dart';
+import '../../features/home/screens/live_verification_screen.dart';
 import '../../features/nearby/screens/nearby_screen.dart';
 import '../../features/nearby/screens/send_icebreaker_screen.dart';
 import '../../features/messages/screens/messages_screen.dart';
@@ -11,6 +12,11 @@ import '../../features/meetup/screens/color_match_screen.dart';
 import '../../features/meetup/screens/post_meet_screen.dart';
 import '../../features/meetup/screens/match_confirmed_screen.dart';
 import '../../features/profile/screens/profile_screen.dart';
+import '../../features/profile/screens/edit_profile_screen.dart';
+import '../../features/profile/screens/gallery_screen.dart';
+import '../../features/profile/screens/profile_checklist_screen.dart';
+import '../../features/shop/screens/shop_screen.dart';
+import '../../core/models/profile_completion.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -163,6 +169,46 @@ final GoRouter appRouter = GoRouter(
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
           matchColor: extra['matchColor'] as Color,
         );
+      },
+    ),
+
+    // ── Sub-screens (pushed over shell; no persistent bottom nav) ─────────
+
+    GoRoute(
+      path: AppRoutes.shop,
+      builder: (context, state) => const ShopScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.liveVerify,
+      builder: (context, state) {
+        final isRedo = state.extra as bool? ?? false;
+        return LiveVerificationScreen(isRedo: isRedo);
+      },
+    ),
+
+    GoRoute(
+      path: AppRoutes.editProfile,
+      builder: (context, state) {
+        final initialSection = state.extra as String?;
+        return EditProfileScreen(initialSection: initialSection);
+      },
+    ),
+
+    GoRoute(
+      path: AppRoutes.gallery,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>?;
+        final scrollToVideo = extra?['scrollToVideo'] as bool? ?? false;
+        return GalleryScreen(scrollToVideo: scrollToVideo);
+      },
+    ),
+
+    GoRoute(
+      path: AppRoutes.profileChecklist,
+      builder: (context, state) {
+        final score = state.extra! as ProfileCompletionScore;
+        return ProfileChecklistScreen(score: score);
       },
     ),
   ],
