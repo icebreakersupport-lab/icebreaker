@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/state/demo_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -43,16 +44,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _prefsKey = GlobalKey();
   final _detailsKey = GlobalKey();
 
-  // Text controllers
-  late final TextEditingController _nameCtrl;
-  late final TextEditingController _ageCtrl;
-  late final TextEditingController _bioCtrl;
-  late final TextEditingController _occupationCtrl;
-  late final TextEditingController _heightCtrl;
+  // Text controllers — initialised from DemoProfile in didChangeDependencies
+  final TextEditingController _nameCtrl = TextEditingController();
+  final TextEditingController _ageCtrl = TextEditingController();
+  final TextEditingController _bioCtrl = TextEditingController();
+  final TextEditingController _occupationCtrl = TextEditingController();
+  final TextEditingController _heightCtrl = TextEditingController();
 
   // Chip-picker state
-  final Set<String> _selectedInterests = {'Music', 'Travel'};
-  final Set<String> _selectedHobbies = {'Cooking'};
+  Set<String> _selectedInterests = {};
+  Set<String> _selectedHobbies = {};
 
   // Dating preference state
   String _lookingFor = 'Casual dating';
@@ -62,16 +63,32 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   // Fades the section highlight out after 3 s
   String? _highlightedSection;
 
+  bool _initialized = false;
+
   @override
   void initState() {
     super.initState();
-    _nameCtrl = TextEditingController(text: 'You');
-    _ageCtrl = TextEditingController(text: '24');
-    _bioCtrl = TextEditingController(text: '');
-    _occupationCtrl = TextEditingController(text: 'Product Designer');
-    _heightCtrl = TextEditingController(text: "5'10\"");
-
     _highlightedSection = widget.initialSection;
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_initialized) return;
+    _initialized = true;
+
+    // Seed form fields from the shared profile state (runs before first build).
+    final p = DemoProfileScope.of(context);
+    _nameCtrl.text = p.firstName;
+    _ageCtrl.text = p.age.toString();
+    _bioCtrl.text = p.bio;
+    _occupationCtrl.text = p.occupation;
+    _heightCtrl.text = p.height;
+    _lookingFor = p.lookingFor;
+    _interestedIn = p.interestedIn;
+    _ageRange = p.ageRange;
+    _selectedInterests = Set.from(p.interests);
+    _selectedHobbies = Set.from(p.hobbies);
 
     if (widget.initialSection != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -115,6 +132,20 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
 
   void _save() {
     FocusScope.of(context).unfocus();
+    // Persist all text/chip/preference fields into the shared profile state.
+    final age = int.tryParse(_ageCtrl.text.trim()) ?? 0;
+    DemoProfileScope.of(context).saveTextFields(
+      firstName: _nameCtrl.text.trim(),
+      age: age,
+      bio: _bioCtrl.text.trim(),
+      occupation: _occupationCtrl.text.trim(),
+      height: _heightCtrl.text.trim(),
+      lookingFor: _lookingFor,
+      interestedIn: _interestedIn,
+      ageRange: _ageRange,
+      interests: _selectedInterests,
+      hobbies: _selectedHobbies,
+    );
     Navigator.of(context).pop();
   }
 

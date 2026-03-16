@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
+import '../../../core/state/demo_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -41,13 +42,11 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final _videoKey = GlobalKey();
   final _picker = ImagePicker();
 
-  // Six photo slots — null means the slot is empty.
-  final _photos = <XFile?>[null, null, null, null, null, null];
-
-  // Single optional intro video.
-  XFile? _video;
-
-  int get _photoCount => _photos.where((p) => p != null).length;
+  // Convenience accessor — photos and video live in DemoProfileScope.
+  DemoProfile get _profile => DemoProfileScope.of(context);
+  List<XFile?> get _photos => _profile.photos;
+  XFile? get _video => _profile.video;
+  int get _photoCount => _profile.photoCount;
 
   @override
   void initState() {
@@ -108,31 +107,27 @@ class _GalleryScreenState extends State<GalleryScreen> {
           Navigator.of(sheetCtx).pop();
           final xFile = await _pickImageFromFiles();
           if (xFile != null && mounted) {
-            setState(() => _photos[index] = xFile);
+            _profile.setPhoto(index, xFile);
           }
         },
         onTakePhoto: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _takePhotoWithCamera();
           if (xFile != null && mounted) {
-            setState(() => _photos[index] = xFile);
+            _profile.setPhoto(index, xFile);
           }
         },
         onSetAsMain: (isEmpty || index == 0)
             ? null
             : () {
                 Navigator.of(sheetCtx).pop();
-                setState(() {
-                  final tmp = _photos[index];
-                  _photos[index] = _photos[0];
-                  _photos[0] = tmp;
-                });
+                _profile.swapPhotos(index, 0);
               },
         onRemove: isEmpty
             ? null
             : () {
                 Navigator.of(sheetCtx).pop();
-                setState(() => _photos[index] = null);
+                _profile.setPhoto(index, null);
               },
       ),
     );
@@ -153,14 +148,14 @@ class _GalleryScreenState extends State<GalleryScreen> {
           Navigator.of(sheetCtx).pop();
           final xFile = await _pickVideoFromFiles();
           if (xFile != null && mounted) {
-            setState(() => _video = xFile);
+            _profile.setVideo(xFile);
           }
         },
         onRemove: _video == null
             ? null
             : () {
                 Navigator.of(sheetCtx).pop();
-                setState(() => _video = null);
+                _profile.setVideo(null);
               },
       ),
     );

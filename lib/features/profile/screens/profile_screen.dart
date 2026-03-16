@@ -2,40 +2,36 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:image_picker/image_picker.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/state/demo_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/models/profile_completion.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 
-/// Profile tab — redesigned to match reference layout.
+/// Profile tab — shows live demo profile state persisted via [DemoProfileScope].
 ///
 /// Layout (top → bottom):
 ///   AppBar (Profile title + settings icon)
-///   Hero circle — live selfie when live, placeholder when offline
-///   "XX% COMPLETE" pill (dynamic, from ProfileCompletionScore)
-///   Name (pink) + age (cyan) in large type
+///   Hero circle — main gallery photo → live selfie → placeholder
+///   "XX% COMPLETE" pill
+///   Name (pink) + age (cyan)
 ///   Location line
 ///   3 action buttons — Edit Profile / My Gallery / Profile Checklist
 ///   About Me card — bio + bullet details
+///   Photos & Media strip — saved photos + video indicator
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
-  // TODO: replace with real user data from Firestore via Riverpod
-  static const String _firstName = 'You';
-  static const int _age = 24;
   static const String _location = 'San Francisco, CA';
-  static const String _occupation = 'Product Designer';
-  static const String _bio =
-      "I'm an adventurous soul who loves exploring new places, "
-      "trying new foods, and meeting interesting people. "
-      "Let's embark on an exciting journey together!";
 
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
+    final profile = DemoProfileScope.of(context);
     final score = ProfileCompletionScore.demo(
       hasLiveSelfie: session.selfieFilePath != null,
     );
@@ -66,7 +62,8 @@ class ProfileScreen extends StatelessWidget {
               const SizedBox(height: 28),
 
               // ── Hero profile circle ─────────────────────────────────────
-              _HeroAvatar(session: session),
+              // Priority: main gallery photo → live selfie → placeholder
+              _HeroAvatar(session: session, mainPhoto: profile.mainPhoto),
 
               const SizedBox(height: 18),
 
@@ -82,7 +79,7 @@ class ProfileScreen extends StatelessWidget {
                 textBaseline: TextBaseline.alphabetic,
                 children: [
                   Text(
-                    '$_firstName ',
+                    '${profile.firstName} ',
                     style: AppTextStyles.h1.copyWith(
                       color: AppColors.brandPink,
                       fontSize: 38,
@@ -91,7 +88,7 @@ class ProfileScreen extends StatelessWidget {
                     ),
                   ),
                   Text(
-                    '($_age)',
+                    '(${profile.age})',
                     style: AppTextStyles.h2.copyWith(
                       color: AppColors.brandCyan,
                       fontSize: 28,
@@ -159,10 +156,21 @@ class ProfileScreen extends StatelessWidget {
 
               // ── About Me card ───────────────────────────────────────────
               _AboutCard(
-                bio: _bio,
-                age: _age,
+                bio: profile.bio,
+                age: profile.age,
                 location: _location,
-                occupation: _occupation,
+                occupation: profile.occupation,
+                height: profile.height,
+                lookingFor: profile.lookingFor,
+              ),
+
+              const SizedBox(height: 20),
+
+              // ── Photos & Media ──────────────────────────────────────────
+              _MediaSection(
+                photos: profile.photos,
+                video: profile.video,
+                onManage: () => context.push(AppRoutes.gallery),
               ),
 
               const SizedBox(height: 40),
@@ -178,22 +186,24 @@ class ProfileScreen extends StatelessWidget {
 
 /// Large circular profile photo with pink→purple gradient ring.
 ///
-/// When the user is live and has a selfie path: shows the verification photo.
-/// When offline (or no selfie yet): shows a placeholder with copy
-/// "Profile pic will appear when you go live".
+/// Priority for the photo: main gallery photo → live selfie → placeholder.
+/// "Profile pic will appear when you go live" shown only when neither is set.
 ///
 /// A "LIVE" pill badge overlays the bottom of the circle when live.
 class _HeroAvatar extends StatelessWidget {
-  const _HeroAvatar({required this.session});
+  const _HeroAvatar({required this.session, this.mainPhoto});
   final LiveSession session;
+  final XFile? mainPhoto;
 
   static const double _size = 200;
   static const double _border = 3.0;
 
   @override
   Widget build(BuildContext context) {
-    final path = session.selfieFilePath;
     final isLive = session.isLive;
+    // Gallery main photo takes priority over selfie
+    final galleryPath = mainPhoto?.path;
+    final selfiePath = session.selfieFilePath;
 
     return Stack(
       alignment: Alignment.bottomCenter,
@@ -235,9 +245,11 @@ class _HeroAvatar extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(_border),
             child: ClipOval(
-              child: path != null
-                  ? Image.file(File(path), fit: BoxFit.cover)
-                  : _AvatarPlaceholder(),
+              child: galleryPath != null
+                  ? Image.file(File(galleryPath), fit: BoxFit.cover)
+                  : selfiePath != null
+                      ? Image.file(File(selfiePath), fit: BoxFit.cover)
+                      : _AvatarPlaceholder(),
             ),
           ),
         ),
@@ -398,20 +410,23 @@ class _ActionTile extends StatelessWidget {
 
 // ── About Me card ─────────────────────────────────────────────────────────────
 
-/// Bio + key profile details card.
-/// Cyan border, two-tone "About Me" heading (pink + cyan).
+/// Bio + key profile details card. Values sourced live from [DemoProfileScope].
 class _AboutCard extends StatelessWidget {
   const _AboutCard({
     required this.bio,
     required this.age,
     required this.location,
     required this.occupation,
+    required this.height,
+    required this.lookingFor,
   });
 
   final String bio;
   final int age;
   final String location;
   final String occupation;
+  final String height;
+  final String lookingFor;
 
   @override
   Widget build(BuildContext context) {
@@ -444,23 +459,37 @@ class _AboutCard extends StatelessWidget {
 
           const SizedBox(height: 14),
 
-          // Bio
-          Text(
-            bio,
-            style: AppTextStyles.bodyS.copyWith(
-              color: AppColors.textSecondary,
-              height: 1.65,
+          if (bio.isNotEmpty) ...[
+            Text(
+              bio,
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textSecondary,
+                height: 1.65,
+              ),
             ),
-          ),
-
-          const SizedBox(height: 18),
+            const SizedBox(height: 18),
+          ],
 
           // Bullet details
-          _BulletRow(label: '$age years old'),
+          _BulletRow(icon: Icons.cake_outlined, label: '$age years old'),
           const SizedBox(height: 7),
-          _BulletRow(label: location),
-          const SizedBox(height: 7),
-          _BulletRow(label: occupation),
+          _BulletRow(icon: Icons.location_on_outlined, label: location),
+          if (occupation.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            _BulletRow(icon: Icons.work_outline_rounded, label: occupation),
+          ],
+          if (height.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            _BulletRow(icon: Icons.straighten_rounded, label: height),
+          ],
+          if (lookingFor.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            _BulletRow(
+              icon: Icons.favorite_border_rounded,
+              label: lookingFor,
+              color: AppColors.brandPink,
+            ),
+          ],
         ],
       ),
     );
@@ -468,27 +497,202 @@ class _AboutCard extends StatelessWidget {
 }
 
 class _BulletRow extends StatelessWidget {
-  const _BulletRow({required this.label});
+  const _BulletRow({
+    required this.icon,
+    required this.label,
+    this.color,
+  });
+  final IconData icon;
   final String label;
+  final Color? color;
 
   @override
   Widget build(BuildContext context) {
+    final c = color ?? AppColors.brandCyan;
     return Row(
       children: [
-        Container(
-          width: 6,
-          height: 6,
-          decoration: const BoxDecoration(
-            color: AppColors.brandCyan,
-            shape: BoxShape.circle,
+        Icon(icon, size: 14, color: c.withValues(alpha: 0.75)),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Text(
+            label,
+            style: AppTextStyles.bodyS.copyWith(color: AppColors.textPrimary),
           ),
         ),
-        const SizedBox(width: 10),
-        Text(
-          label,
-          style: AppTextStyles.bodyS.copyWith(color: AppColors.textPrimary),
-        ),
       ],
+    );
+  }
+}
+
+// ── Photos & Media section ────────────────────────────────────────────────────
+
+/// Horizontal photo strip + video indicator shown below the About Me card.
+/// Only renders when at least one photo or the video is saved.
+class _MediaSection extends StatelessWidget {
+  const _MediaSection({
+    required this.photos,
+    required this.video,
+    required this.onManage,
+  });
+
+  final List<XFile?> photos;
+  final XFile? video;
+  final VoidCallback onManage;
+
+  @override
+  Widget build(BuildContext context) {
+    final filled = photos.where((p) => p != null).toList();
+    final hasMedia = filled.isNotEmpty || video != null;
+
+    if (!hasMedia) return const SizedBox.shrink();
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: AppColors.bgSurface,
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(
+          color: AppColors.brandPurple.withValues(alpha: 0.28),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row
+          Row(
+            children: [
+              Text(
+                'Photos & Media',
+                style: AppTextStyles.h3.copyWith(
+                  color: AppColors.textPrimary,
+                  fontSize: 16,
+                ),
+              ),
+              const Spacer(),
+              GestureDetector(
+                onTap: onManage,
+                child: Text(
+                  'Manage',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.brandCyan,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          if (filled.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 90,
+              child: ListView.separated(
+                scrollDirection: Axis.horizontal,
+                itemCount: filled.length,
+                separatorBuilder: (context, i) => const SizedBox(width: 8),
+                itemBuilder: (_, i) {
+                  final isMain = photos.indexOf(filled[i]) == 0;
+                  return _PhotoThumb(xFile: filled[i]!, isMain: isMain);
+                },
+              ),
+            ),
+          ],
+
+          if (video != null) ...[
+            const SizedBox(height: 10),
+            _VideoIndicator(fileName: video!.name),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _PhotoThumb extends StatelessWidget {
+  const _PhotoThumb({required this.xFile, required this.isMain});
+  final XFile xFile;
+  final bool isMain;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      children: [
+        ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: Image.file(
+            File(xFile.path),
+            width: 68,
+            height: 90,
+            fit: BoxFit.cover,
+          ),
+        ),
+        if (isMain)
+          Positioned(
+            bottom: 4,
+            left: 4,
+            child: Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              decoration: BoxDecoration(
+                gradient: AppColors.brandGradient,
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: Text(
+                'MAIN',
+                style: AppTextStyles.caption.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w800,
+                  fontSize: 8,
+                  letterSpacing: 0.6,
+                ),
+              ),
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _VideoIndicator extends StatelessWidget {
+  const _VideoIndicator({required this.fileName});
+  final String fileName;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.brandPurple.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.brandPurple.withValues(alpha: 0.25),
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            Icons.videocam_rounded,
+            color: AppColors.brandPurple.withValues(alpha: 0.85),
+            size: 16,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              fileName,
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textSecondary,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          Icon(
+            Icons.check_circle_rounded,
+            color: AppColors.success,
+            size: 14,
+          ),
+        ],
+      ),
     );
   }
 }
