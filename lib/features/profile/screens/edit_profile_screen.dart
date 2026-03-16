@@ -1230,28 +1230,40 @@ class _PickerSheet extends StatelessWidget {
               child: Text(title, style: AppTextStyles.h3),
             ),
             const SizedBox(height: 10),
-            ...options.map((opt) {
-              final isSel = opt == selected;
-              return ListTile(
-                contentPadding:
-                    const EdgeInsets.symmetric(horizontal: 24),
-                title: Text(
-                  opt,
-                  style: AppTextStyles.body.copyWith(
-                    color: isSel
-                        ? AppColors.brandPink
-                        : AppColors.textPrimary,
-                    fontWeight:
-                        isSel ? FontWeight.w700 : FontWeight.w400,
-                  ),
+            // Options wrapped in a scrollable box so sheets with many
+            // items (e.g. 5 "Looking For" choices) never overflow the
+            // bottom-sheet height constraint on small or narrow screens.
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 300),
+              child: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: options.map((opt) {
+                    final isSel = opt == selected;
+                    return ListTile(
+                      contentPadding:
+                          const EdgeInsets.symmetric(horizontal: 24),
+                      title: Text(
+                        opt,
+                        style: AppTextStyles.body.copyWith(
+                          color: isSel
+                              ? AppColors.brandPink
+                              : AppColors.textPrimary,
+                          fontWeight:
+                              isSel ? FontWeight.w700 : FontWeight.w400,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      trailing: isSel
+                          ? const Icon(Icons.check_rounded,
+                              color: AppColors.brandPink)
+                          : null,
+                      onTap: () => Navigator.of(context).pop(opt),
+                    );
+                  }).toList(),
                 ),
-                trailing: isSel
-                    ? const Icon(Icons.check_rounded,
-                        color: AppColors.brandPink)
-                    : null,
-                onTap: () => Navigator.of(context).pop(opt),
-              );
-            }),
+              ),
+            ),
             const SizedBox(height: 8),
           ],
         ),
