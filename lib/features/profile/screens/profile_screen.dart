@@ -32,7 +32,8 @@ class ProfileScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
     final profile = DemoProfileScope.of(context);
-    final score = ProfileCompletionScore.demo(
+    final score = ProfileCompletionScore.fromProfile(
+      profile,
       hasLiveSelfie: session.selfieFilePath != null,
     );
 
@@ -143,10 +144,7 @@ class ProfileScreen extends StatelessWidget {
                       icon: Icons.checklist_rounded,
                       label: 'Profile\nChecklist',
                       color: AppColors.brandPurple,
-                      onTap: () => context.push(
-                        AppRoutes.profileChecklist,
-                        extra: score,
-                      ),
+                      onTap: () => context.push(AppRoutes.profileChecklist),
                     ),
                   ),
                 ],
@@ -201,9 +199,10 @@ class _HeroAvatar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLive = session.isLive;
-    // Gallery main photo takes priority over selfie
-    final galleryPath = mainPhoto?.path;
     final selfiePath = session.selfieFilePath;
+    final galleryPath = mainPhoto?.path;
+    // When live: always show the verification selfie (trust signal).
+    // When not live: prefer the gallery main photo, fall back to selfie.
 
     return Stack(
       alignment: Alignment.bottomCenter,
@@ -245,11 +244,7 @@ class _HeroAvatar extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(_border),
             child: ClipOval(
-              child: galleryPath != null
-                  ? Image.file(File(galleryPath), fit: BoxFit.cover)
-                  : selfiePath != null
-                      ? Image.file(File(selfiePath), fit: BoxFit.cover)
-                      : _AvatarPlaceholder(),
+              child: _resolveImage(isLive, selfiePath, galleryPath),
             ),
           ),
         ),
@@ -298,6 +293,21 @@ class _HeroAvatar extends StatelessWidget {
           ),
       ],
     );
+  }
+
+  /// Chooses the correct image source for the hero circle.
+  ///
+  /// Live session → verification selfie always (trust/authenticity signal).
+  /// Not live     → gallery main photo if present, then selfie, then placeholder.
+  Widget _resolveImage(bool isLive, String? selfiePath, String? galleryPath) {
+    if (isLive && selfiePath != null) {
+      return Image.file(File(selfiePath), fit: BoxFit.cover);
+    }
+    final notLivePath = galleryPath ?? selfiePath;
+    if (notLivePath != null) {
+      return Image.file(File(notLivePath), fit: BoxFit.cover);
+    }
+    return _AvatarPlaceholder();
   }
 }
 

@@ -9,6 +9,8 @@
 // Adding a new item: give it a unique [id], a [points] value, and a
 // [category]. The percentage recalculates automatically from the sum.
 
+import '../state/demo_profile.dart';
+
 // ── Category ──────────────────────────────────────────────────────────────────
 
 enum ProfileCompletionCategory { basics, media, personality, verification }
@@ -85,16 +87,30 @@ class ProfileCompletionScore {
     return map;
   }
 
-  // ── Demo factory ───────────────────────────────────────────────────────────
+  // ── Live factory ───────────────────────────────────────────────────────────
 
-  /// Builds a realistic mock score for the demo build.
+  /// Builds the completion score from the live [DemoProfile] state.
   ///
-  /// [hasLiveSelfie] is wired to the live session so the verification
-  /// item flips to complete after the user goes through live verification.
+  /// All [isComplete] flags are derived from real profile data — no
+  /// hardcoded booleans. The score therefore stays in sync with any
+  /// change made in EditProfileScreen or GalleryScreen without extra wiring.
   ///
-  /// Demo baseline (no selfie): 30 pts → 30 %
-  /// After going live:          45 pts → 45 %
-  factory ProfileCompletionScore.demo({required bool hasLiveSelfie}) {
+  /// Completion thresholds:
+  ///   preferences  — lookingFor is non-empty (has a default, so always true)
+  ///   photo_first  — photoCount >= 1
+  ///   photo_three  — photoCount >= 3
+  ///   video        — video is non-null
+  ///   bio          — bio.trim() is non-empty
+  ///   interests    — interests.length >= 3
+  ///   hobbies      — hobbies.length >= 2
+  ///   live_selfie  — hasLiveSelfie param (from LiveSession.selfieFilePath != null)
+  ///
+  /// Account basics (name_age, location, email, phone) are always complete
+  /// in the demo — they represent pre-filled sign-up data.
+  factory ProfileCompletionScore.fromProfile(
+    DemoProfile profile, {
+    required bool hasLiveSelfie,
+  }) {
     return ProfileCompletionScore([
       // ── Account Basics — 30 pts ─────────────────────────────────────────
       const ProfileCompletionItem(
@@ -122,71 +138,71 @@ class ProfileCompletionScore {
         category: ProfileCompletionCategory.basics,
         isComplete: true,
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'preferences',
         title: 'Dating Preferences',
         description: 'Who you\'re looking to meet and your age range',
         points: 5,
         category: ProfileCompletionCategory.basics,
-        isComplete: false,
+        isComplete: profile.lookingFor.isNotEmpty,
         hint: 'Set your preferences in Edit Profile',
       ),
 
       // ── Photos & Media — 25 pts ─────────────────────────────────────────
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'photo_first',
         title: 'Profile Photo',
         description: 'Upload at least one photo to your gallery',
         points: 10,
         category: ProfileCompletionCategory.media,
-        isComplete: false,
+        isComplete: profile.photoCount >= 1,
         hint: 'Tap My Gallery to upload your first photo',
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'photo_three',
         title: '3 or More Photos',
         description: 'Profiles with 3+ photos get 4× more connections',
         points: 8,
         category: ProfileCompletionCategory.media,
-        isComplete: false,
+        isComplete: profile.photoCount >= 3,
         hint: 'Add more photos in My Gallery',
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'video',
         title: 'Intro Video',
         description: 'A short intro video makes your profile stand out',
         points: 7,
         category: ProfileCompletionCategory.media,
-        isComplete: false,
+        isComplete: profile.video != null,
         hint: 'Upload a short video in My Gallery',
       ),
 
       // ── Personality — 25 pts ────────────────────────────────────────────
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'bio',
         title: 'Bio Written',
         description: 'Tell nearby people who you are in a few sentences',
         points: 10,
         category: ProfileCompletionCategory.personality,
-        isComplete: false,
+        isComplete: profile.bio.trim().isNotEmpty,
         hint: 'Write your bio in Edit Profile',
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'interests',
         title: 'Interests Added',
         description: 'Add at least 3 interests (music, sport, travel…)',
         points: 8,
         category: ProfileCompletionCategory.personality,
-        isComplete: false,
+        isComplete: profile.interests.length >= 3,
         hint: 'Add interests in Edit Profile',
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'hobbies',
         title: 'Hobbies Added',
         description: 'Add at least 2 hobbies to spark conversations',
         points: 7,
         category: ProfileCompletionCategory.personality,
-        isComplete: false,
+        isComplete: profile.hobbies.length >= 2,
         hint: 'Add hobbies in Edit Profile',
       ),
 

@@ -16,7 +16,6 @@ import '../../features/profile/screens/edit_profile_screen.dart';
 import '../../features/profile/screens/gallery_screen.dart';
 import '../../features/profile/screens/profile_checklist_screen.dart';
 import '../../features/shop/screens/shop_screen.dart';
-import '../../core/models/profile_completion.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -206,10 +205,7 @@ final GoRouter appRouter = GoRouter(
 
     GoRoute(
       path: AppRoutes.profileChecklist,
-      builder: (context, state) {
-        final score = state.extra! as ProfileCompletionScore;
-        return ProfileChecklistScreen(score: score);
-      },
+      builder: (context, state) => const ProfileChecklistScreen(),
     ),
   ],
 );
