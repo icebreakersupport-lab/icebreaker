@@ -1,3 +1,4 @@
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../features/shell/main_shell.dart';
@@ -16,6 +17,9 @@ import '../../features/profile/screens/edit_profile_screen.dart';
 import '../../features/profile/screens/gallery_screen.dart';
 import '../../features/profile/screens/profile_checklist_screen.dart';
 import '../../features/shop/screens/shop_screen.dart';
+import '../../features/auth/screens/sign_in_screen.dart';
+import '../../features/auth/screens/sign_up_screen.dart';
+import '../../features/auth/screens/verify_phone_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -34,9 +38,28 @@ import '../constants/app_constants.dart';
 ///     /meetup/color-match
 ///     /meetup/post-meet
 ///     /meetup/confirmed
+// Auth routes that unauthenticated users may visit.
+const _authRoutes = {
+  AppRoutes.signIn,
+  AppRoutes.signUp,
+  AppRoutes.verifyPhone,
+};
+
 final GoRouter appRouter = GoRouter(
-  initialLocation: AppRoutes.home,
+  initialLocation: AppRoutes.signIn,
   debugLogDiagnostics: false,
+  redirect: (context, state) {
+    final user = FirebaseAuth.instance.currentUser;
+    final isOnAuthRoute = _authRoutes.contains(state.matchedLocation);
+
+    // Signed-in user on an auth screen → send to home.
+    if (user != null && isOnAuthRoute) return AppRoutes.home;
+
+    // Unauthenticated user on a protected screen → send to sign-in.
+    if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
+
+    return null; // no redirect needed
+  },
   routes: [
     // ── Main shell with persistent bottom nav ──────────────────────────────
     ShellRoute(
@@ -149,6 +172,22 @@ final GoRouter appRouter = GoRouter(
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
         );
       },
+    ),
+
+    // ── Auth ──────────────────────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.signIn,
+      builder: (context, state) => const SignInScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.signUp,
+      builder: (context, state) => const SignUpScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.verifyPhone,
+      builder: (context, state) => const VerifyPhoneScreen(),
     ),
 
     // ── Design preview (dev only) ─────────────────────────────────────────
