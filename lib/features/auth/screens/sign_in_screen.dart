@@ -8,20 +8,18 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../widgets/auth_text_field.dart';
 
-class SignUpScreen extends StatefulWidget {
-  const SignUpScreen({super.key});
+class SignInScreen extends StatefulWidget {
+  const SignInScreen({super.key});
 
   @override
-  State<SignUpScreen> createState() => _SignUpScreenState();
+  State<SignInScreen> createState() => _SignInScreenState();
 }
 
-class _SignUpScreenState extends State<SignUpScreen> {
+class _SignInScreenState extends State<SignInScreen> {
   final _emailController = TextEditingController();
   final _passwordController = TextEditingController();
-  final _confirmController = TextEditingController();
   final _emailFocus = FocusNode();
   final _passwordFocus = FocusNode();
-  final _confirmFocus = FocusNode();
 
   bool _isLoading = false;
   String? _errorMessage;
@@ -29,41 +27,34 @@ class _SignUpScreenState extends State<SignUpScreen> {
   @override
   void initState() {
     super.initState();
-    // Rebuild when confirm field changes to re-evaluate mismatch hint.
-    _confirmController.addListener(() => setState(() {}));
-    _passwordController.addListener(() => setState(() {}));
+    // Rebuild on every keystroke so _isValid / button-enabled state stays current.
     _emailController.addListener(() => setState(() {}));
+    _passwordController.addListener(() => setState(() {}));
   }
 
   @override
   void dispose() {
     _emailController.dispose();
     _passwordController.dispose();
-    _confirmController.dispose();
     _emailFocus.dispose();
     _passwordFocus.dispose();
-    _confirmFocus.dispose();
     super.dispose();
   }
 
-  bool get _emailValid =>
+  bool get _isValid =>
       _emailController.text.trim().contains('@') &&
-      _emailController.text.trim().contains('.');
+      _passwordController.text.isNotEmpty;
 
-  bool get _passwordValid => _passwordController.text.length >= 8;
-
-  bool get _passwordsMatch =>
-      _confirmController.text == _passwordController.text;
-
-  bool get _confirmNonEmpty => _confirmController.text.isNotEmpty;
-
-  bool get _isValid => _emailValid && _passwordValid && _passwordsMatch;
-
-  Future<void> _signUp() async {
-    if (!_isValid || _isLoading) return;
+  Future<void> _signIn() async {
+    // ignore: avoid_print
+    print('[SignIn] ▶ button tapped — isValid=$_isValid isLoading=$_isLoading');
+    if (!_isValid || _isLoading) {
+      // ignore: avoid_print
+      print('[SignIn] ❌ blocked — isValid=$_isValid isLoading=$_isLoading');
+      return;
+    }
     _emailFocus.unfocus();
     _passwordFocus.unfocus();
-    _confirmFocus.unfocus();
 
     setState(() {
       _isLoading = true;
@@ -72,22 +63,26 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
     final email = _emailController.text.trim();
     // ignore: avoid_print
-    print('[SignUp] ▶ STEP 1 — createUserWithEmailAndPassword for $email');
+    print('[SignIn] ▶ STEP 1 — signInWithEmailAndPassword for $email');
 
-    // ── STEP 1: Firebase Auth ────────────────────────────────────────────────
-    String uid;
     try {
       final credential =
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+          await FirebaseAuth.instance.signInWithEmailAndPassword(
         email: email,
         password: _passwordController.text,
       );
-      uid = credential.user!.uid;
+
+      final uid = credential.user!.uid;
       // ignore: avoid_print
-      print('[SignUp] ✅ STEP 1 DONE — uid=$uid');
+      print('[SignIn] ✅ STEP 1 DONE — signed in uid=$uid phone=${credential.user!.phoneNumber}');
+
+      if (!mounted) return;
+      // ignore: avoid_print
+      print('[SignIn] ▶ STEP 2 — routing after auth');
+      await _routeAfterAuth(credential.user!);
     } on FirebaseAuthException catch (e) {
       // ignore: avoid_print
-      print('[SignUp] ❌ STEP 1 FirebaseAuthException'
+      print('[SignIn] ❌ FirebaseAuthException'
           '\n  code:    ${e.code}'
           '\n  message: ${e.message}'
           '\n  plugin:  ${e.plugin}');
@@ -96,67 +91,67 @@ class _SignUpScreenState extends State<SignUpScreen> {
         _isLoading = false;
         _errorMessage = _mapError(e.code);
       });
-      return;
     } catch (e, st) {
       // ignore: avoid_print
-      print('[SignUp] ❌ STEP 1 unexpected error'
-          '\n  type:  ${e.runtimeType}'
-          '\n  error: $e'
-          '\n  stack:\n$st');
+      print('[SignIn] ❌ Unknown exception\n  $e\n$st');
       if (!mounted) return;
       setState(() {
         _isLoading = false;
         _errorMessage = 'Something went wrong. Please try again.';
       });
-      return;
     }
+  }
 
-    // ── STEP 2: Firestore user doc (non-blocking — auth already succeeded) ───
+  /// Decides where to send the user after a successful sign-in.
+  ///
+  /// Checks Firestore users/{uid}.profileComplete:
+  ///   - false / doc missing → Profile Setup (onboarding)
+  ///   - true               → Home
+  Future<void> _routeAfterAuth(User user) async {
     // ignore: avoid_print
-    print('[SignUp] ▶ STEP 2 — writing Firestore users/$uid');
+    print('[SignIn] ▶ STEP 2a — checking Firestore profileComplete for ${user.uid}');
+    bool profileComplete = false;
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'uid': uid,
-        'email': email,
-        'createdAt': FieldValue.serverTimestamp(),
-        'profileComplete': false,
-      });
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      profileComplete = doc.data()?['profileComplete'] as bool? ?? false;
       // ignore: avoid_print
-      print('[SignUp] ✅ STEP 2 DONE — Firestore users/$uid written');
-    } catch (e, st) {
-      // Auth succeeded — log the Firestore failure but do NOT block navigation.
+      print('[SignIn] ✅ STEP 2a DONE — profileComplete=$profileComplete');
+    } catch (e) {
       // ignore: avoid_print
-      print('[SignUp] ⚠️ STEP 2 Firestore write failed (non-fatal)'
-          '\n  type:  ${e.runtimeType}'
-          '\n  error: $e'
-          '\n  stack:\n$st');
+      print('[SignIn] ⚠️ STEP 2a Firestore read failed (defaulting to onboarding): $e');
     }
 
-    // ── STEP 3: Navigate to Profile Setup ────────────────────────────────────
     if (!mounted) return;
+
+    if (profileComplete) {
+      // ignore: avoid_print
+      print('[SignIn] ▶ STEP 2b — profileComplete=true → navigating to ${AppRoutes.home}');
+      context.go(AppRoutes.home);
+    } else {
+      // ignore: avoid_print
+      print('[SignIn] ▶ STEP 2b — profileComplete=false → navigating to ${AppRoutes.onboardingName}');
+      context.go(AppRoutes.onboardingName);
+    }
     // ignore: avoid_print
-    print('[SignUp] ▶ STEP 3 — navigating to ${AppRoutes.onboardingName}');
-    context.go(AppRoutes.onboardingName);
-    // ignore: avoid_print
-    print('[SignUp] ✅ STEP 3 DONE — navigation triggered');
+    print('[SignIn] ✅ STEP 2b DONE — navigation triggered');
   }
 
   String _mapError(String code) => switch (code) {
-        'email-already-in-use' =>
-          'An account already exists with that email.',
+        'user-not-found' => 'No account found with that email.',
+        'wrong-password' => 'Incorrect email or password.',
+        'invalid-credential' => 'Incorrect email or password.',
         'invalid-email' => 'That doesn\'t look like a valid email.',
-        'weak-password' => 'Password must be at least 8 characters.',
-        'operation-not-allowed' =>
-          'Email sign-up is not enabled. Contact support.',
+        'user-disabled' => 'This account has been disabled.',
+        'too-many-requests' => 'Too many attempts. Try again later.',
         'network-request-failed' => 'No internet connection.',
         _ => 'Something went wrong. Please try again.',
       };
 
   @override
   Widget build(BuildContext context) {
-    // Show password mismatch hint only once confirm has content.
-    final showMismatch = _confirmNonEmpty && !_passwordsMatch;
-
     return Scaffold(
       backgroundColor: AppColors.bgBase,
       resizeToAvoidBottomInset: true,
@@ -183,18 +178,18 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
                   // ── Heading ──────────────────────────────────────────────
                   Text(
-                    'Create account',
+                    'Sign in',
                     style: AppTextStyles.h2,
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 6),
                   Text(
-                    'Meet real people in real places.',
+                    'Good to have you back.',
                     style: AppTextStyles.bodyS,
                     textAlign: TextAlign.center,
                   ),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 44),
 
                   // ── Email ────────────────────────────────────────────────
                   AuthTextField(
@@ -204,7 +199,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     hint: 'you@example.com',
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
-                    autofillHints: const [AutofillHints.newUsername],
+                    autofillHints: const [AutofillHints.email],
                     enabled: !_isLoading,
                     onSubmitted: (_) =>
                         FocusScope.of(context).requestFocus(_passwordFocus),
@@ -216,57 +211,41 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     controller: _passwordController,
                     focusNode: _passwordFocus,
                     label: 'PASSWORD',
-                    hint: 'At least 8 characters',
-                    isPassword: true,
-                    textInputAction: TextInputAction.next,
-                    autofillHints: const [AutofillHints.newPassword],
-                    enabled: !_isLoading,
-                    onSubmitted: (_) =>
-                        FocusScope.of(context).requestFocus(_confirmFocus),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // ── Confirm password ─────────────────────────────────────
-                  AuthTextField(
-                    controller: _confirmController,
-                    focusNode: _confirmFocus,
-                    label: 'CONFIRM PASSWORD',
-                    hint: 'Re-enter your password',
+                    hint: '••••••••',
                     isPassword: true,
                     textInputAction: TextInputAction.done,
-                    autofillHints: const [AutofillHints.newPassword],
+                    autofillHints: const [AutofillHints.password],
                     enabled: !_isLoading,
-                    onSubmitted: (_) => _signUp(),
+                    onSubmitted: (_) => _signIn(),
                   ),
 
-                  // ── Password mismatch hint ────────────────────────────────
-                  AnimatedSize(
-                    duration: const Duration(milliseconds: 180),
-                    child: showMismatch
-                        ? Padding(
-                            padding: const EdgeInsets.only(top: 8),
-                            child: Row(
-                              children: [
-                                const Icon(Icons.error_outline_rounded,
-                                    color: AppColors.warning, size: 14),
-                                const SizedBox(width: 6),
-                                Text(
-                                  'Passwords don\'t match.',
-                                  style: AppTextStyles.caption.copyWith(
-                                      color: AppColors.warning),
-                                ),
-                              ],
-                            ),
-                          )
-                        : const SizedBox.shrink(),
+                  // ── Forgot password ──────────────────────────────────────
+                  Align(
+                    alignment: Alignment.centerRight,
+                    child: TextButton(
+                      onPressed: () {
+                        // TODO(step-auth): implement forgot password flow
+                      },
+                      style: TextButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 4, vertical: 8),
+                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      ),
+                      child: Text(
+                        'Forgot password?',
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.brandPink,
+                        ),
+                      ),
+                    ),
                   ),
 
-                  // ── Firebase error ───────────────────────────────────────
+                  // ── Error ────────────────────────────────────────────────
                   AnimatedSize(
                     duration: const Duration(milliseconds: 200),
                     child: _errorMessage != null
                         ? Padding(
-                            padding: const EdgeInsets.only(top: 10),
+                            padding: const EdgeInsets.only(bottom: 12),
                             child: Row(
                               children: [
                                 const Icon(Icons.error_outline_rounded,
@@ -285,32 +264,32 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         : const SizedBox.shrink(),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 8),
 
-                  // ── Create Account button ─────────────────────────────────
+                  // ── Sign In button ───────────────────────────────────────
                   _AuthButton(
-                    label: 'Create Account',
-                    onTap: _signUp,
+                    label: 'Sign In',
+                    onTap: _signIn,
                     isLoading: _isLoading,
                     enabled: _isValid && !_isLoading,
                   ),
 
                   const Spacer(),
 
-                  // ── Navigate to Sign In ───────────────────────────────────
+                  // ── Navigate to Sign Up ──────────────────────────────────
                   Padding(
                     padding: const EdgeInsets.only(bottom: 28),
                     child: Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         Text(
-                          'Already have an account? ',
+                          "Don't have an account? ",
                           style: AppTextStyles.bodyS,
                         ),
                         GestureDetector(
-                          onTap: () => context.go(AppRoutes.signIn),
+                          onTap: () => context.go(AppRoutes.signUp),
                           child: Text(
-                            'Sign in',
+                            'Sign up',
                             style: AppTextStyles.bodyS.copyWith(
                               color: AppColors.brandPink,
                               fontWeight: FontWeight.w700,

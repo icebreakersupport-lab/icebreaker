@@ -20,6 +20,7 @@ import '../../features/shop/screens/shop_screen.dart';
 import '../../features/auth/screens/sign_in_screen.dart';
 import '../../features/auth/screens/sign_up_screen.dart';
 import '../../features/auth/screens/verify_phone_screen.dart';
+import '../../features/onboarding/screens/onboarding_name_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -38,11 +39,13 @@ import '../constants/app_constants.dart';
 ///     /meetup/color-match
 ///     /meetup/post-meet
 ///     /meetup/confirmed
-// Auth routes that unauthenticated users may visit.
+// Routes that unauthenticated users may visit, AND that signed-in users who
+// are still setting up their profile may also visit without being bounced home.
 const _authRoutes = {
   AppRoutes.signIn,
   AppRoutes.signUp,
   AppRoutes.verifyPhone,
+  AppRoutes.onboardingName,
 };
 
 final GoRouter appRouter = GoRouter(
@@ -50,10 +53,14 @@ final GoRouter appRouter = GoRouter(
   debugLogDiagnostics: false,
   redirect: (context, state) {
     final user = FirebaseAuth.instance.currentUser;
-    final isOnAuthRoute = _authRoutes.contains(state.matchedLocation);
+    final loc = state.matchedLocation;
+    final isOnAuthRoute = _authRoutes.contains(loc);
 
-    // Signed-in user on an auth screen → send to home.
-    if (user != null && isOnAuthRoute) return AppRoutes.home;
+    // Signed-in user on a pure-auth screen (sign-in / sign-up) → send to home.
+    // Onboarding screens are intentionally reachable by signed-in users who
+    // haven't completed their profile yet.
+    const signInOnlyRoutes = {AppRoutes.signIn, AppRoutes.signUp};
+    if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.home;
 
     // Unauthenticated user on a protected screen → send to sign-in.
     if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
@@ -188,6 +195,11 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.verifyPhone,
       builder: (context, state) => const VerifyPhoneScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.onboardingName,
+      builder: (context, state) => const OnboardingNameScreen(),
     ),
 
     // ── Design preview (dev only) ─────────────────────────────────────────
