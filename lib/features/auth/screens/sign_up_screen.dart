@@ -112,21 +112,41 @@ class _SignUpScreenState extends State<SignUpScreen> {
     }
 
     // ── STEP 2: Firestore user doc (non-blocking — auth already succeeded) ───
+    final fsPath = 'users/$uid';
+    final payload = {
+      'uid': uid,
+      'email': email,
+      'createdAt': FieldValue.serverTimestamp(),
+      'profileComplete': false,
+    };
     // ignore: avoid_print
-    print('[SignUp] ▶ STEP 2 — writing Firestore users/$uid');
+    print('[SignUp] ▶ STEP 2 — writing Firestore $fsPath'
+        '\n  payload: $payload');
     try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).set({
-        'uid': uid,
-        'email': email,
-        'createdAt': FieldValue.serverTimestamp(),
-        'profileComplete': false,
-      });
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .set(payload)
+          .timeout(
+            const Duration(seconds: 10),
+            onTimeout: () => throw Exception('Firestore write timed out after 10s'),
+          );
       // ignore: avoid_print
-      print('[SignUp] ✅ STEP 2 DONE — Firestore users/$uid written');
+      print('[SignUp] ✅ STEP 2 DONE — Firestore $fsPath written');
+    } on FirebaseException catch (e) {
+      // Auth succeeded — log Firestore failure with exact code but do NOT block navigation.
+      // Most common cause: Firestore Security Rules (permission-denied).
+      // ignore: avoid_print
+      print('[SignUp] ⚠️ STEP 2 Firestore FirebaseException (non-fatal)'
+          '\n  code:    ${e.code}'
+          '\n  message: ${e.message}'
+          '\n  plugin:  ${e.plugin}'
+          '\n  path:    $fsPath'
+          '\n  FIX:     If code=permission-denied, update Firestore Security Rules:'
+          '\n           allow write: if request.auth != null && request.auth.uid == userId;');
     } catch (e, st) {
-      // Auth succeeded — log the Firestore failure but do NOT block navigation.
       // ignore: avoid_print
-      print('[SignUp] ⚠️ STEP 2 Firestore write failed (non-fatal)'
+      print('[SignUp] ⚠️ STEP 2 Firestore unknown error (non-fatal)'
           '\n  type:  ${e.runtimeType}'
           '\n  error: $e'
           '\n  stack:\n$st');
