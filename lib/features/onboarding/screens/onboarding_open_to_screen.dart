@@ -100,8 +100,7 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
 
     // ── Advance ───────────────────────────────────────────────────────────────
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingOrientation once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingOrientation);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────
