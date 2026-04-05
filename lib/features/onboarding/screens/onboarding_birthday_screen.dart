@@ -155,8 +155,7 @@ class _OnboardingBirthdayScreenState extends State<OnboardingBirthdayScreen> {
     if (!mounted) return;
     // ignore: avoid_print
     print('[Onboarding/Birthday] ✅ age=$age → advancing');
-    // TODO: replace with AppRoutes.onboardingGender once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingGender);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────
