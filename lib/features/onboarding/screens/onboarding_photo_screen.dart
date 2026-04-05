@@ -116,8 +116,7 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
 
     // ── 3. Advance to slideshow / feature walkthrough ─────────────────────────
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingSlideshow once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingSlideshow);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────
