@@ -21,6 +21,7 @@ import '../../features/auth/screens/sign_in_screen.dart';
 import '../../features/auth/screens/sign_up_screen.dart';
 import '../../features/auth/screens/verify_phone_screen.dart';
 import '../../features/onboarding/screens/onboarding_name_screen.dart';
+import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -42,6 +43,7 @@ import '../constants/app_constants.dart';
 // Routes that unauthenticated users may visit, AND that signed-in users who
 // are still setting up their profile may also visit without being bounced home.
 const _authRoutes = {
+  AppRoutes.splash,        // '/' — welcome screen
   AppRoutes.signIn,
   AppRoutes.signUp,
   AppRoutes.verifyPhone,
@@ -49,18 +51,18 @@ const _authRoutes = {
 };
 
 final GoRouter appRouter = GoRouter(
-  initialLocation: AppRoutes.signIn,
+  initialLocation: AppRoutes.splash,
   debugLogDiagnostics: false,
   redirect: (context, state) {
     final user = FirebaseAuth.instance.currentUser;
     final loc = state.matchedLocation;
     final isOnAuthRoute = _authRoutes.contains(loc);
 
-    // Signed-in user on a pure-auth screen (sign-in / sign-up) → send to home.
+    // Signed-in user on the welcome screen or pure-auth screens → send to profile.
     // Onboarding screens are intentionally reachable by signed-in users who
     // haven't completed their profile yet.
-    const signInOnlyRoutes = {AppRoutes.signIn, AppRoutes.signUp};
-    if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.home;
+    const signInOnlyRoutes = {AppRoutes.splash, AppRoutes.signIn, AppRoutes.signUp};
+    if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.profile;
 
     // Unauthenticated user on a protected screen → send to sign-in.
     if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
@@ -179,6 +181,12 @@ final GoRouter appRouter = GoRouter(
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
         );
       },
+    ),
+
+    // ── Welcome (cold launch) ─────────────────────────────────────────────
+    GoRoute(
+      path: AppRoutes.splash,
+      builder: (context, state) => const WelcomeScreen(),
     ),
 
     // ── Auth ──────────────────────────────────────────────────────────────
