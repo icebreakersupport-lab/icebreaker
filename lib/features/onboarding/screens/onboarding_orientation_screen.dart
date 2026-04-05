@@ -101,8 +101,7 @@ class _OnboardingOrientationScreenState
 
   void _navigateNext() {
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingLocation once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingLocation);
   }
 
   // ─── Save + advance ─────────────────────────────────────────────────────────

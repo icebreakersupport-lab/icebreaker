@@ -44,6 +44,16 @@ dependencies:
   # Image & video picker — file-picker on macOS, camera+gallery on mobile
   image_picker: ^1.1.2
 
+  # Location permission — triggers real native OS dialog on iOS / Android
+  permission_handler: ^11.3.1
+
+  # Firebase
+  firebase_core: ^3.0.0
+  firebase_auth: ^5.0.0
+  cloud_firestore: ^5.0.0
+  firebase_storage: ^12.0.0
+  firebase_messaging: ^15.0.0
+
 
 dev_dependencies:
   flutter_test:
