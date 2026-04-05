@@ -120,8 +120,7 @@ class _OnboardingNameScreenState extends State<OnboardingNameScreen> {
 
     // ── 3. Advance ────────────────────────────────────────────────────────────
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingBirthday once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingBirthday);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────

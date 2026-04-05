@@ -48,8 +48,10 @@ abstract final class AppConstants {
 abstract final class AppRoutes {
   static const String splash = '/';
   static const String signIn = '/sign-in';
-  static const String phoneOtp = '/phone-otp';
+  static const String signUp = '/sign-up';
+  static const String verifyPhone = '/verify-phone';
   static const String onboardingName = '/onboarding/name';
+  static const String onboardingBirthday = '/onboarding/birthday';
   static const String onboardingGender = '/onboarding/gender';
   static const String onboardingPhotos = '/onboarding/photos';
   static const String onboardingBio = '/onboarding/bio';

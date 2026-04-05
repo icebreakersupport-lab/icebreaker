@@ -20,6 +20,7 @@ import '../../features/shop/screens/shop_screen.dart';
 import '../../features/auth/screens/sign_in_screen.dart';
 import '../../features/auth/screens/sign_up_screen.dart';
 import '../../features/auth/screens/verify_phone_screen.dart';
+import '../../features/onboarding/screens/onboarding_birthday_screen.dart';
 import '../../features/onboarding/screens/onboarding_name_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
@@ -43,11 +44,12 @@ import '../constants/app_constants.dart';
 // Routes that unauthenticated users may visit, AND that signed-in users who
 // are still setting up their profile may also visit without being bounced home.
 const _authRoutes = {
-  AppRoutes.splash,        // '/' — welcome screen
+  AppRoutes.splash,            // '/' — welcome screen
   AppRoutes.signIn,
   AppRoutes.signUp,
   AppRoutes.verifyPhone,
   AppRoutes.onboardingName,
+  AppRoutes.onboardingBirthday,
 };
 
 final GoRouter appRouter = GoRouter(
@@ -208,6 +210,11 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.onboardingName,
       builder: (context, state) => const OnboardingNameScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.onboardingBirthday,
+      builder: (context, state) => const OnboardingBirthdayScreen(),
     ),
 
     // ── Design preview (dev only) ─────────────────────────────────────────
