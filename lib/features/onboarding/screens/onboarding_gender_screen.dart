@@ -141,8 +141,7 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
 
     // ── Advance ───────────────────────────────────────────────────────────────
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingOpenTo once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingOpenTo);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────

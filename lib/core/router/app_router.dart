@@ -23,6 +23,7 @@ import '../../features/auth/screens/verify_phone_screen.dart';
 import '../../features/onboarding/screens/onboarding_birthday_screen.dart';
 import '../../features/onboarding/screens/onboarding_gender_screen.dart';
 import '../../features/onboarding/screens/onboarding_name_screen.dart';
+import '../../features/onboarding/screens/onboarding_open_to_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../constants/app_constants.dart';
@@ -52,6 +53,7 @@ const _authRoutes = {
   AppRoutes.onboardingName,
   AppRoutes.onboardingBirthday,
   AppRoutes.onboardingGender,
+  AppRoutes.onboardingOpenTo,
 };
 
 final GoRouter appRouter = GoRouter(
@@ -222,6 +224,11 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.onboardingGender,
       builder: (context, state) => const OnboardingGenderScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.onboardingOpenTo,
+      builder: (context, state) => const OnboardingOpenToScreen(),
     ),
 
     // ── Design preview (dev only) ─────────────────────────────────────────
