@@ -147,8 +147,7 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
 
   void _navigateNext() {
     if (!mounted) return;
-    // TODO: replace with AppRoutes.onboardingPhoto once that screen is built.
-    context.go(AppRoutes.profile);
+    context.go(AppRoutes.onboardingPhoto);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────

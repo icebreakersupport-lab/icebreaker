@@ -56,6 +56,7 @@ abstract final class AppRoutes {
   static const String onboardingOpenTo = '/onboarding/open-to';
   static const String onboardingOrientation = '/onboarding/orientation';
   static const String onboardingLocation = '/onboarding/location';
+  static const String onboardingPhoto = '/onboarding/photo';
   static const String onboardingPhotos = '/onboarding/photos';
   static const String onboardingBio = '/onboarding/bio';
 
