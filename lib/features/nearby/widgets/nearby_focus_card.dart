@@ -5,26 +5,24 @@ import '../../../shared/widgets/pill_button.dart';
 
 /// The hero profile card shown in the Nearby discovery carousel.
 ///
-/// Layout (inside a Stack):
+/// Intentionally minimal — attraction and quick ID only:
 ///   - Full-bleed portrait photo
-///   - Gradient border ring (pink → purple → cyan) with outer glow
+///   - Gradient border ring (pink → purple → cyan) with outer neon glow
 ///   - Deep bottom scrim
-///   - Optional chat-bubble opener mid-card
-///   - Name + age + bio + distance/hometown pills at bottom
-///   - "Send Icebreaker 🧊" CTA integrated at the card bottom
+///   - Name + age overlay
+///   - Gold badge (optional)
+///   - "Send Icebreaker" CTA at card bottom
 ///
-/// [isActive] controls scale (1.0 vs 0.94) and glow intensity so the
-/// centred card stands out from the partially visible neighbours.
+/// Bio, distance, hometown, and chat opener are deliberately excluded;
+/// those live in the NearbyAboutMeCard below the carousel.
+///
+/// [isActive] drives scale (1.0 vs 0.94) and glow intensity.
 class NearbyFocusCard extends StatelessWidget {
   const NearbyFocusCard({
     super.key,
     required this.firstName,
     required this.age,
-    required this.bio,
     required this.photoUrl,
-    this.distanceMeters,
-    this.hometown,
-    this.opener,
     this.isGold = false,
     this.isActive = true,
     required this.onSendIcebreaker,
@@ -32,14 +30,7 @@ class NearbyFocusCard extends StatelessWidget {
 
   final String firstName;
   final int age;
-  final String bio;
   final String photoUrl;
-  final double? distanceMeters;
-  final String? hometown;
-
-  /// Short conversation starter shown as a floating chat bubble on the card.
-  final String? opener;
-
   final bool isGold;
 
   /// True when this card is the centred, focused card in the carousel.
@@ -71,15 +62,6 @@ class NearbyFocusCard extends StatelessWidget {
                 // ── Bottom scrim ──────────────────────────────────────────────
                 const _BottomScrim(),
 
-                // ── Chat bubble ───────────────────────────────────────────────
-                if (opener != null && opener!.isNotEmpty)
-                  Positioned(
-                    left: 18,
-                    right: 18,
-                    bottom: 148,
-                    child: _ChatBubble(text: opener!),
-                  ),
-
                 // ── Gold badge ────────────────────────────────────────────────
                 if (isGold)
                   const Positioned(
@@ -88,7 +70,7 @@ class NearbyFocusCard extends StatelessWidget {
                     child: _GoldBadge(),
                   ),
 
-                // ── Bottom overlay: name / bio / pills / button ────────────────
+                // ── Bottom overlay: name + age + button ───────────────────────
                 Positioned(
                   left: 20,
                   right: 20,
@@ -124,8 +106,7 @@ class NearbyFocusCard extends StatelessWidget {
                               style: AppTextStyles.h3.copyWith(
                                 color: AppColors.textSecondary,
                                 shadows: const [
-                                  Shadow(
-                                      color: Colors.black87, blurRadius: 6),
+                                  Shadow(color: Colors.black87, blurRadius: 6),
                                 ],
                               ),
                             ),
@@ -133,40 +114,11 @@ class NearbyFocusCard extends StatelessWidget {
                         ],
                       ),
 
-                      // Bio
-                      if (bio.isNotEmpty) ...[
-                        const SizedBox(height: 3),
-                        Text(
-                          bio,
-                          style: AppTextStyles.bodyS.copyWith(
-                            color: Colors.white70,
-                            shadows: const [
-                              Shadow(color: Colors.black87, blurRadius: 6),
-                            ],
-                          ),
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                      ],
-
-                      // Distance + hometown pills
-                      const SizedBox(height: 8),
-                      Row(
-                        children: [
-                          if (distanceMeters != null) ...[
-                            _DistancePill(meters: distanceMeters!),
-                            const SizedBox(width: 6),
-                          ],
-                          if (hometown != null && hometown!.isNotEmpty)
-                            _HometownPill(label: hometown!),
-                        ],
-                      ),
-
                       const SizedBox(height: 14),
 
-                      // CTA button
+                      // CTA button — centered label, no icon/emoji
                       PillButton.primary(
-                        label: 'Send Icebreaker 🧊',
+                        label: 'Send Icebreaker',
                         onTap: onSendIcebreaker,
                         width: double.infinity,
                         height: 52,
@@ -316,54 +268,6 @@ class _BottomScrim extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _ChatBubble
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Speech-bubble showing the user's opener or a bio snippet.
-class _ChatBubble extends StatelessWidget {
-  const _ChatBubble({required this.text});
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.72),
-        borderRadius: const BorderRadius.only(
-          topLeft: Radius.circular(18),
-          topRight: Radius.circular(18),
-          bottomRight: Radius.circular(18),
-          bottomLeft: Radius.circular(5), // speech tail
-        ),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.14),
-        ),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text('💬 ',
-              style: TextStyle(fontSize: 13, height: 1.4)),
-          Flexible(
-            child: Text(
-              text,
-              style: AppTextStyles.bodyS.copyWith(
-                color: Colors.white.withValues(alpha: 0.88),
-                height: 1.35,
-              ),
-              maxLines: 2,
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // _GoldBadge
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -397,60 +301,3 @@ class _GoldBadge extends StatelessWidget {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Pills
-// ─────────────────────────────────────────────────────────────────────────────
-
-class _DistancePill extends StatelessWidget {
-  const _DistancePill({required this.meters});
-  final double meters;
-
-  @override
-  Widget build(BuildContext context) {
-    final label = meters < 1000
-        ? '${meters.round()}m away'
-        : '${(meters / 1000).toStringAsFixed(1)}km away';
-    return _Pill(label: label);
-  }
-}
-
-class _HometownPill extends StatelessWidget {
-  const _HometownPill({required this.label});
-  final String label;
-
-  @override
-  Widget build(BuildContext context) {
-    return _Pill(label: 'From $label', icon: Icons.location_on_rounded);
-  }
-}
-
-class _Pill extends StatelessWidget {
-  const _Pill({required this.label, this.icon});
-  final String label;
-  final IconData? icon;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.black.withValues(alpha: 0.55),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.white.withValues(alpha: 0.18), width: 0.5),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (icon != null) ...[
-            Icon(icon, size: 11, color: Colors.white70),
-            const SizedBox(width: 3),
-          ],
-          Text(
-            label,
-            style: AppTextStyles.caption.copyWith(color: Colors.white70),
-          ),
-        ],
-      ),
-    );
-  }
-}

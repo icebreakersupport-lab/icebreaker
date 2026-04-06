@@ -134,9 +134,9 @@ class _NearbyScreenState extends State<NearbyScreen> {
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        // Give 62% of body height to the card carousel.
-        // The remaining space holds the About Me panel.
-        final cardAreaHeight = constraints.maxHeight * 0.62;
+        // Give 72% of body height to the card carousel.
+        // The remaining 28% holds the About Me panel.
+        final cardAreaHeight = constraints.maxHeight * 0.72;
 
         return Column(
           children: [
@@ -155,11 +155,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
                   return NearbyFocusCard(
                     firstName: u.firstName,
                     age: u.age,
-                    bio: u.bio,
                     photoUrl: u.photoUrl,
-                    distanceMeters: u.distanceMeters,
-                    hometown: u.hometown,
-                    opener: u.opener,
                     isGold: u.isGold,
                     isActive: i == _currentIndex,
                     onSendIcebreaker: () => _navigateSendIcebreaker(u),
@@ -171,7 +167,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
             // ── About Me panel ───────────────────────────────────────────────
             Expanded(
               child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
                 child: AnimatedSwitcher(
                   duration: const Duration(milliseconds: 280),
                   switchInCurve: Curves.easeOut,
