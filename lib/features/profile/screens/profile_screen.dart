@@ -75,8 +75,6 @@ Future<void> _showSignOutDialog(BuildContext context) async {
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
 
-  static const String _location = 'San Francisco, CA';
-
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
@@ -148,20 +146,21 @@ class ProfileScreen extends StatelessWidget {
 
               const SizedBox(height: 8),
 
-              // ── Location ────────────────────────────────────────────────
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.location_on_rounded,
-                      color: AppColors.brandPink, size: 15),
-                  const SizedBox(width: 4),
-                  Text(
-                    _location,
-                    style: AppTextStyles.bodyS
-                        .copyWith(color: AppColors.textSecondary),
-                  ),
-                ],
-              ),
+              // ── Hometown ────────────────────────────────────────────────
+              if (profile.hometownDisplay.isNotEmpty)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.location_on_rounded,
+                        color: AppColors.brandPink, size: 15),
+                    const SizedBox(width: 4),
+                    Text(
+                      profile.hometownDisplay,
+                      style: AppTextStyles.bodyS
+                          .copyWith(color: AppColors.textSecondary),
+                    ),
+                  ],
+                ),
 
               const SizedBox(height: 26),
 
@@ -203,7 +202,7 @@ class ProfileScreen extends StatelessWidget {
               _AboutCard(
                 bio: profile.bio,
                 age: profile.age,
-                location: _location,
+                hometown: profile.hometownDisplay,
                 occupation: profile.occupation,
                 height: profile.height,
                 lookingFor: profile.lookingFor,
@@ -472,7 +471,7 @@ class _AboutCard extends StatelessWidget {
   const _AboutCard({
     required this.bio,
     required this.age,
-    required this.location,
+    required this.hometown,
     required this.occupation,
     required this.height,
     required this.lookingFor,
@@ -480,7 +479,7 @@ class _AboutCard extends StatelessWidget {
 
   final String bio;
   final int age;
-  final String location;
+  final String hometown;
   final String occupation;
   final String height;
   final String lookingFor;
@@ -529,8 +528,10 @@ class _AboutCard extends StatelessWidget {
 
           // Bullet details
           _BulletRow(icon: Icons.cake_outlined, label: '$age years old'),
-          const SizedBox(height: 7),
-          _BulletRow(icon: Icons.location_on_outlined, label: location),
+          if (hometown.isNotEmpty) ...[
+            const SizedBox(height: 7),
+            _BulletRow(icon: Icons.location_on_outlined, label: hometown),
+          ],
           if (occupation.isNotEmpty) ...[
             const SizedBox(height: 7),
             _BulletRow(icon: Icons.work_outline_rounded, label: occupation),

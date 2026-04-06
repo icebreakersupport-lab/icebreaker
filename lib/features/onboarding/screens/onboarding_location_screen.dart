@@ -8,27 +8,36 @@ import 'package:go_router/go_router.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/state/demo_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 
-/// Onboarding — Step 6: Location permission gate.
+/// Onboarding — Step 6: Location permission + hometown collection.
 ///
-/// This screen is non-skippable. The user must grant location permission
-/// to proceed into the app. "Not Now" shows the blocked state immediately —
-/// the user stays on this screen until they grant or open Settings.
+/// Two responsibilities on one screen:
+///   1. Explain why location is needed and request iOS/Android permission.
+///   2. Collect city + state ("Where are you from?") for the public profile.
 ///
-/// States:
-///   [_LocationState.initial]   — explanation + Allow / Not Now
-///   [_LocationState.requesting] — OS dialog is open (brief loading)
-///   [_LocationState.blocked]   — denied / restricted / "not now" tapped
-///   [_LocationState.granted]   — saving + navigating forward
+/// The Continue button ("Allow Location") is disabled until:
+///   - city/town field is non-empty
+///   - state field is non-empty
 ///
-/// Non-mobile platforms (macOS, web, Linux, Windows) skip the gate and
-/// advance immediately so desktop dev builds continue to work.
+/// On tap:
+///   - Validates fields; shows inline errors if blank.
+///   - Requests OS location permission (or proceeds silently if already granted).
+///   - Saves hometown to DemoProfile and Firestore users/{uid}.hometown.
+///   - Saves locationPermissionGranted=true to Firestore on grant.
+///   - Navigates to the first-photo screen.
 ///
-/// Firestore (users/{uid}):
-///   locationPermissionGranted  bool  — written true on grant; absent otherwise
+/// Non-mobile platforms (macOS, web, Linux, Windows) skip the OS prompt
+/// but still collect city/state.
+///
+/// Firestore schema written:
+///   users/{uid}.hometown.city       String
+///   users/{uid}.hometown.state      String   (full name, e.g. "Arizona")
+///   users/{uid}.hometown.stateCode  String   (2-letter code, e.g. "AZ")
+///   users/{uid}.locationPermissionGranted  bool
 class OnboardingLocationScreen extends StatefulWidget {
   const OnboardingLocationScreen({super.key});
 
@@ -40,27 +49,35 @@ class OnboardingLocationScreen extends StatefulWidget {
 class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
     with WidgetsBindingObserver {
   _LocationState _state = _LocationState.initial;
-
-  // Whether "Try Again" is available (false when permanently denied / restricted).
   bool _canRetry = true;
+
+  // ── Hometown form ────────────────────────────────────────────────────────────
+  final _cityController = TextEditingController();
+  final _stateController = TextEditingController();
+  bool _showFieldErrors = false;
+
+  bool get _fieldsValid =>
+      _cityController.text.trim().isNotEmpty &&
+      _stateController.text.trim().isNotEmpty;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    // Do NOT auto-check on launch — the explainer screen must always appear
-    // so the user consciously grants location during onboarding.
-    // _checkExistingPermission() is called only when returning from Settings
-    // (see didChangeAppLifecycleState) so the blocked→granted path still works.
+    // Do NOT auto-check permission on launch — the explainer must always show
+    // so the user consciously acts. _checkExistingPermission is only called
+    // when returning from Settings (see didChangeAppLifecycleState).
   }
 
   @override
   void dispose() {
+    _cityController.dispose();
+    _stateController.dispose();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
-  // Re-check permission when the user returns from Settings.
+  // Re-check when the user returns from Settings while in blocked state.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed &&
@@ -69,30 +86,33 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
     }
   }
 
-  // ─── Permission logic ────────────────────────────────────────────────────────
+  // ── Permission logic ──────────────────────────────────────────────────────────
 
-  /// On non-mobile platforms skip the gate entirely.
-  bool get _isMobile =>
-      !kIsWeb && (Platform.isIOS || Platform.isAndroid);
+  bool get _isMobile => !kIsWeb && (Platform.isIOS || Platform.isAndroid);
 
+  /// Only called when returning from Settings. If permission is now granted,
+  /// save and advance; otherwise stay on the blocked view.
   Future<void> _checkExistingPermission() async {
     if (!_isMobile) {
-      // Desktop / web: no OS prompt needed — advance directly.
-      _navigateNext();
+      await _saveAndAdvance();
       return;
     }
-
     final status = await Permission.locationWhenInUse.status;
     if (status.isGranted) {
       await _handleGranted(alreadyGranted: true);
     }
-    // Otherwise stay on initial state — do NOT auto-request.
-    // The user must tap "Allow Location" to see the OS dialog.
   }
 
+  /// Called when the user taps "Allow Location".
   Future<void> _requestPermission() async {
+    // Validate hometown fields before doing anything.
+    if (!_fieldsValid) {
+      setState(() => _showFieldErrors = true);
+      return;
+    }
+
     if (!_isMobile) {
-      _navigateNext();
+      await _saveAndAdvance();
       return;
     }
 
@@ -108,7 +128,6 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
         _canRetry = false;
       });
     } else {
-      // Denied — can ask again next time.
       setState(() {
         _state = _LocationState.blocked;
         _canRetry = true;
@@ -119,20 +138,48 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
   Future<void> _handleGranted({bool alreadyGranted = false}) async {
     setState(() => _state = _LocationState.granted);
 
+    // Save hometown + permission flag in one merge write.
+    await _saveAndAdvance(grantedPermission: true, alreadyGranted: alreadyGranted);
+  }
+
+  Future<void> _saveAndAdvance({
+    bool grantedPermission = false,
+    bool alreadyGranted = false,
+  }) async {
+    final city = _cityController.text.trim();
+    final state = _stateController.text.trim();
+    final stateCode = DemoProfile.abbreviateState(state);
+
+    // ── In-memory profile ──────────────────────────────────────────────────────
+    if (mounted) {
+      DemoProfileScope.of(context).setHometown(city, state);
+    }
+
+    // ── Firestore ──────────────────────────────────────────────────────────────
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      try {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .set({'locationPermissionGranted': true}, SetOptions(merge: true));
-        // ignore: avoid_print
-        print('[Onboarding/Location] ✅ locationPermissionGranted=true'
-            '${alreadyGranted ? ' (was already granted)' : ''}');
-      } catch (e) {
-        // ignore: avoid_print
-        print('[Onboarding/Location] ⚠️ Firestore write failed: $e');
-        // Non-fatal: permission is granted, let the user through anyway.
+      final data = <String, dynamic>{
+        if (city.isNotEmpty || state.isNotEmpty)
+          'hometown': {
+            'city': city,
+            'state': state,
+            'stateCode': stateCode,
+          },
+        if (grantedPermission) 'locationPermissionGranted': true,
+      };
+      if (data.isNotEmpty) {
+        try {
+          await FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set(data, SetOptions(merge: true));
+          // ignore: avoid_print
+          print('[Onboarding/Location] ✅ saved hometown=$city,$state'
+              '${grantedPermission ? ' locationPermissionGranted=true${alreadyGranted ? ' (was already granted)' : ''}' : ''}');
+        } catch (e) {
+          // ignore: avoid_print
+          print('[Onboarding/Location] ⚠️ Firestore write failed: $e');
+        }
       }
     }
 
@@ -140,8 +187,6 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
   }
 
   void _notNow() {
-    // Show blocked state without triggering the OS dialog.
-    // The user must use "Try Again" or "Open Settings" to proceed.
     setState(() {
       _state = _LocationState.blocked;
       _canRetry = true;
@@ -153,26 +198,30 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
     context.go(AppRoutes.onboardingPhoto);
   }
 
-  // ─── Build ───────────────────────────────────────────────────────────────────
+  // ── Build ─────────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgBase,
-      resizeToAvoidBottomInset: false,
+      resizeToAvoidBottomInset: true,
       body: SafeArea(
         child: switch (_state) {
           _LocationState.initial => _InitialView(
+              cityController: _cityController,
+              stateController: _stateController,
+              showFieldErrors: _showFieldErrors,
+              onFieldChanged: () => setState(() {}),
               onAllow: _requestPermission,
               onNotNow: _notNow,
             ),
-          _LocationState.requesting => const _RequestingView(),
+          _LocationState.requesting => const _LoadingView(),
           _LocationState.blocked => _BlockedView(
               canRetry: _canRetry,
               onTryAgain: _requestPermission,
               onOpenSettings: openAppSettings,
             ),
-          _LocationState.granted => const _RequestingView(), // brief while saving
+          _LocationState.granted => const _LoadingView(),
         },
       ),
     );
@@ -191,29 +240,43 @@ enum _LocationState { initial, requesting, blocked, granted }
 
 class _InitialView extends StatelessWidget {
   const _InitialView({
+    required this.cityController,
+    required this.stateController,
+    required this.showFieldErrors,
+    required this.onFieldChanged,
     required this.onAllow,
     required this.onNotNow,
   });
 
+  final TextEditingController cityController;
+  final TextEditingController stateController;
+  final bool showFieldErrors;
+  final VoidCallback onFieldChanged;
   final VoidCallback onAllow;
   final VoidCallback onNotNow;
 
+  bool get _fieldsValid =>
+      cityController.text.trim().isNotEmpty &&
+      stateController.text.trim().isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
-    return Padding(
+    return SingleChildScrollView(
+      keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
       padding: const EdgeInsets.symmetric(horizontal: 28),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const SizedBox(height: 52),
-          const Center(child: IcebreakerLogo(size: 56, showGlow: false)),
-          const SizedBox(height: 36),
+          const SizedBox(height: 40),
 
-          // Location icon
+          const Center(child: IcebreakerLogo(size: 52, showGlow: false)),
+          const SizedBox(height: 28),
+
+          // ── Location permission section ──────────────────────────────────
           Center(
             child: Container(
-              width: 88,
-              height: 88,
+              width: 76,
+              height: 76,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: AppColors.brandPink.withValues(alpha: 0.08),
@@ -225,65 +288,131 @@ class _InitialView extends StatelessWidget {
               child: const Icon(
                 Icons.location_on_rounded,
                 color: AppColors.brandPink,
-                size: 40,
+                size: 36,
               ),
             ),
           ),
 
-          const SizedBox(height: 28),
+          const SizedBox(height: 20),
 
           Text(
             'Enable Location',
             style: AppTextStyles.h2,
             textAlign: TextAlign.center,
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
 
           Text(
-            'Icebreaker is a real-world app. We use your location to show you people nearby in real time — so you can go live, discover matches, and find each other in person.',
+            'Icebreaker uses your location to show people nearby when you\'re live.',
             style: AppTextStyles.bodyS,
             textAlign: TextAlign.center,
           ),
 
-          const SizedBox(height: 20),
+          const SizedBox(height: 16),
 
           // Trust bullets
-          ..._bullets.map(
+          ..._locationBullets.map(
             (text) => Padding(
-              padding: const EdgeInsets.symmetric(vertical: 5),
+              padding: const EdgeInsets.symmetric(vertical: 4),
               child: Row(
                 children: [
                   const Icon(Icons.check_rounded,
-                      color: AppColors.brandPink, size: 16),
+                      color: AppColors.brandPink, size: 15),
                   const SizedBox(width: 10),
-                  Expanded(
-                    child: Text(text, style: AppTextStyles.bodyS),
-                  ),
+                  Expanded(child: Text(text, style: AppTextStyles.bodyS)),
                 ],
               ),
             ),
           ),
 
-          const Spacer(),
+          const SizedBox(height: 24),
 
-          // Allow Location
+          // ── Divider ──────────────────────────────────────────────────────
+          Container(
+            height: 1,
+            color: AppColors.divider,
+          ),
+
+          const SizedBox(height: 24),
+
+          // ── Hometown section ─────────────────────────────────────────────
+          Text(
+            'Where are you from?',
+            style: AppTextStyles.h3,
+          ),
+          const SizedBox(height: 16),
+
+          // City field
+          _HometownField(
+            controller: cityController,
+            label: 'City / Town',
+            hint: 'e.g. Scottsdale',
+            showError: showFieldErrors && cityController.text.trim().isEmpty,
+            errorText: 'City is required',
+            onChanged: (_) => onFieldChanged(),
+            textInputAction: TextInputAction.next,
+          ),
+
+          const SizedBox(height: 10),
+
+          // State field
+          _HometownField(
+            controller: stateController,
+            label: 'State',
+            hint: 'e.g. Arizona',
+            showError: showFieldErrors && stateController.text.trim().isEmpty,
+            errorText: 'State is required',
+            onChanged: (_) => onFieldChanged(),
+            textInputAction: TextInputAction.done,
+          ),
+
+          const SizedBox(height: 10),
+
+          // Privacy helper
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 1),
+                child: Icon(Icons.info_outline_rounded,
+                    size: 13, color: AppColors.textMuted),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  'This appears on your profile. Your exact location is never shown to other users.',
+                  style: AppTextStyles.caption,
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 32),
+
+          // ── Allow Location button ─────────────────────────────────────────
           GestureDetector(
             onTap: onAllow,
-            child: Container(
-              height: 56,
-              decoration: BoxDecoration(
-                gradient: AppColors.brandGradient,
-                borderRadius: BorderRadius.circular(28),
-                boxShadow: [
-                  BoxShadow(
-                    color: AppColors.brandPink.withValues(alpha: 0.32),
-                    blurRadius: 18,
-                    offset: const Offset(0, 5),
-                  ),
-                ],
+            child: AnimatedOpacity(
+              opacity: _fieldsValid ? 1.0 : 0.50,
+              duration: const Duration(milliseconds: 180),
+              child: Container(
+                height: 56,
+                decoration: BoxDecoration(
+                  gradient: AppColors.brandGradient,
+                  borderRadius: BorderRadius.circular(28),
+                  boxShadow: _fieldsValid
+                      ? [
+                          BoxShadow(
+                            color: AppColors.brandPink.withValues(alpha: 0.32),
+                            blurRadius: 18,
+                            offset: const Offset(0, 5),
+                          ),
+                        ]
+                      : null,
+                ),
+                alignment: Alignment.center,
+                child: Text('Allow Location', style: AppTextStyles.buttonL),
               ),
-              alignment: Alignment.center,
-              child: Text('Allow Location', style: AppTextStyles.buttonL),
             ),
           ),
 
@@ -298,7 +427,8 @@ class _InitialView extends StatelessWidget {
               child: Text(
                 'Not Now',
                 textAlign: TextAlign.center,
-                style: AppTextStyles.body.withOpacity(0.45),
+                style: AppTextStyles.body
+                    .copyWith(color: AppColors.textPrimary.withValues(alpha: 0.40)),
               ),
             ),
           ),
@@ -309,7 +439,7 @@ class _InitialView extends StatelessWidget {
     );
   }
 
-  static const _bullets = [
+  static const _locationBullets = [
     'Only active while you\'re using the app',
     'Your location is never shared with other users',
     'You control exactly when you go live',
@@ -317,11 +447,85 @@ class _InitialView extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _RequestingView  (shown while OS dialog is open or while saving)
+// _HometownField
 // ─────────────────────────────────────────────────────────────────────────────
 
-class _RequestingView extends StatelessWidget {
-  const _RequestingView();
+class _HometownField extends StatelessWidget {
+  const _HometownField({
+    required this.controller,
+    required this.label,
+    required this.hint,
+    required this.showError,
+    required this.errorText,
+    required this.onChanged,
+    required this.textInputAction,
+  });
+
+  final TextEditingController controller;
+  final String label;
+  final String hint;
+  final bool showError;
+  final String errorText;
+  final ValueChanged<String> onChanged;
+  final TextInputAction textInputAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            color: AppColors.bgSurface,
+            borderRadius: BorderRadius.circular(14),
+            border: Border.all(
+              color: showError
+                  ? AppColors.danger
+                  : AppColors.divider,
+              width: showError ? 1.5 : 1.0,
+            ),
+          ),
+          child: TextField(
+            controller: controller,
+            onChanged: onChanged,
+            textInputAction: textInputAction,
+            textCapitalization: TextCapitalization.words,
+            style: AppTextStyles.body.copyWith(color: AppColors.textPrimary),
+            decoration: InputDecoration(
+              labelText: label,
+              labelStyle: AppTextStyles.bodyS
+                  .copyWith(color: AppColors.textSecondary),
+              hintText: hint,
+              hintStyle: AppTextStyles.bodyS
+                  .copyWith(color: AppColors.textMuted),
+              contentPadding: const EdgeInsets.symmetric(
+                  horizontal: 16, vertical: 14),
+              border: InputBorder.none,
+            ),
+          ),
+        ),
+        if (showError) ...[
+          const SizedBox(height: 4),
+          Padding(
+            padding: const EdgeInsets.only(left: 4),
+            child: Text(
+              errorText,
+              style: AppTextStyles.caption
+                  .copyWith(color: AppColors.danger),
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _LoadingView  (requesting or saving)
+// ─────────────────────────────────────────────────────────────────────────────
+
+class _LoadingView extends StatelessWidget {
+  const _LoadingView();
 
   @override
   Widget build(BuildContext context) {
@@ -362,7 +566,6 @@ class _BlockedView extends StatelessWidget {
         children: [
           const SizedBox(height: 80),
 
-          // Blocked icon
           Center(
             child: Container(
               width: 88,
@@ -400,7 +603,6 @@ class _BlockedView extends StatelessWidget {
 
           const Spacer(),
 
-          // Try Again — only shown if not permanently denied
           if (canRetry) ...[
             GestureDetector(
               onTap: onTryAgain,
@@ -424,7 +626,6 @@ class _BlockedView extends StatelessWidget {
             const SizedBox(height: 14),
           ],
 
-          // Open Settings — always shown
           GestureDetector(
             onTap: () => onOpenSettings(),
             child: Container(
@@ -452,13 +653,4 @@ class _BlockedView extends StatelessWidget {
       ),
     );
   }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// TextStyle helper
-// ─────────────────────────────────────────────────────────────────────────────
-
-extension _TextStyleOpacity on TextStyle {
-  TextStyle withOpacity(double opacity) =>
-      copyWith(color: (color ?? Colors.white).withValues(alpha: opacity));
 }

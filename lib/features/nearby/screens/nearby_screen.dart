@@ -29,6 +29,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       bio: 'Enjoys podcasts, brunch and hiking',
       photoUrl: '',
       distanceMeters: 14,
+      hometown: 'Denver, CO',
       lookingFor: 'Casual dating',
     ),
     _MockUser(
@@ -38,6 +39,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       bio: 'Loves coffee shops and live music',
       photoUrl: '',
       distanceMeters: 22,
+      hometown: 'Austin, TX',
       isGold: true,
       lookingFor: 'Open to anything',
     ),
@@ -90,6 +92,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
           bio: u.bio,
           photoUrl: u.photoUrl,
           distanceMeters: u.distanceMeters,
+          hometown: u.hometown,
           isGold: u.isGold,
           lookingFor: u.lookingFor,
           onSendIcebreaker: () => _navigateSendIcebreaker(u),
@@ -187,6 +190,7 @@ class _MockUser {
     required this.bio,
     required this.photoUrl,
     required this.distanceMeters,
+    this.hometown,
     this.isGold = false,
     this.lookingFor,
   });
@@ -196,6 +200,7 @@ class _MockUser {
   final String bio;
   final String photoUrl;
   final double distanceMeters;
+  final String? hometown;
   final bool isGold;
   final String? lookingFor;
 }

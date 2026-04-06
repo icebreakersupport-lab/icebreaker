@@ -21,6 +21,7 @@ class CarouselCard extends StatelessWidget {
     required this.photoUrl,
     this.selfieUrl,
     this.distanceMeters,
+    this.hometown,
     this.isGold = false,
     this.lookingFor,
     required this.onSendIcebreaker,
@@ -32,6 +33,8 @@ class CarouselCard extends StatelessWidget {
   final String photoUrl;
   final String? selfieUrl;
   final double? distanceMeters;
+  /// Short hometown label, e.g. "Scottsdale, AZ". Shown below name if non-null.
+  final String? hometown;
   final bool isGold;
   final String? lookingFor;
   final VoidCallback onSendIcebreaker;
@@ -119,6 +122,10 @@ class CarouselCard extends StatelessWidget {
                       if (distanceMeters != null) ...[
                         const SizedBox(height: 4),
                         _DistancePill(meters: distanceMeters!),
+                      ],
+                      if (hometown != null && hometown!.isNotEmpty) ...[
+                        const SizedBox(height: 4),
+                        _HometownPill(label: hometown!),
                       ],
                     ],
                   ),
@@ -219,6 +226,35 @@ class _LookingForPill extends StatelessWidget {
               color: AppColors.brandPink.withValues(alpha: 0.90),
               fontWeight: FontWeight.w600,
             ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HometownPill extends StatelessWidget {
+  const _HometownPill({required this.label});
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+      decoration: BoxDecoration(
+        color: Colors.black54,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white24, width: 0.5),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Icon(Icons.location_on_rounded,
+              size: 11, color: Colors.white70),
+          const SizedBox(width: 3),
+          Text(
+            'From $label',
+            style: AppTextStyles.caption.copyWith(color: Colors.white70),
           ),
         ],
       ),
