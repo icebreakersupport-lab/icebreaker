@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -13,6 +15,8 @@ import '../../meetup/screens/matched_screen.dart';
 import '../../meetup/screens/color_match_screen.dart';
 import '../../meetup/screens/post_meet_screen.dart';
 import '../../meetup/screens/match_confirmed_screen.dart';
+import '../../onboarding/screens/onboarding_photo_screen.dart';
+import '../../onboarding/screens/onboarding_slideshow_screen.dart';
 
 /// Temporary development-only screen — lists every implemented screen
 /// for quick visual inspection during the UI polish pass.
@@ -34,6 +38,52 @@ class DesignPreviewScreen extends StatelessWidget {
           children: [
             _buildHeader(),
             const SizedBox(height: 32),
+            _buildSection(
+              title: 'Onboarding Flow',
+              items: [
+                _Item(
+                  label: 'Name',
+                  icon: Icons.badge_outlined,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingName),
+                ),
+                _Item(
+                  label: 'Birthday',
+                  icon: Icons.cake_outlined,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingBirthday),
+                ),
+                _Item(
+                  label: 'Gender',
+                  icon: Icons.people_outline_rounded,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingGender),
+                ),
+                _Item(
+                  label: 'Open To',
+                  icon: Icons.favorite_border_rounded,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingOpenTo),
+                ),
+                _Item(
+                  label: 'Orientation',
+                  icon: Icons.tune_rounded,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingOrientation),
+                ),
+                _Item(
+                  label: 'Location',
+                  icon: Icons.location_on_outlined,
+                  onTap: (ctx) => ctx.go(AppRoutes.onboardingLocation),
+                ),
+                _Item(
+                  label: 'First Photo',
+                  icon: Icons.add_a_photo_outlined,
+                  onTap: (ctx) => _push(ctx, const OnboardingPhotoScreen()),
+                ),
+                _Item(
+                  label: 'Slideshow',
+                  icon: Icons.slideshow_rounded,
+                  onTap: (ctx) => _push(ctx, const OnboardingSlideshowScreen()),
+                ),
+              ],
+            ),
+            const SizedBox(height: 24),
             _buildSection(
               title: 'Shell Tabs',
               items: [
