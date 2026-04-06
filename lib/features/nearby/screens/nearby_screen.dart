@@ -1,17 +1,33 @@
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
+import '../../../core/constants/app_constants.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
-import '../widgets/carousel_card.dart';
+import '../widgets/nearby_focus_card.dart';
+import '../widgets/nearby_about_me_card.dart';
 
-/// Nearby tab — the discovery carousel.
+/// Nearby tab — horizontal discovery carousel.
 ///
-/// Layout (from slide 7):
-///   - List of CarouselCards scrollable vertically (page-snap feel)
-///   - Empty state when not live or no nearby users
-///   - "Not live" gate: prompt user to go live first
+/// Layout (when live + users present):
+///   ┌─────────────────────────────────────────────┐
+///   │  AppBar  (Nearby title + filter icon)       │
+///   │─────────────────────────────────────────────│
+///   │                                             │
+///   │  [card]  [FOCUSED CARD]  [card]   ← 80% vp │
+///   │                                             │
+///   │─────────────────────────────────────────────│
+///   │  About Me card  (updates on swipe)          │
+///   └─────────────────────────────────────────────┘
+///
+/// PageView uses viewportFraction: 0.80 so ~10% of each adjacent card
+/// is visible on both sides, giving a clear depth/carousel feel.
+/// onPageChanged drives the About Me panel update.
+///
+/// When not live: "Go Live" gate is shown.
+/// When live but empty: empty-state prompt.
 class NearbyScreen extends StatefulWidget {
   const NearbyScreen({super.key});
 
@@ -20,30 +36,66 @@ class NearbyScreen extends StatefulWidget {
 }
 
 class _NearbyScreenState extends State<NearbyScreen> {
-  // TODO: replace with real state from Firestore via Riverpod
-  final List<_MockUser> _nearbyUsers = [
+  late final PageController _pageController;
+  int _currentIndex = 0;
+
+  // TODO: replace with real Firestore state
+  final List<_MockUser> _nearbyUsers = const [
     _MockUser(
       id: '1',
       firstName: 'Jordan',
       age: 24,
-      bio: 'Enjoys podcasts, brunch and hiking',
+      bio: 'Podcasts, brunch, and long hikes',
       photoUrl: '',
       distanceMeters: 14,
       hometown: 'Denver, CO',
+      occupation: 'Product Designer',
+      height: "5'9\"",
       lookingFor: 'Casual dating',
+      opener: 'Best hidden gem restaurant in the city?',
     ),
     _MockUser(
       id: '2',
       firstName: 'Alex',
       age: 22,
-      bio: 'Loves coffee shops and live music',
+      bio: 'Coffee shops, live music, and spontaneous road trips',
       photoUrl: '',
       distanceMeters: 22,
       hometown: 'Austin, TX',
+      occupation: 'Startup Founder',
+      height: "6'1\"",
       isGold: true,
       lookingFor: 'Open to anything',
+      opener: 'Morning person or night owl?',
+    ),
+    _MockUser(
+      id: '3',
+      firstName: 'Sam',
+      age: 26,
+      bio: 'Weekend hiker, bookworm, amateur chef',
+      photoUrl: '',
+      distanceMeters: 8,
+      hometown: 'Chicago, IL',
+      occupation: 'Photographer',
+      height: "5'7\"",
+      lookingFor: 'Something serious',
+      opener: "What's on your reading list right now?",
     ),
   ];
+
+  @override
+  void initState() {
+    super.initState();
+    _pageController = PageController(viewportFraction: 0.80);
+  }
+
+  @override
+  void dispose() {
+    _pageController.dispose();
+    super.dispose();
+  }
+
+  // ── Build ─────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
@@ -52,8 +104,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
       body: SafeArea(
         top: false,
         child: LiveSessionScope.isLive(context)
-            ? _buildCarousel()
-            : _buildNotLiveState(),
+            ? _buildDiscovery()
+            : _buildNotLiveGate(),
       ),
     );
   }
@@ -75,39 +127,98 @@ class _NearbyScreenState extends State<NearbyScreen> {
     );
   }
 
-  Widget _buildCarousel() {
-    if (_nearbyUsers.isEmpty) {
-      return _buildEmptyState();
-    }
+  // ── Discovery layout ──────────────────────────────────────────────────────
 
-    return ListView.separated(
-      padding: const EdgeInsets.only(top: 8, bottom: 32),
-      itemCount: _nearbyUsers.length,
-      separatorBuilder: (context, index) => const SizedBox(height: 32),
-      itemBuilder: (context, i) {
-        final u = _nearbyUsers[i];
-        return CarouselCard(
-          firstName: u.firstName,
-          age: u.age,
-          bio: u.bio,
-          photoUrl: u.photoUrl,
-          distanceMeters: u.distanceMeters,
-          hometown: u.hometown,
-          isGold: u.isGold,
-          lookingFor: u.lookingFor,
-          onSendIcebreaker: () => _navigateSendIcebreaker(u),
+  Widget _buildDiscovery() {
+    if (_nearbyUsers.isEmpty) return _buildEmptyState();
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // Give 62% of body height to the card carousel.
+        // The remaining space holds the About Me panel.
+        final cardAreaHeight = constraints.maxHeight * 0.62;
+
+        return Column(
+          children: [
+            // ── Carousel ────────────────────────────────────────────────────
+            SizedBox(
+              height: cardAreaHeight,
+              // Clip.none lets the active card's glow shadow overflow the
+              // PageView bounds instead of being cut off.
+              child: PageView.builder(
+                controller: _pageController,
+                clipBehavior: Clip.none,
+                itemCount: _nearbyUsers.length,
+                onPageChanged: (i) => setState(() => _currentIndex = i),
+                itemBuilder: (context, i) {
+                  final u = _nearbyUsers[i];
+                  return NearbyFocusCard(
+                    firstName: u.firstName,
+                    age: u.age,
+                    bio: u.bio,
+                    photoUrl: u.photoUrl,
+                    distanceMeters: u.distanceMeters,
+                    hometown: u.hometown,
+                    opener: u.opener,
+                    isGold: u.isGold,
+                    isActive: i == _currentIndex,
+                    onSendIcebreaker: () => _navigateSendIcebreaker(u),
+                  );
+                },
+              ),
+            ),
+
+            // ── About Me panel ───────────────────────────────────────────────
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 280),
+                  switchInCurve: Curves.easeOut,
+                  switchOutCurve: Curves.easeIn,
+                  transitionBuilder: (child, animation) => FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: Tween<Offset>(
+                        begin: const Offset(0, 0.06),
+                        end: Offset.zero,
+                      ).animate(animation),
+                      child: child,
+                    ),
+                  ),
+                  child: NearbyAboutMeCard(
+                    key: ValueKey(_currentIndex),
+                    age: _nearbyUsers[_currentIndex].age,
+                    hometown: _nearbyUsers[_currentIndex].hometown,
+                    occupation: _nearbyUsers[_currentIndex].occupation,
+                    height: _nearbyUsers[_currentIndex].height,
+                    lookingFor: _nearbyUsers[_currentIndex].lookingFor,
+                  ),
+                ),
+              ),
+            ),
+          ],
         );
       },
     );
   }
 
+  // ── Navigation ────────────────────────────────────────────────────────────
+
   void _navigateSendIcebreaker(_MockUser user) {
-    Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => _SendIcebreakerPlaceholder(recipientName: user.firstName),
-      ),
+    context.push(
+      AppRoutes.sendIcebreaker,
+      extra: {
+        'recipientId': user.id,
+        'firstName': user.firstName,
+        'age': user.age,
+        'photoUrl': user.photoUrl,
+        'bio': user.bio,
+      },
     );
   }
+
+  // ── Empty / gate states ───────────────────────────────────────────────────
 
   Widget _buildEmptyState() {
     return Center(
@@ -125,7 +236,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Check back when you\'re out — users\nonly appear within 30 metres.',
+              'Check back when you\'re out —\nusers only appear within 30 metres.',
               style: AppTextStyles.bodyS,
               textAlign: TextAlign.center,
             ),
@@ -135,7 +246,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
     );
   }
 
-  Widget _buildNotLiveState() {
+  Widget _buildNotLiveGate() {
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(40),
@@ -151,7 +262,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'You need an active Live session to browse\npeople around you.',
+              'You need an active Live session to\nbrowse people around you.',
               style: AppTextStyles.bodyS,
               textAlign: TextAlign.center,
             ),
@@ -162,25 +273,9 @@ class _NearbyScreenState extends State<NearbyScreen> {
   }
 }
 
-// Temporary placeholder until SendIcebreakerScreen is wired via go_router
-class _SendIcebreakerPlaceholder extends StatelessWidget {
-  const _SendIcebreakerPlaceholder({required this.recipientName});
-  final String recipientName;
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.bgBase,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        title: Text(recipientName, style: AppTextStyles.h3),
-      ),
-      body: const Center(
-        child: Text('SendIcebreakerScreen — coming soon'),
-      ),
-    );
-  }
-}
+// ─────────────────────────────────────────────────────────────────────────────
+// _MockUser
+// ─────────────────────────────────────────────────────────────────────────────
 
 class _MockUser {
   const _MockUser({
@@ -191,9 +286,13 @@ class _MockUser {
     required this.photoUrl,
     required this.distanceMeters,
     this.hometown,
+    this.occupation,
+    this.height,
     this.isGold = false,
     this.lookingFor,
+    this.opener,
   });
+
   final String id;
   final String firstName;
   final int age;
@@ -201,6 +300,9 @@ class _MockUser {
   final String photoUrl;
   final double distanceMeters;
   final String? hometown;
+  final String? occupation;
+  final String? height;
   final bool isGold;
   final String? lookingFor;
+  final String? opener;
 }
