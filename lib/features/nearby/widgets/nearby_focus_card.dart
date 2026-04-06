@@ -114,7 +114,7 @@ class NearbyFocusCard extends StatelessWidget {
                         ],
                       ),
 
-                      const SizedBox(height: 14),
+                      const SizedBox(height: 18),
 
                       // CTA button — centered label, no icon/emoji
                       PillButton.primary(

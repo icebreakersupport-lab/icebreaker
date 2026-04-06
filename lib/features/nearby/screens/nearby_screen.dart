@@ -132,70 +132,62 @@ class _NearbyScreenState extends State<NearbyScreen> {
   Widget _buildDiscovery() {
     if (_nearbyUsers.isEmpty) return _buildEmptyState();
 
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        // Give 72% of body height to the card carousel.
-        // The remaining 28% holds the About Me panel.
-        final cardAreaHeight = constraints.maxHeight * 0.72;
+    // Layout strategy: About Me renders at its natural height (no overflow).
+    // The carousel takes everything above it via Expanded.
+    // This avoids any fixed-percentage height guessing.
+    return Column(
+      children: [
+        // ── Carousel — fills all space above the About Me card ───────────────
+        Expanded(
+          child: PageView.builder(
+            controller: _pageController,
+            // Clip.none lets the active card's glow shadow overflow the
+            // PageView bounds instead of being clipped.
+            clipBehavior: Clip.none,
+            itemCount: _nearbyUsers.length,
+            onPageChanged: (i) => setState(() => _currentIndex = i),
+            itemBuilder: (context, i) {
+              final u = _nearbyUsers[i];
+              return NearbyFocusCard(
+                firstName: u.firstName,
+                age: u.age,
+                photoUrl: u.photoUrl,
+                isGold: u.isGold,
+                isActive: i == _currentIndex,
+                onSendIcebreaker: () => _navigateSendIcebreaker(u),
+              );
+            },
+          ),
+        ),
 
-        return Column(
-          children: [
-            // ── Carousel ────────────────────────────────────────────────────
-            SizedBox(
-              height: cardAreaHeight,
-              // Clip.none lets the active card's glow shadow overflow the
-              // PageView bounds instead of being cut off.
-              child: PageView.builder(
-                controller: _pageController,
-                clipBehavior: Clip.none,
-                itemCount: _nearbyUsers.length,
-                onPageChanged: (i) => setState(() => _currentIndex = i),
-                itemBuilder: (context, i) {
-                  final u = _nearbyUsers[i];
-                  return NearbyFocusCard(
-                    firstName: u.firstName,
-                    age: u.age,
-                    photoUrl: u.photoUrl,
-                    isGold: u.isGold,
-                    isActive: i == _currentIndex,
-                    onSendIcebreaker: () => _navigateSendIcebreaker(u),
-                  );
-                },
+        // ── About Me — natural height, never overflows ───────────────────────
+        Padding(
+          padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            switchInCurve: Curves.easeOut,
+            switchOutCurve: Curves.easeIn,
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: SlideTransition(
+                position: Tween<Offset>(
+                  begin: const Offset(0, 0.06),
+                  end: Offset.zero,
+                ).animate(animation),
+                child: child,
               ),
             ),
-
-            // ── About Me panel ───────────────────────────────────────────────
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(20, 8, 20, 12),
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 280),
-                  switchInCurve: Curves.easeOut,
-                  switchOutCurve: Curves.easeIn,
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: Tween<Offset>(
-                        begin: const Offset(0, 0.06),
-                        end: Offset.zero,
-                      ).animate(animation),
-                      child: child,
-                    ),
-                  ),
-                  child: NearbyAboutMeCard(
-                    key: ValueKey(_currentIndex),
-                    age: _nearbyUsers[_currentIndex].age,
-                    hometown: _nearbyUsers[_currentIndex].hometown,
-                    occupation: _nearbyUsers[_currentIndex].occupation,
-                    height: _nearbyUsers[_currentIndex].height,
-                    lookingFor: _nearbyUsers[_currentIndex].lookingFor,
-                  ),
-                ),
-              ),
+            child: NearbyAboutMeCard(
+              key: ValueKey(_currentIndex),
+              age: _nearbyUsers[_currentIndex].age,
+              hometown: _nearbyUsers[_currentIndex].hometown,
+              occupation: _nearbyUsers[_currentIndex].occupation,
+              height: _nearbyUsers[_currentIndex].height,
+              lookingFor: _nearbyUsers[_currentIndex].lookingFor,
             ),
-          ],
-        );
-      },
+          ),
+        ),
+      ],
     );
   }
 

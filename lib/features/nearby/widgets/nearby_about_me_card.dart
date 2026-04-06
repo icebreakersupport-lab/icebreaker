@@ -31,7 +31,7 @@ class NearbyAboutMeCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(16, 14, 16, 14),
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
       decoration: BoxDecoration(
         color: AppColors.bgSurface,
         borderRadius: BorderRadius.circular(24),
@@ -57,7 +57,7 @@ class NearbyAboutMeCard extends StatelessWidget {
             ],
           ),
 
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
 
           _InfoRow(
             icon: Icons.cake_outlined,
@@ -65,7 +65,7 @@ class NearbyAboutMeCard extends StatelessWidget {
           ),
 
           if (hometown != null && hometown!.isNotEmpty) ...[
-            const SizedBox(height: 7),
+            const SizedBox(height: 6),
             _InfoRow(
               icon: Icons.location_on_outlined,
               label: hometown!,
@@ -73,7 +73,7 @@ class NearbyAboutMeCard extends StatelessWidget {
           ],
 
           if (occupation != null && occupation!.isNotEmpty) ...[
-            const SizedBox(height: 7),
+            const SizedBox(height: 6),
             _InfoRow(
               icon: Icons.work_outline_rounded,
               label: occupation!,
@@ -81,7 +81,7 @@ class NearbyAboutMeCard extends StatelessWidget {
           ],
 
           if (height != null && height!.isNotEmpty) ...[
-            const SizedBox(height: 7),
+            const SizedBox(height: 6),
             _InfoRow(
               icon: Icons.straighten_rounded,
               label: height!,
@@ -89,7 +89,7 @@ class NearbyAboutMeCard extends StatelessWidget {
           ],
 
           if (lookingFor != null && lookingFor!.isNotEmpty) ...[
-            const SizedBox(height: 7),
+            const SizedBox(height: 6),
             _InfoRow(
               icon: Icons.favorite_border_rounded,
               label: lookingFor!,
