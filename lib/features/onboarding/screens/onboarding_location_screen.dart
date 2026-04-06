@@ -48,7 +48,10 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    _checkExistingPermission();
+    // Do NOT auto-check on launch — the explainer screen must always appear
+    // so the user consciously grants location during onboarding.
+    // _checkExistingPermission() is called only when returning from Settings
+    // (see didChangeAppLifecycleState) so the blocked→granted path still works.
   }
 
   @override

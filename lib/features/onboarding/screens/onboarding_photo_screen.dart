@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
@@ -39,8 +40,10 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
 
   // ─── Photo picking ───────────────────────────────────────────────────────────
 
-  void _showPickerSheet() {
-    showModalBottomSheet<void>(
+  // Returns the chosen source from the sheet AFTER the sheet is fully dismissed,
+  // so the iOS ViewController stack is clear before image_picker presents its UI.
+  Future<void> _showPickerSheet() async {
+    final source = await showModalBottomSheet<ImageSource>(
       context: context,
       backgroundColor: AppColors.bgSurface,
       shape: const RoundedRectangleBorder(
@@ -63,24 +66,23 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
             _SheetOption(
               icon: Icons.photo_library_rounded,
               label: 'Choose from Library',
-              onTap: () {
-                Navigator.pop(ctx);
-                _pick(ImageSource.gallery);
-              },
+              onTap: () => Navigator.pop(ctx, ImageSource.gallery),
             ),
             _SheetOption(
               icon: Icons.camera_alt_rounded,
               label: 'Take a Photo',
-              onTap: () {
-                Navigator.pop(ctx);
-                _pick(ImageSource.camera);
-              },
+              onTap: () => Navigator.pop(ctx, ImageSource.camera),
             ),
             const SizedBox(height: 16),
           ],
         ),
       ),
     );
+
+    // Sheet is now fully dismissed — safe to present the picker.
+    if (source != null && mounted) {
+      await _pick(source);
+    }
   }
 
   Future<void> _pick(ImageSource source) async {
@@ -94,6 +96,29 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
       if (picked != null && mounted) {
         setState(() => _photo = picked);
       }
+    } on PlatformException catch (e) {
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ❌ picker PlatformException: ${e.code} — ${e.message}');
+      if (!mounted) return;
+      final msg = switch (e.code) {
+        'camera_access_denied' =>
+          'Camera access is off. Go to Settings → Icebreaker → Camera to enable it.',
+        'photo_access_denied' =>
+          'Photo library access is off. Go to Settings → Icebreaker → Photos to enable it.',
+        'invalid_source' || 'source_unavailable' =>
+          'Camera is not available on this device.',
+        _ => source == ImageSource.camera
+            ? 'Camera is not available on this device.'
+            : 'Could not open your photo library. Please try again.',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(msg, style: AppTextStyles.bodyS),
+          backgroundColor: AppColors.bgSurface,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
+        ),
+      );
     } catch (e) {
       // ignore: avoid_print
       print('[Onboarding/Photo] ❌ picker error: $e');
