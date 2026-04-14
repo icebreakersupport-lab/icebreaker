@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
@@ -24,53 +23,6 @@ import '../../../shared/widgets/gradient_scaffold.dart';
 ///   3 action buttons — Edit Profile / My Gallery / Profile Checklist
 ///   About Me card — bio + bullet details
 ///   Photos & Media strip — saved photos + video indicator
-Future<void> _showSignOutDialog(BuildContext context) async {
-  final confirmed = await showDialog<bool>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      backgroundColor: const Color(0xFF1C002E),
-      title: const Text('Sign out?', style: TextStyle(color: Colors.white)),
-      content: const Text(
-        'You will need to sign back in to use Icebreaker.',
-        style: TextStyle(color: Colors.white70),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(false),
-          child:
-              const Text('Cancel', style: TextStyle(color: Colors.white54)),
-        ),
-        TextButton(
-          onPressed: () => Navigator.of(ctx).pop(true),
-          child: const Text('Sign out',
-              style: TextStyle(color: Color(0xFFFF2D7B))),
-        ),
-      ],
-    ),
-  );
-
-  if (confirmed != true) return;
-  // ignore: avoid_print
-  print('[SignOut] ▶ user confirmed sign out');
-  try {
-    await FirebaseAuth.instance.signOut();
-    // ignore: avoid_print
-    print('[SignOut] ✅ signOut() succeeded');
-  } catch (e) {
-    // ignore: avoid_print
-    print('[SignOut] ❌ signOut() failed: $e');
-  }
-
-  // Navigate to sign-in regardless — local session is cleared even if
-  // the network call failed.
-  if (context.mounted) {
-    // ignore: avoid_print
-    print('[SignOut] ▶ navigating to /sign-in');
-    context.go(AppRoutes.signIn);
-    // ignore: avoid_print
-    print('[SignOut] ✅ navigation triggered');
-  }
-}
 
 class ProfileScreen extends StatelessWidget {
   const ProfileScreen({super.key});
@@ -94,7 +46,7 @@ class ProfileScreen extends StatelessWidget {
           IconButton(
             icon: const Icon(Icons.settings_outlined,
                 color: AppColors.textSecondary),
-            onPressed: () => _showSignOutDialog(context),
+            onPressed: () => context.push(AppRoutes.settings),
           ),
         ],
       ),

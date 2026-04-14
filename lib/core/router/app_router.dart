@@ -7,6 +7,7 @@ import '../../features/home/screens/live_verification_screen.dart';
 import '../../features/nearby/screens/nearby_screen.dart';
 import '../../features/nearby/screens/send_icebreaker_screen.dart';
 import '../../features/messages/screens/messages_screen.dart';
+import '../../features/messages/screens/chat_thread_screen.dart';
 import '../../features/meetup/screens/icebreaker_received_screen.dart';
 import '../../features/meetup/screens/matched_screen.dart';
 import '../../features/meetup/screens/color_match_screen.dart';
@@ -30,6 +31,7 @@ import '../../features/onboarding/screens/onboarding_photo_screen.dart';
 import '../../features/onboarding/screens/onboarding_slideshow_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
+import '../../features/settings/screens/settings_screen.dart';
 import '../constants/app_constants.dart';
 
 /// Icebreaker app router using go_router.
@@ -137,11 +139,11 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return IcebreakerReceivedScreen(
           icebreakerId: extra['icebreakerId'] as String,
+          senderId: (extra['senderId'] as String?) ?? '',
           senderFirstName: extra['senderFirstName'] as String,
-          senderAge: extra['senderAge'] as int,
           senderPhotoUrl: extra['senderPhotoUrl'] as String,
-          myPhotoUrl: extra['myPhotoUrl'] as String,
-          myFirstName: extra['myFirstName'] as String,
+          myPhotoUrl: (extra['myPhotoUrl'] as String?) ?? '',
+          myFirstName: (extra['myFirstName'] as String?) ?? '',
           message: extra['message'] as String,
           secondsRemaining: extra['secondsRemaining'] as int,
         );
@@ -155,6 +157,7 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return MatchedScreen(
           meetupId: extra['meetupId'] as String,
+          otherUserId: (extra['otherUserId'] as String?) ?? '',
           matchColor: extra['matchColor'] as Color,
           otherFirstName: extra['otherFirstName'] as String,
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
@@ -172,6 +175,7 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return ColorMatchScreen(
           meetupId: extra['meetupId'] as String,
+          otherUserId: (extra['otherUserId'] as String?) ?? '',
           matchColor: extra['matchColor'] as Color,
           otherFirstName: extra['otherFirstName'] as String,
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
@@ -259,6 +263,24 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const OnboardingSlideshowScreen(),
     ),
 
+    // ── Chat thread ───────────────────────────────────────────────────────
+    // Used only for unlocked conversations (Chats section).
+    // Locked and history modes use Navigator.push directly.
+    GoRoute(
+      path: AppRoutes.chat,
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>;
+        return ChatThreadScreen(
+          icebreakerId: '',
+          conversationId: extra['conversationId'] as String?,
+          otherFirstName: (extra['otherFirstName'] as String?) ?? '',
+          otherPhotoUrl: (extra['otherPhotoUrl'] as String?) ?? '',
+          message: '',
+          status: 'unlocked',
+        );
+      },
+    ),
+
     // ── Design preview (dev only) ─────────────────────────────────────────
     GoRoute(
       path: '/preview',
@@ -314,6 +336,11 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.profileChecklist,
       builder: (context, state) => const ProfileChecklistScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.settings,
+      builder: (context, state) => const SettingsScreen(),
     ),
   ],
 );
