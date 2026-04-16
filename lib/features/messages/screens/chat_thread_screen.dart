@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../reports/widgets/report_sheet.dart';
 
 /// Chat thread screen — three display modes determined by [status]:
 ///
@@ -619,6 +620,55 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
                   ),
                 ),
               ),
+
+              // ── Report ────────────────────────────────────────────────────
+              ListTile(
+                leading: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.flag_rounded,
+                      color: AppColors.warning, size: 18),
+                ),
+                title: Text(
+                  'Report ${widget.otherFirstName}',
+                  style: AppTextStyles.body.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  'Submit a confidential report to our safety team',
+                  style:
+                      AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  if (!mounted) return;
+                  final otherId = _otherUserId;
+                  if (otherId == null) return;
+                  showReportSheet(
+                    context,
+                    reportedUserId: otherId,
+                    firstName: widget.otherFirstName,
+                    conversationId: widget.conversationId,
+                    source: 'chat',
+                  );
+                },
+              ),
+
+              // Subtle divider between Report and Block
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Divider(
+                    height: 1, color: AppColors.divider.withValues(alpha: 0.6)),
+              ),
+
+              // ── Block ─────────────────────────────────────────────────────
               ListTile(
                 leading: Container(
                   width: 36,
