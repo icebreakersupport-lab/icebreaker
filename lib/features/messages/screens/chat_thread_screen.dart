@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
@@ -71,6 +73,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   String? _otherUserId;
   bool _isBlocking = false;
 
+  // Live subscription on the conversation doc — detects status changes
+  // (e.g. status='blocked' written by the Cloud Function when a block occurs)
+  // and flips _convVerified reactively so the composer closes without requiring
+  // a navigation event.
+  StreamSubscription<DocumentSnapshot>? _convStatusSub;
+
   bool get _isLocked => widget.status == 'locked';
 
   // Unlocked iff Firestore confirmed the user is a participant in an active
@@ -124,6 +132,25 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           _otherUserId = otherId.isNotEmpty ? otherId : null;
         });
       }
+
+      // After confirming participation, subscribe to live status changes.
+      // This ensures that if the conversation is blocked while this screen
+      // is open (e.g. the other user blocks us via the Cloud Function), the
+      // composer and stream gate close immediately without requiring a reload.
+      if (isParticipant) {
+        _convStatusSub = FirebaseFirestore.instance
+            .collection('conversations')
+            .doc(widget.conversationId)
+            .snapshots()
+            .listen((snap) {
+          if (!mounted) return;
+          final liveStatus = snap.data()?['status'] as String? ?? '';
+          final isStillActive = liveStatus == 'active';
+          if (_convVerified != isStillActive) {
+            setState(() => _convVerified = isStillActive);
+          }
+        });
+      }
     } catch (e) {
       debugPrint('[ChatThread] conversation access check failed: $e');
       if (mounted) setState(() => _convVerified = false);
@@ -132,6 +159,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   @override
   void dispose() {
+    _convStatusSub?.cancel();
     _messageController.dispose();
     _scrollController.dispose();
     super.dispose();
