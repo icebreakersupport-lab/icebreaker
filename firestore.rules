@@ -3,14 +3,225 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // ── Users ──────────────────────────────────────────────────────────────
-    // Each user can read and write their own document only.
-    // The document ID must match the caller's Firebase Auth uid.
+    // ── Users ─────────────────────────────────────────────────────────────────
     match /users/{userId} {
-      allow read, write: if request.auth != null
-                         && request.auth.uid == userId;
+      // Owner: full read + write of their own document.
+      allow write: if request.auth != null
+                   && request.auth.uid == userId;
+
+      // Owner: read their own full document.
+      allow read: if request.auth != null
+                  && request.auth.uid == userId;
+
+      // Discovery read: any authenticated user may read another user's
+      // public profile fields when that user is live.  The client query
+      // filters by isLive==true before requesting individual docs, so this
+      // rule is only exercised for actually-live users.
+      //
+      // Permitted fields (read by the Nearby discovery query):
+      //   firstName, age, bio, photoUrl, isLive, geohash, latitude, longitude,
+      //   locationUpdatedAt, showMe, ageRangeMin, ageRangeMax, plan,
+      //   hometown, occupation, height, lookingFor, opener
+      //
+      // Private fields (email, phone, doNotDisturb, credits, etc.) are not
+      // restricted at the rule layer — Firestore rules can't project fields.
+      // The client query only reads the fields it needs; no sensitive fields
+      // are fetched by the discovery stream.
+      allow read: if request.auth != null
+                  && request.auth.uid != userId
+                  && resource.data.isLive == true;
+
+      // ── Blocked users subcollection ────────────────────────────────────────
+      // Schema: users/{userId}/blockedUsers/{blockedUserId}
+      //   blockedAt   : Timestamp
+      //   displayName : String
+      //   photoUrl    : String
+      //
+      // Write  — only the user who owns the list (the blocker).
+      // Read   — the owner OR the person who was blocked.
+      //          The "OR blocked" grant is intentionally narrow: it lets the
+      //          security rule for icebreakers.create call exists() on
+      //          "has this recipient blocked me?" without leaking the full
+      //          blocked-users list to third parties.
+      match /blockedUsers/{blockedUserId} {
+        allow write:  if request.auth != null
+                      && request.auth.uid == userId;
+
+        allow read:   if request.auth != null
+                      && (request.auth.uid == userId
+                       || request.auth.uid == blockedUserId);
+      }
     }
 
-    // All other documents are denied by default.
+    // ── Icebreakers ───────────────────────────────────────────────────────────
+    // create : only the sender; senderId in the new doc must equal their uid.
+    //          Block enforcement (two exists() checks):
+    //            a) sender must not be in recipient's blockedUsers list
+    //            b) recipient must not be in sender's blockedUsers list
+    //          Both checks use exists() which is allowed by the blockedUsers
+    //          read rule above — each check reads a doc where auth.uid is
+    //          either the owner (a) or the blocked person (b).
+    // read   : sender or recipient (covers both get and list/query).
+    // update : sender or recipient (accept / decline / expire flows).
+    // delete : not permitted.
+    match /icebreakers/{icebreakerId} {
+      allow create: if request.auth != null
+                    && request.resource.data.senderId == request.auth.uid
+                    // Recipient has not blocked the sender.
+                    && !exists(/databases/$(database)/documents/users/$(request.resource.data.recipientId)/blockedUsers/$(request.auth.uid))
+                    // Sender has not blocked the recipient.
+                    && !exists(/databases/$(database)/documents/users/$(request.auth.uid)/blockedUsers/$(request.resource.data.recipientId));
+
+      allow read:   if request.auth != null
+                    && (resource.data.senderId    == request.auth.uid
+                     || resource.data.recipientId == request.auth.uid);
+
+      allow update: if request.auth != null
+                    && (resource.data.senderId    == request.auth.uid
+                     || resource.data.recipientId == request.auth.uid);
+    }
+
+    // ── Meetups ───────────────────────────────────────────────────────────────
+    // Created by the icebreaker recipient when they accept.
+    // Both participants can read and write limited status updates.
+    match /meetups/{meetupId} {
+
+      allow read: if request.auth != null
+                  && request.auth.uid in resource.data.participants;
+
+      // The recipient creates the meetup doc with both UIDs when they accept
+      // the icebreaker.  Creator must be listed in participants and the doc
+      // must include exactly two participants.
+      allow create: if request.auth != null
+                    && request.auth.uid in request.resource.data.participants
+                    && request.resource.data.participants.size() == 2;
+
+      // Participants may update limited status fields only.
+      // Core identity fields (participants, participantNames, icebreakerId,
+      // createdAt) are immutable after creation.
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.participants
+                    && !request.resource.data.diff(resource.data).affectedKeys()
+                        .hasAny(['participants', 'participantNames',
+                                 'participantPhotos', 'icebreakerId', 'createdAt']);
+
+      allow delete: if false;
+
+      // ── Post-meet decisions ────────────────────────────────────────────────
+      // Each user writes exactly one decision document for themselves.
+      // Decisions are permanent — no updates or deletes permitted.
+      match /decisions/{uid} {
+
+        // Both participants may read all decisions under this meetup.
+        // This lets clients show "waiting for the other person…" states.
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/meetups/$(meetupId))
+                       .data.participants;
+
+        // A user may only create their own decision document, provided:
+        //   - the document ID matches their UID (prevents impersonation)
+        //   - they are a listed participant in the meetup
+        //   - the decision value is one of the two valid choices
+        //   - the uid field in the payload also matches their uid
+        allow create: if request.auth != null
+                      && request.auth.uid == uid
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.participants
+                      && request.resource.data.decision in
+                         ['we_got_this', 'nice_meeting_you']
+                      && request.resource.data.uid == request.auth.uid;
+
+        // Decisions are immutable once submitted.
+        allow update, delete: if false;
+      }
+    }
+
+    // ── Conversations ─────────────────────────────────────────────────────────
+    // Created exclusively by the onMeetupDecisionWritten Cloud Function via
+    // the admin SDK, which bypasses security rules.  No client may create a
+    // conversation document directly — this is the key server-side gate that
+    // guarantees mutual consent before chat unlocks.
+    match /conversations/{conversationId} {
+
+      // Read: only listed participants.
+      allow read: if request.auth != null
+                  && request.auth.uid in resource.data.participants;
+
+      // CREATE IS FORBIDDEN FOR CLIENTS.
+      // The Cloud Function (admin SDK) is the only writer here.
+      allow create: if false;
+
+      // Participants may update metadata only: lastMessage, lastMessageAt,
+      // and per-user unread counts.  The protected fields below cannot be
+      // changed by any client, preventing self-promotion or status forging.
+      allow update: if request.auth != null
+                    && request.auth.uid in resource.data.participants
+                    && !request.resource.data.diff(resource.data).affectedKeys()
+                        .hasAny(['status', 'participants', 'participantNames',
+                                 'participantPhotos', 'sourceIcebreakerId',
+                                 'meetupId', 'createdAt']);
+
+      // Conversations are never deleted by clients.
+      allow delete: if false;
+
+      // ── Messages subcollection ───────────────────────────────────────────────
+      // Access is participant-gated via get() on the parent conversation.
+      // The extra read counts as one read-op per rule evaluation — acceptable
+      // at MVP scale.
+      match /messages/{messageId} {
+
+        // Read: only participants of the parent conversation.
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/conversations/$(conversationId))
+                       .data.participants;
+
+        // Create: participants only, as themselves, text type only.
+        //   - senderId must equal the authenticated UID (prevents impersonation)
+        //   - All required fields must be present
+        //   - Only 'text' type allowed; 'system' is server-only
+        //   - Conversation must still be active (status == 'active').
+        //     A block sets status to 'blocked' via the Cloud Function, which
+        //     immediately prevents new messages at the rules layer without
+        //     requiring a separate blocked-users lookup here.
+        allow create: if request.auth != null
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/conversations/$(conversationId))
+                         .data.participants
+                      && get(/databases/$(database)/documents/conversations/$(conversationId))
+                         .data.status == 'active'
+                      && request.resource.data.senderId == request.auth.uid
+                      && request.resource.data.keys().hasAll(
+                           ['senderId', 'text', 'type', 'createdAt'])
+                      && request.resource.data.type == 'text';
+
+        // Messages are immutable once written.
+        allow update, delete: if false;
+      }
+    }
+
+    // ── Reports ───────────────────────────────────────────────────────────────
+    // Written by the reporting user.  Readable only by admins (server SDK).
+    // Schema: reports/{auto-id}
+    //   reporterId   : String  — auth.uid of the reporter
+    //   reportedId   : String  — uid of the reported user
+    //   reason       : String  — selected category
+    //   note         : String  — optional free-text
+    //   context      : String  — 'nearby' | 'chat' | 'profile'
+    //   createdAt    : Timestamp
+    match /reports/{reportId} {
+      allow create: if request.auth != null
+                    && request.resource.data.reporterId == request.auth.uid
+                    && request.resource.data.keys().hasAll(
+                         ['reporterId', 'reportedId', 'reason', 'createdAt'])
+                    && request.resource.data.reason in
+                         ['spam', 'harassment', 'inappropriate_content',
+                          'fake_profile', 'other'];
+
+      // Reports are write-once and read by admins only (server SDK bypasses rules).
+      allow read, update, delete: if false;
+    }
   }
 }

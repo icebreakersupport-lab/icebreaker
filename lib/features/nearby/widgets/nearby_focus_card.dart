@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/pill_button.dart';
+import '../../reports/widgets/report_sheet.dart';
 
 /// The hero profile card shown in the Nearby discovery carousel.
 ///
@@ -20,14 +21,17 @@ import '../../../shared/widgets/pill_button.dart';
 class NearbyFocusCard extends StatelessWidget {
   const NearbyFocusCard({
     super.key,
+    required this.recipientId,
     required this.firstName,
     required this.age,
     required this.photoUrl,
     this.isGold = false,
     this.isActive = true,
     required this.onSendIcebreaker,
+    required this.onBlock,
   });
 
+  final String recipientId;
   final String firstName;
   final int age;
   final String photoUrl;
@@ -37,6 +41,9 @@ class NearbyFocusCard extends StatelessWidget {
   final bool isActive;
 
   final VoidCallback onSendIcebreaker;
+
+  /// Called after the user confirms a block action for this card.
+  final VoidCallback onBlock;
 
   @override
   Widget build(BuildContext context) {
@@ -69,6 +76,18 @@ class NearbyFocusCard extends StatelessWidget {
                     right: 16,
                     child: _GoldBadge(),
                   ),
+
+                // ── More-options button (top-left) ────────────────────────────
+                Positioned(
+                  top: 14,
+                  left: 14,
+                  child: _MoreOptionsButton(
+                    recipientId: recipientId,
+                    firstName: firstName,
+                    cardContext: context,
+                    onBlock: onBlock,
+                  ),
+                ),
 
                 // ── Bottom overlay: name + age + button ───────────────────────
                 Positioned(
@@ -129,6 +148,194 @@ class NearbyFocusCard extends StatelessWidget {
               ],
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _MoreOptionsButton
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Small frosted pill button in the top-left corner of the card.
+/// Tapping opens a bottom sheet with the Block action.
+///
+/// [cardContext] is the BuildContext from NearbyFocusCard.build — used to
+/// show the confirmation dialog after the sheet is dismissed, so the dialog
+/// mounts correctly on the route below the sheet.
+class _MoreOptionsButton extends StatelessWidget {
+  const _MoreOptionsButton({
+    required this.recipientId,
+    required this.firstName,
+    required this.cardContext,
+    required this.onBlock,
+  });
+
+  final String recipientId;
+  final String firstName;
+  final BuildContext cardContext;
+  final VoidCallback onBlock;
+
+  void _showOptions() {
+    showModalBottomSheet<void>(
+      context: cardContext,
+      backgroundColor: AppColors.bgSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Handle
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  margin: const EdgeInsets.only(top: 12, bottom: 8),
+                  decoration: BoxDecoration(
+                    color: AppColors.divider,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+              ),
+              // ── Report ──────────────────────────────────────────────────
+              ListTile(
+                leading: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.warning.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.flag_rounded,
+                      color: AppColors.warning, size: 18),
+                ),
+                title: Text(
+                  'Report $firstName',
+                  style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w600),
+                ),
+                subtitle: Text(
+                  'Submit a confidential report to our safety team',
+                  style:
+                      AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  showReportSheet(
+                    cardContext,
+                    reportedUserId: recipientId,
+                    firstName: firstName,
+                    source: 'nearby',
+                  );
+                },
+              ),
+
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 20),
+                child: Divider(
+                    height: 1, color: AppColors.divider.withValues(alpha: 0.6)),
+              ),
+
+              // ── Block ────────────────────────────────────────────────────
+              ListTile(
+                leading: Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    color: AppColors.danger.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                  ),
+                  child: const Icon(Icons.block_rounded,
+                      color: AppColors.danger, size: 18),
+                ),
+                title: Text(
+                  'Block $firstName',
+                  style: AppTextStyles.body.copyWith(
+                    color: AppColors.danger,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                subtitle: Text(
+                  'They won\'t see you or be able to message you',
+                  style:
+                      AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+                ),
+                contentPadding:
+                    const EdgeInsets.symmetric(horizontal: 20, vertical: 4),
+                onTap: () async {
+                  Navigator.of(sheetCtx).pop();
+                  // Confirm before blocking.
+                  final confirmed = await showDialog<bool>(
+                    context: cardContext,
+                    builder: (dialogCtx) => AlertDialog(
+                      backgroundColor: AppColors.bgElevated,
+                      shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(18)),
+                      title: Text(
+                        'Block $firstName?',
+                        style: AppTextStyles.h3
+                            .copyWith(color: AppColors.textPrimary),
+                      ),
+                      content: Text(
+                        '$firstName won\'t appear in Nearby and '
+                        'won\'t be able to send you Icebreakers.',
+                        style: AppTextStyles.bodyS,
+                      ),
+                      actions: [
+                        TextButton(
+                          onPressed: () =>
+                              Navigator.of(dialogCtx).pop(false),
+                          child: Text(
+                            'Cancel',
+                            style: AppTextStyles.body.copyWith(
+                                color: AppColors.textSecondary),
+                          ),
+                        ),
+                        TextButton(
+                          onPressed: () =>
+                              Navigator.of(dialogCtx).pop(true),
+                          child: Text(
+                            'Block',
+                            style: AppTextStyles.body
+                                .copyWith(color: AppColors.danger),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                  if (confirmed == true) onBlock();
+                },
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: _showOptions,
+      child: Container(
+        width: 36,
+        height: 36,
+        decoration: BoxDecoration(
+          color: Colors.black.withValues(alpha: 0.45),
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+              color: Colors.white.withValues(alpha: 0.12), width: 0.5),
+        ),
+        child: const Icon(
+          Icons.more_horiz_rounded,
+          color: Colors.white,
+          size: 20,
         ),
       ),
     );
