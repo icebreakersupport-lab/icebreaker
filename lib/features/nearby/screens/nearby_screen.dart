@@ -18,18 +18,25 @@ import '../widgets/nearby_about_me_card.dart';
 /// Nearby tab — real Firestore-backed discovery carousel.
 ///
 /// Discovery pipeline:
-///   1. Read device GPS position (once when the tab builds while live).
-///   2. Compute the current geohash (precision 7) and its 8 neighbors.
-///   3. Query Firestore: users where isLive==true AND geohash starts with
-///      one of those 9 prefixes.  Each prefix issues one stream; results
-///      are merged in-memory.
-///   4. Exclude self, exclude blocked users (from the local blockedUsers
-///      subcollection), exclude users outside the exact radius.
-///   5. Render the carousel and About Me panel — same widgets as before.
+///   1. Load the user's saved maxDistanceMeters (30–60 m) from Firestore.
+///   2. Load the user's blocked UIDs.
+///   3. Read initial device GPS position.
+///   4. Compute current geohash-7 cell + 8 neighbors.
+///   5. Subscribe to one Firestore stream per cell (isLive == true within
+///      the geohash prefix range).  Results are merged in [_cellSnapshots].
+///   6. Subscribe to the current user's own Firestore doc to detect position
+///      changes written by LiveSession's 60-second refresh timer.  When the
+///      position moves to a new geohash cell, cell subscriptions are replaced.
+///      Within the same cell, only [_rebuildList] is called.
+///   7. [_rebuildList] applies the exact Haversine distance filter
+///      (≤ _effectiveRadiusMeters) and excludes self + blocked users.
+///
+/// Geohash is a coarse bounding-box query helper only — the Haversine
+/// distance is the authoritative filter that enforces the selected radius.
 ///
 /// When not live: "Go Live" gate is shown.
 /// When live but loading: spinner.
-/// When live but no users found: empty state.
+/// When live but empty: empty state.
 class NearbyScreen extends StatefulWidget {
   const NearbyScreen({super.key});
 
@@ -45,18 +52,31 @@ class _NearbyScreenState extends State<NearbyScreen> {
   bool _loadingDiscovery = true;
   List<_NearbyUser> _nearbyUsers = [];
 
-  // Current user's position — set once per live session.
+  // Current user's position — updated by the own-doc position stream.
   double? _myLat;
   double? _myLng;
 
-  // Blocked user UIDs — fetched once and kept in memory.
+  // User's chosen discovery radius from Settings (30–60 m).
+  // Default to minimum until loaded from Firestore.
+  double _effectiveRadiusMeters = AppConstants.nearbyRadiusMeters;
+
+  // Blocked user UIDs.
   Set<String> _blockedUids = {};
 
-  // Active Firestore stream subscriptions — one per geohash neighbor cell.
-  final List<StreamSubscription> _subs = [];
+  // Per-cell snapshots: geohashPrefix → { userId → userData }.
+  // Replacing the entire cell map on each snapshot correctly removes users
+  // who went offline between snapshots without requiring docChanges tracking.
+  final Map<String, Map<String, Map<String, dynamic>>> _cellSnapshots = {};
 
-  // Buffer: userId → user doc — merged from all cell streams.
-  final Map<String, Map<String, dynamic>> _userBuffer = {};
+  // Active Firestore cell stream subscriptions.
+  final List<StreamSubscription> _cellSubs = [];
+
+  // The geohash prefixes currently subscribed.
+  List<String> _subscribedHashes = [];
+
+  // Stream subscription on the current user's own doc — detects position
+  // updates written by LiveSession's periodic location refresh.
+  StreamSubscription<DocumentSnapshot>? _myPositionSub;
 
   @override
   void initState() {
@@ -68,9 +88,9 @@ class _NearbyScreenState extends State<NearbyScreen> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     final isLive = LiveSessionScope.isLive(context);
-    if (isLive && _subs.isEmpty) {
+    if (isLive && _cellSubs.isEmpty) {
       _startDiscovery();
-    } else if (!isLive && _subs.isNotEmpty) {
+    } else if (!isLive && _cellSubs.isNotEmpty) {
       _stopDiscovery();
     }
   }
@@ -93,15 +113,19 @@ class _NearbyScreenState extends State<NearbyScreen> {
       return;
     }
 
-    // 1. Load blocked UIDs so they can be excluded before rendering.
-    await _loadBlockedUids(myUid);
+    // Load radius preference and blocked UIDs in parallel.
+    await Future.wait([
+      _loadRadiusPref(myUid),
+      _loadBlockedUids(myUid),
+    ]);
 
-    // 2. Get GPS position.
+    if (!mounted) return;
+
+    // Get initial GPS position.
     final pos = await LocationService.getPosition();
     if (!mounted) return;
 
     if (pos == null) {
-      // No GPS — show empty discovery rather than crash.
       debugPrint('[Nearby] no GPS position — showing empty state');
       setState(() => _loadingDiscovery = false);
       return;
@@ -110,38 +134,35 @@ class _NearbyScreenState extends State<NearbyScreen> {
     _myLat = pos.latitude;
     _myLng = pos.longitude;
 
-    // 3. Compute query hashes (current cell + 8 neighbors).
+    // Subscribe to geohash cells.
     final hashes = LocationService.queryHashes(pos.latitude, pos.longitude);
-    debugPrint('[Nearby] querying ${hashes.length} geohash cells: $hashes');
+    _subscribeCells(myUid, hashes);
 
-    // 4. Subscribe to one stream per cell.
-    final db = FirebaseFirestore.instance;
-    for (final hash in hashes) {
-      final sub = db
-          .collection('users')
-          .where('isLive', isEqualTo: true)
-          .where('geohash', isGreaterThanOrEqualTo: hash)
-          .where('geohash', isLessThan: '${hash}~')
-          .snapshots()
-          .listen((snap) {
-        for (final doc in snap.docs) {
-          _userBuffer[doc.id] = doc.data();
-        }
-        // Removed docs (went offline mid-session) should be cleared.
-        final docIds = snap.docs.map((d) => d.id).toSet();
-        _userBuffer.removeWhere((id, _) =>
-            LocationService.encode(
-                  _userBuffer[id]?['latitude'] as double? ?? 0,
-                  _userBuffer[id]?['longitude'] as double? ?? 0,
-                ) ==
-                hash &&
-            !docIds.contains(id));
-        if (mounted) _rebuildList(myUid);
-      });
-      _subs.add(sub);
-    }
+    // Subscribe to own position updates (written every 60 s by LiveSession).
+    _startPositionTracking(myUid);
 
     setState(() => _loadingDiscovery = false);
+  }
+
+  Future<void> _loadRadiusPref(String myUid) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(myUid)
+          .get();
+      if (doc.exists) {
+        final raw =
+            (doc.data()?['maxDistanceMeters'] as num?)?.toDouble();
+        if (raw != null) {
+          _effectiveRadiusMeters = raw.clamp(
+              AppConstants.nearbyRadiusMeters, 60.0);
+          debugPrint(
+              '[Nearby] effectiveRadius=$_effectiveRadiusMeters m');
+        }
+      }
+    } catch (e) {
+      debugPrint('[Nearby] radius pref load failed (non-fatal): $e');
+    }
   }
 
   Future<void> _loadBlockedUids(String myUid) async {
@@ -152,37 +173,119 @@ class _NearbyScreenState extends State<NearbyScreen> {
           .collection('blockedUsers')
           .get();
       _blockedUids = snap.docs.map((d) => d.id).toSet();
-      debugPrint('[Nearby] loaded ${_blockedUids.length} blocked UIDs');
+      debugPrint('[Nearby] ${_blockedUids.length} blocked UIDs loaded');
     } catch (e) {
       debugPrint('[Nearby] blocked UIDs load failed (non-fatal): $e');
     }
   }
 
+  /// Opens one Firestore snapshot stream per geohash cell prefix.
+  /// Each stream result completely replaces that cell's entry in
+  /// [_cellSnapshots], which correctly handles users going offline.
+  void _subscribeCells(String myUid, List<String> hashes) {
+    for (final sub in _cellSubs) {
+      sub.cancel();
+    }
+    _cellSubs.clear();
+    _subscribedHashes = hashes;
+
+    debugPrint('[Nearby] subscribing to ${hashes.length} cells: $hashes');
+
+    final db = FirebaseFirestore.instance;
+    for (final hash in hashes) {
+      final sub = db
+          .collection('users')
+          .where('isLive', isEqualTo: true)
+          .where('geohash', isGreaterThanOrEqualTo: hash)
+          .where('geohash', isLessThan: '$hash~')
+          .snapshots()
+          .listen((snap) {
+        _cellSnapshots[hash] = {
+          for (final doc in snap.docs) doc.id: doc.data(),
+        };
+        if (mounted) _rebuildList(myUid);
+      });
+      _cellSubs.add(sub);
+    }
+  }
+
+  /// Listens to the current user's own Firestore doc for latitude/longitude
+  /// updates written by LiveSession's periodic location refresh (every 60 s).
+  ///
+  /// When position changes:
+  ///   - Updates [_myLat] and [_myLng].
+  ///   - If the new geohash cells differ, cancels old cell subscriptions
+  ///     and opens new ones (handles moving to a new physical area).
+  ///   - If still in the same cells, just re-runs [_rebuildList] with the
+  ///     updated coordinates (closer/farther users recalculated by Haversine).
+  void _startPositionTracking(String myUid) {
+    _myPositionSub?.cancel();
+    _myPositionSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(myUid)
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists || !mounted) return;
+      final data = snap.data()!;
+      final lat = (data['latitude'] as num?)?.toDouble();
+      final lng = (data['longitude'] as num?)?.toDouble();
+
+      // Skip if position is absent or unchanged.
+      if (lat == null || lng == null) return;
+      if (lat == _myLat && lng == _myLng) return;
+
+      _myLat = lat;
+      _myLng = lng;
+      debugPrint('[Nearby] position updated: $lat, $lng');
+
+      final newHashes = LocationService.queryHashes(lat, lng);
+      final hashesChanged =
+          newHashes.length != _subscribedHashes.length ||
+          !newHashes.toSet().containsAll(_subscribedHashes);
+
+      if (hashesChanged) {
+        // User moved to a new geohash cell — refresh cell subscriptions.
+        debugPrint('[Nearby] moved to new cells — resubscribing');
+        _cellSnapshots.clear();
+        _subscribeCells(myUid, newHashes);
+      } else {
+        // Same cells — Haversine filter recomputed with new coordinates.
+        _rebuildList(myUid);
+      }
+    });
+  }
+
+  /// Merges all cell snapshots, applies filters, and updates [_nearbyUsers].
   void _rebuildList(String myUid) {
     final lat = _myLat;
     final lng = _myLng;
 
-    final users = _userBuffer.entries
+    // Flatten all cells, deduplicating by uid (a user near a cell boundary
+    // can appear in multiple adjacent cell streams).
+    final merged = <String, Map<String, dynamic>>{};
+    for (final cell in _cellSnapshots.values) {
+      merged.addAll(cell);
+    }
+
+    final users = merged.entries
         .where((e) {
           final uid = e.key;
           final data = e.value;
 
-          // Exclude self.
           if (uid == myUid) return false;
-
-          // Exclude blocked users.
           if (_blockedUids.contains(uid)) return false;
 
-          // Exact distance filter — must have a valid position.
-          final uLat = data['latitude'] as double?;
-          final uLng = data['longitude'] as double?;
+          final uLat = (data['latitude'] as num?)?.toDouble();
+          final uLng = (data['longitude'] as num?)?.toDouble();
           if (uLat == null || uLng == null || lat == null || lng == null) {
             return false;
           }
 
+          // Haversine is the authoritative distance gate.
+          // Geohash is only the coarse bounding-box query helper.
           final distance =
               LocationService.distanceMeters(lat, lng, uLat, uLng);
-          return distance <= AppConstants.nearbyRadiusMeters;
+          return distance <= _effectiveRadiusMeters;
         })
         .map((e) => _NearbyUser.fromFirestore(e.key, e.value))
         .toList();
@@ -190,8 +293,10 @@ class _NearbyScreenState extends State<NearbyScreen> {
     // Sort closest first.
     if (lat != null && lng != null) {
       users.sort((a, b) {
-        final da = LocationService.distanceMeters(lat, lng, a.lat, a.lng);
-        final db = LocationService.distanceMeters(lat, lng, b.lat, b.lng);
+        final da =
+            LocationService.distanceMeters(lat, lng, a.lat, a.lng);
+        final db =
+            LocationService.distanceMeters(lat, lng, b.lat, b.lng);
         return da.compareTo(db);
       });
     }
@@ -208,11 +313,14 @@ class _NearbyScreenState extends State<NearbyScreen> {
   }
 
   void _stopDiscovery() {
-    for (final sub in _subs) {
+    _myPositionSub?.cancel();
+    _myPositionSub = null;
+    for (final sub in _cellSubs) {
       sub.cancel();
     }
-    _subs.clear();
-    _userBuffer.clear();
+    _cellSubs.clear();
+    _cellSnapshots.clear();
+    _subscribedHashes = [];
     _nearbyUsers = [];
     _myLat = null;
     _myLng = null;
@@ -224,11 +332,10 @@ class _NearbyScreenState extends State<NearbyScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    // Optimistic: remove immediately.
+    // Optimistic removal.
     setState(() {
       _blockedUids.add(user.id);
       _nearbyUsers.removeWhere((u) => u.id == user.id);
-      _userBuffer.remove(user.id);
       if (_nearbyUsers.isNotEmpty) {
         _currentIndex = _currentIndex.clamp(0, _nearbyUsers.length - 1);
         if (_pageController.hasClients) {
@@ -236,6 +343,10 @@ class _NearbyScreenState extends State<NearbyScreen> {
         }
       }
     });
+    // Also remove from merged buffer so it won't reappear on next rebuild.
+    for (final cell in _cellSnapshots.values) {
+      cell.remove(user.id);
+    }
 
     try {
       await FirebaseFirestore.instance
@@ -255,8 +366,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
             content: Text('${user.firstName} has been blocked.'),
             backgroundColor: AppColors.bgElevated,
             behavior: SnackBarBehavior.floating,
-            shape:
-                RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
             margin: const EdgeInsets.all(16),
           ),
         );
@@ -279,8 +390,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
           ),
           backgroundColor: AppColors.bgElevated,
           behavior: SnackBarBehavior.floating,
-          shape:
-              RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
           margin: const EdgeInsets.all(16),
           duration: const Duration(seconds: 3),
           action: SnackBarAction(
@@ -328,7 +439,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
       title: Text('Nearby', style: AppTextStyles.h3),
       actions: [
         IconButton(
-          icon: const Icon(Icons.tune_rounded, color: AppColors.textSecondary),
+          icon: const Icon(Icons.tune_rounded,
+              color: AppColors.textSecondary),
           onPressed: () {
             // TODO: open preference filter sheet
           },
@@ -404,6 +516,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
   // ── Empty / gate states ───────────────────────────────────────────────────
 
   Widget _buildEmptyState() {
+    final radius = _effectiveRadiusMeters.toInt();
     return Center(
       child: Padding(
         padding: const EdgeInsets.all(40),
@@ -419,7 +532,8 @@ class _NearbyScreenState extends State<NearbyScreen> {
             ),
             const SizedBox(height: 8),
             Text(
-              'Check back when you\'re out —\nusers only appear within ${AppConstants.nearbyRadiusMeters.toInt()} metres.',
+              'Check back when you\'re out —\n'
+              'users only appear within $radius metres.',
               style: AppTextStyles.bodyS,
               textAlign: TextAlign.center,
             ),
@@ -489,15 +603,18 @@ class _NearbyUser {
   final String? lookingFor;
   final bool isGold;
 
-  factory _NearbyUser.fromFirestore(String uid, Map<String, dynamic> data) {
+  factory _NearbyUser.fromFirestore(
+      String uid, Map<String, dynamic> data) {
     // Hometown may be a map (city + state) or a plain string.
     final hometownRaw = data['hometown'];
     String? hometown;
     if (hometownRaw is Map) {
       final city = hometownRaw['city'] as String? ?? '';
       final state = hometownRaw['stateCode'] as String? ??
-          hometownRaw['state'] as String? ?? '';
-      hometown = [city, state].where((s) => s.isNotEmpty).join(', ');
+          hometownRaw['state'] as String? ??
+          '';
+      hometown =
+          [city, state].where((s) => s.isNotEmpty).join(', ');
     } else if (hometownRaw is String && hometownRaw.isNotEmpty) {
       hometown = hometownRaw;
     }

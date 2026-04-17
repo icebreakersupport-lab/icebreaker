@@ -22,6 +22,12 @@ class LiveSession extends ChangeNotifier {
   /// Survives tab navigation because [LiveSession] is app-lifetime scoped.
   Timer? _expiryTimer;
 
+  /// Periodic timer that refreshes the user's GPS position in Firestore every
+  /// [AppConstants.locationUpdateIntervalSeconds] seconds while live.
+  /// Cancelled immediately in [endSession] so the user's position is stale
+  /// after going offline rather than reflecting their last-known location.
+  Timer? _locationTimer;
+
   /// One-shot timer that fires at the exact moment the free-credit reset
   /// window elapses.  When it fires, [hydrateCredits] is called with the
   /// stored uid, applying the reset, updating Firestore, notifying listeners,
@@ -90,8 +96,25 @@ class LiveSession extends ChangeNotifier {
 
       // Async GPS write — does not block the session starting.
       _writePositionToFirestore(uid);
+
+      // Start the periodic refresh so position stays current as the user moves.
+      _startLocationRefresh(uid);
     }
     notifyListeners();
+  }
+
+  /// Arms a periodic timer that refreshes the GPS position every
+  /// [AppConstants.locationUpdateIntervalSeconds] seconds.
+  /// Safe to call multiple times — always cancels the previous timer first.
+  void _startLocationRefresh(String uid) {
+    _locationTimer?.cancel();
+    _locationTimer = Timer.periodic(
+      const Duration(seconds: AppConstants.locationUpdateIntervalSeconds),
+      (_) {
+        debugPrint('[LiveSession] periodic location refresh');
+        _writePositionToFirestore(uid);
+      },
+    );
   }
 
   /// Reads the device's current GPS position and writes latitude, longitude,
@@ -138,6 +161,8 @@ class LiveSession extends ChangeNotifier {
   void endSession() {
     _expiryTimer?.cancel();
     _expiryTimer = null;
+    _locationTimer?.cancel();
+    _locationTimer = null;
     _isLive = false;
     _expiresAt = null;
     // Mirror the in-memory state to Firestore so the notification Cloud
@@ -162,6 +187,7 @@ class LiveSession extends ChangeNotifier {
   @override
   void dispose() {
     _expiryTimer?.cancel();
+    _locationTimer?.cancel();
     _resetTimer?.cancel();
     super.dispose();
   }
