@@ -149,13 +149,23 @@ class _NearbyScreenState extends State<NearbyScreen>
 
     if (!mounted) return;
 
-    // Get initial GPS position.
-    final pos = await LocationService.getPosition();
+    // Get initial GPS position.  On real devices a cold GPS fix can fail on
+    // the first attempt and succeed a few seconds later, so we make one
+    // automatic retry after a short delay before giving up.
+    Position? pos = await LocationService.getPosition();
     if (!mounted) return;
 
     if (pos == null) {
-      // Distinguish permission denial from GPS unavailability so we can show
-      // the right error state and action (Open Settings vs Retry).
+      debugPrint('[Nearby] GPS attempt 1 failed — retrying in 3 s');
+      await Future.delayed(const Duration(seconds: 3));
+      if (!mounted) return;
+      pos = await LocationService.getPosition();
+      if (!mounted) return;
+    }
+
+    if (pos == null) {
+      // Both attempts failed.  Distinguish permission denial from GPS
+      // unavailability so we can show the right error state and action.
       final permission = await LocationService.checkPermission();
       final isPermissionIssue =
           permission == LocationPermission.denied ||
