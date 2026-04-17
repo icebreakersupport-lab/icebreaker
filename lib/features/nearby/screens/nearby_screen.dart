@@ -68,6 +68,14 @@ class _NearbyScreenState extends State<NearbyScreen>
   // Default to minimum until loaded from Firestore.
   double _effectiveRadiusMeters = AppConstants.nearbyRadiusMeters;
 
+  // Current user's preference fields — loaded from their own Firestore doc
+  // at discovery start.  Used in _rebuildList for mutual filtering.
+  String? _myShowMe;    // 'everyone' | 'men' | 'women' | 'non_binary'
+  String? _myGender;   // 'male' | 'female' | 'non_binary' | 'other'
+  int? _myAge;
+  int _myAgeRangeMin = AppConstants.minAge;
+  int _myAgeRangeMax = 99;
+
   // Blocked user UIDs.
   Set<String> _blockedUids = {};
 
@@ -159,7 +167,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     // Both stream methods return a Future that completes on the first snapshot
     // so initial UIDs are known before cell subscriptions open.
     await Future.wait([
-      _loadRadiusPref(myUid),
+      _loadMyPrefs(myUid),
       _startBlockedUsersStream(myUid),
       _startBlockedByStream(myUid),
     ]);
@@ -213,24 +221,44 @@ class _NearbyScreenState extends State<NearbyScreen>
     setState(() => _loadingDiscovery = false);
   }
 
-  Future<void> _loadRadiusPref(String myUid) async {
+  /// Loads the current user's discovery preferences from their own Firestore
+  /// doc.  A single get() provides radius, show-me, age range, age, and
+  /// gender — all needed for mutual preference filtering in [_rebuildList].
+  Future<void> _loadMyPrefs(String myUid) async {
     try {
       final doc = await FirebaseFirestore.instance
           .collection('users')
           .doc(myUid)
           .get();
-      if (doc.exists) {
-        final raw =
-            (doc.data()?['maxDistanceMeters'] as num?)?.toDouble();
-        if (raw != null) {
-          _effectiveRadiusMeters = raw.clamp(
-              AppConstants.nearbyRadiusMeters, 60.0);
-          debugPrint(
-              '[Nearby] effectiveRadius=$_effectiveRadiusMeters m');
-        }
+      if (!doc.exists) return;
+      final data = doc.data()!;
+
+      // Radius.
+      final rawRadius = (data['maxDistanceMeters'] as num?)?.toDouble();
+      if (rawRadius != null) {
+        _effectiveRadiusMeters =
+            rawRadius.clamp(AppConstants.nearbyRadiusMeters, 60.0);
       }
+
+      // Gender preference — showMe supersedes openTo if both are present.
+      _myShowMe = (data['showMe'] as String?) ??
+          (data['openTo'] as String?);
+
+      // Age range.
+      _myAgeRangeMin =
+          (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
+      _myAgeRangeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
+
+      // Own profile for mutual checks.
+      _myGender = data['gender'] as String?;
+      _myAge = (data['age'] as num?)?.toInt();
+
+      debugPrint('[Nearby] prefs loaded — '
+          'showMe=$_myShowMe age=$_myAge gender=$_myGender '
+          'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
+          'radius=$_effectiveRadiusMeters m');
     } catch (e) {
-      debugPrint('[Nearby] radius pref load failed (non-fatal): $e');
+      debugPrint('[Nearby] prefs load failed (non-fatal): $e');
     }
   }
 
@@ -398,6 +426,47 @@ class _NearbyScreenState extends State<NearbyScreen>
           if (_blockedUids.contains(uid)) return false;
           if (_blockedByUids.contains(uid)) return false;
 
+          // ── Mutual preference filtering ──────────────────────────────────
+
+          final theirGender = data['gender'] as String? ?? '';
+          final theirAge = (data['age'] as num?)?.toInt();
+
+          // My showMe preference applied to their gender.
+          final myShowMe = _myShowMe;
+          if (myShowMe != null &&
+              myShowMe != 'everyone' &&
+              !_genderMatchesShowMe(theirGender, myShowMe)) {
+            return false;
+          }
+
+          // My age range applied to their age.
+          if (theirAge != null &&
+              (theirAge < _myAgeRangeMin || theirAge > _myAgeRangeMax)) {
+            return false;
+          }
+
+          // Their showMe preference applied to my gender.
+          // showMe supersedes openTo; 'everyone' or missing → no filter.
+          final theirShowMe = (data['showMe'] as String?) ??
+              (data['openTo'] as String?) ??
+              'everyone';
+          final myGender = _myGender;
+          if (myGender != null &&
+              theirShowMe != 'everyone' &&
+              !_genderMatchesShowMe(myGender, theirShowMe)) {
+            return false;
+          }
+
+          // Their age range applied to my age.
+          final theirAgeMin =
+              (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
+          final theirAgeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
+          final myAge = _myAge;
+          if (myAge != null &&
+              (myAge < theirAgeMin || myAge > theirAgeMax)) {
+            return false;
+          }
+
           final uLat = (data['latitude'] as num?)?.toDouble();
           final uLng = (data['longitude'] as num?)?.toDouble();
           if (uLat == null || uLng == null || lat == null || lng == null) {
@@ -467,6 +536,11 @@ class _NearbyScreenState extends State<NearbyScreen>
     _nearbyUsers = [];
     _blockedUids = {};
     _blockedByUids = {};
+    _myShowMe = null;
+    _myGender = null;
+    _myAge = null;
+    _myAgeRangeMin = AppConstants.minAge;
+    _myAgeRangeMax = 99;
     _discoveryError = null;
     _myUid = null;
     _myLat = null;
@@ -693,6 +767,19 @@ class _NearbyScreenState extends State<NearbyScreen>
         ),
       ),
     );
+  }
+
+  /// Returns true when [gender] is compatible with a [showMe] preference.
+  ///
+  /// gender values : 'male' | 'female' | 'non_binary' | 'other'
+  /// showMe values : 'everyone' | 'men' | 'women' | 'non_binary'
+  /// openTo values : 'everyone' | 'men' | 'women'   (onboarding subset)
+  bool _genderMatchesShowMe(String gender, String showMe) {
+    if (showMe == 'everyone') return true;
+    if (showMe == 'men') return gender == 'male';
+    if (showMe == 'women') return gender == 'female';
+    if (showMe == 'non_binary') return gender == 'non_binary';
+    return true; // unrecognised value — don't filter
   }
 
   void _retryDiscovery() {
