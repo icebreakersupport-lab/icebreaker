@@ -153,6 +153,23 @@ class LiveSession extends ChangeNotifier {
     _expiryTimer = Timer(remaining, endSession);
   }
 
+  /// Called by the app lifecycle observer when the app returns from the
+  /// background.  If a live session is active:
+  ///   1. Writes the current GPS position immediately (timer may have been
+  ///      throttled or paused by iOS in the background).
+  ///   2. Restarts [_locationTimer] so the 60-second cadence is correct from
+  ///      the moment of resume, not from whenever the old timer last fired.
+  ///
+  /// No-op when not live.
+  void onResume() {
+    if (!_isLive) return;
+    final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    debugPrint('[LiveSession] onResume — refreshing position and restarting timer');
+    _writePositionToFirestore(uid);
+    _startLocationRefresh(uid); // cancels any throttled timer and starts fresh
+  }
+
   void updateSelfie(String path) {
     _selfieFilePath = path;
     notifyListeners();

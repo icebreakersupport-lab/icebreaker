@@ -44,13 +44,18 @@ class NearbyScreen extends StatefulWidget {
   State<NearbyScreen> createState() => _NearbyScreenState();
 }
 
-class _NearbyScreenState extends State<NearbyScreen> {
+class _NearbyScreenState extends State<NearbyScreen>
+    with WidgetsBindingObserver {
   late final PageController _pageController;
   int _currentIndex = 0;
 
   // Discovery state.
   bool _loadingDiscovery = true;
   List<_NearbyUser> _nearbyUsers = [];
+
+  // UID of the signed-in user — stored so the app-resume handler can call
+  // _rebuildList without re-reading FirebaseAuth.
+  String? _myUid;
 
   // Current user's position — updated by the own-doc position stream.
   double? _myLat;
@@ -82,6 +87,21 @@ class _NearbyScreenState extends State<NearbyScreen> {
   void initState() {
     super.initState();
     _pageController = PageController(viewportFraction: 0.80);
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  /// On app resume, force a freshness-gate pass so stale live users are
+  /// evicted immediately — even if no Firestore stream event fired and the
+  /// user's own position hasn't changed since being backgrounded.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      final uid = _myUid;
+      if (uid != null && _cellSubs.isNotEmpty) {
+        debugPrint('[Nearby] app resumed — forcing freshness rebuild');
+        _rebuildList(uid);
+      }
+    }
   }
 
   @override
@@ -97,6 +117,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _stopDiscovery();
     _pageController.dispose();
     super.dispose();
@@ -112,6 +133,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
       setState(() => _loadingDiscovery = false);
       return;
     }
+    _myUid = myUid;
 
     // Load radius preference and blocked UIDs in parallel.
     await Future.wait([
@@ -338,6 +360,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
     _cellSnapshots.clear();
     _subscribedHashes = [];
     _nearbyUsers = [];
+    _myUid = null;
     _myLat = null;
     _myLng = null;
   }
