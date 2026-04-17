@@ -359,15 +359,15 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
   }
 
-  /// Listens to the current user's own Firestore doc for latitude/longitude
-  /// updates written by LiveSession's periodic location refresh (every 60 s).
+  /// Listens to the current user's own Firestore doc for two kinds of changes:
   ///
-  /// When position changes:
-  ///   - Updates [_myLat] and [_myLng].
-  ///   - If the new geohash cells differ, cancels old cell subscriptions
-  ///     and opens new ones (handles moving to a new physical area).
-  ///   - If still in the same cells, just re-runs [_rebuildList] with the
-  ///     updated coordinates (closer/farther users recalculated by Haversine).
+  /// 1. Preference changes (showMe, ageRange, radius, gender, age) — written
+  ///    by Settings.  Updates in-memory values and triggers [_rebuildList] so
+  ///    the new preferences are applied immediately without a session restart.
+  ///
+  /// 2. Position changes (latitude/longitude) — written every 60 s by
+  ///    LiveSession.  Resubscribes to new geohash cells if the user has moved
+  ///    far enough, or runs [_rebuildList] if they're still in the same cells.
   void _startPositionTracking(String myUid) {
     _myPositionSub?.cancel();
     _myPositionSub = FirebaseFirestore.instance
@@ -377,12 +377,56 @@ class _NearbyScreenState extends State<NearbyScreen>
         .listen((snap) {
       if (!snap.exists || !mounted) return;
       final data = snap.data()!;
+
+      // ── Preference fields ─────────────────────────────────────────────────
+      // Read the same fields as _loadMyPrefs so the two code paths stay in
+      // sync.  showMe supersedes openTo when both are present.
+      final newShowMe =
+          (data['showMe'] as String?) ?? (data['openTo'] as String?);
+      final newGender = data['gender'] as String?;
+      final newAge = (data['age'] as num?)?.toInt();
+      final newAgeRangeMin =
+          (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
+      final newAgeRangeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
+      final rawRadius = (data['maxDistanceMeters'] as num?)?.toDouble();
+      final newRadius = rawRadius != null
+          ? rawRadius.clamp(AppConstants.nearbyRadiusMeters, 60.0)
+          : _effectiveRadiusMeters;
+
+      final prefsChanged = newShowMe != _myShowMe ||
+          newGender != _myGender ||
+          newAge != _myAge ||
+          newAgeRangeMin != _myAgeRangeMin ||
+          newAgeRangeMax != _myAgeRangeMax ||
+          newRadius != _effectiveRadiusMeters;
+
+      if (prefsChanged) {
+        _myShowMe = newShowMe;
+        _myGender = newGender;
+        _myAge = newAge;
+        _myAgeRangeMin = newAgeRangeMin;
+        _myAgeRangeMax = newAgeRangeMax;
+        _effectiveRadiusMeters = newRadius;
+        debugPrint('[Nearby] prefs updated — showMe=$_myShowMe '
+            'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
+            'radius=$_effectiveRadiusMeters m');
+      }
+
+      // ── Position ──────────────────────────────────────────────────────────
       final lat = (data['latitude'] as num?)?.toDouble();
       final lng = (data['longitude'] as num?)?.toDouble();
 
-      // Skip if position is absent or unchanged.
-      if (lat == null || lng == null) return;
-      if (lat == _myLat && lng == _myLng) return;
+      if (lat == null || lng == null) {
+        // No position yet — rebuild if prefs changed so filters apply.
+        if (prefsChanged && _cellSubs.isNotEmpty) _rebuildList(myUid);
+        return;
+      }
+
+      if (lat == _myLat && lng == _myLng) {
+        // Position unchanged — rebuild only if prefs changed.
+        if (prefsChanged && _cellSubs.isNotEmpty) _rebuildList(myUid);
+        return;
+      }
 
       _myLat = lat;
       _myLng = lng;
@@ -395,11 +439,12 @@ class _NearbyScreenState extends State<NearbyScreen>
 
       if (hashesChanged) {
         // User moved to a new geohash cell — refresh cell subscriptions.
+        // _rebuildList will run automatically via the new cell streams.
         debugPrint('[Nearby] moved to new cells — resubscribing');
         _cellSnapshots.clear();
         _subscribeCells(myUid, newHashes);
       } else {
-        // Same cells — Haversine filter recomputed with new coordinates.
+        // Same cells — Haversine + preference filters recomputed.
         _rebuildList(myUid);
       }
     });
