@@ -63,6 +63,21 @@ abstract final class LocationService {
     }
   }
 
+  /// Returns the current location permission status without requesting it.
+  /// Used by callers to distinguish a permission denial from a GPS failure
+  /// after [getPosition] returns null.
+  static Future<LocationPermission> checkPermission() async {
+    try {
+      return await Geolocator.checkPermission();
+    } catch (_) {
+      return LocationPermission.denied;
+    }
+  }
+
+  /// Opens the platform's app-settings screen so the user can grant location
+  /// permission.  Returns true if the screen was opened successfully.
+  static Future<bool> openSettings() => Geolocator.openAppSettings();
+
   // ── Geohash ───────────────────────────────────────────────────────────────────
 
   static const String _base32 = '0123456789bcdefghjkmnpqrstuvwxyz';

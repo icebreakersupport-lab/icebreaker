@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -12,6 +13,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
+import '../../../shared/widgets/pill_button.dart';
 import '../widgets/nearby_focus_card.dart';
 import '../widgets/nearby_about_me_card.dart';
 
@@ -51,6 +53,7 @@ class _NearbyScreenState extends State<NearbyScreen>
 
   // Discovery state.
   bool _loadingDiscovery = true;
+  _DiscoveryError? _discoveryError;
   List<_NearbyUser> _nearbyUsers = [];
 
   // UID of the signed-in user — stored so the app-resume handler can call
@@ -126,7 +129,10 @@ class _NearbyScreenState extends State<NearbyScreen>
   // ── Discovery lifecycle ────────────────────────────────────────────────────
 
   Future<void> _startDiscovery() async {
-    setState(() => _loadingDiscovery = true);
+    setState(() {
+      _loadingDiscovery = true;
+      _discoveryError = null;
+    });
 
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) {
@@ -148,8 +154,22 @@ class _NearbyScreenState extends State<NearbyScreen>
     if (!mounted) return;
 
     if (pos == null) {
-      debugPrint('[Nearby] no GPS position — showing empty state');
-      setState(() => _loadingDiscovery = false);
+      // Distinguish permission denial from GPS unavailability so we can show
+      // the right error state and action (Open Settings vs Retry).
+      final permission = await LocationService.checkPermission();
+      final isPermissionIssue =
+          permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever ||
+          permission == LocationPermission.unableToDetermine;
+      debugPrint('[Nearby] GPS failed — permission=$permission '
+          'isPermissionIssue=$isPermissionIssue');
+      if (!mounted) return;
+      setState(() {
+        _loadingDiscovery = false;
+        _discoveryError = isPermissionIssue
+            ? _DiscoveryError.permissionDenied
+            : _DiscoveryError.gpsFailed;
+      });
       return;
     }
 
@@ -360,6 +380,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     _cellSnapshots.clear();
     _subscribedHashes = [];
     _nearbyUsers = [];
+    _discoveryError = null;
     _myUid = null;
     _myLat = null;
     _myLng = null;
@@ -497,6 +518,8 @@ class _NearbyScreenState extends State<NearbyScreen>
       );
     }
 
+    if (_discoveryError != null) return _buildLocationErrorState(_discoveryError!);
+
     if (_nearbyUsers.isEmpty) return _buildEmptyState();
 
     return Column(
@@ -582,6 +605,68 @@ class _NearbyScreenState extends State<NearbyScreen>
     );
   }
 
+  void _retryDiscovery() {
+    _stopDiscovery();
+    _startDiscovery();
+  }
+
+  Widget _buildLocationErrorState(_DiscoveryError error) {
+    final isPermission = error == _DiscoveryError.permissionDenied;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              isPermission
+                  ? Icons.location_off_rounded
+                  : Icons.gps_off_rounded,
+              color: AppColors.textMuted,
+              size: 56,
+            ),
+            const SizedBox(height: 24),
+            Text(
+              isPermission
+                  ? 'Location access needed'
+                  : 'Could not get your location',
+              style: AppTextStyles.h3,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              isPermission
+                  ? 'Icebreaker needs location permission\n'
+                    'to show who\'s nearby.'
+                  : 'GPS timed out or is unavailable.\n'
+                    'Try again when you have a signal.',
+              style: AppTextStyles.bodyS,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 28),
+            if (isPermission) ...[
+              PillButton.primary(
+                label: 'Open Settings',
+                icon: Icons.settings_rounded,
+                onTap: LocationService.openSettings,
+                width: double.infinity,
+                height: 48,
+              ),
+              const SizedBox(height: 12),
+            ],
+            PillButton.outlined(
+              label: 'Retry',
+              icon: Icons.refresh_rounded,
+              onTap: _retryDiscovery,
+              width: double.infinity,
+              height: 48,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildNotLiveGate() {
     return Center(
       child: Padding(
@@ -607,6 +692,20 @@ class _NearbyScreenState extends State<NearbyScreen>
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _DiscoveryError
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum _DiscoveryError {
+  /// Location permission is denied or permanently denied.
+  /// Show "Open Settings" action.
+  permissionDenied,
+
+  /// Permission is granted but GPS timed out, returned null, or is disabled.
+  /// Show "Retry" action only.
+  gpsFailed,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
