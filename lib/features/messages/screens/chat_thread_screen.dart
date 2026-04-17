@@ -760,16 +760,19 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
     setState(() => _isBlocking = true);
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(myUid)
-          .collection('blockedUsers')
-          .doc(otherId)
-          .set({
-        'blockedAt': FieldValue.serverTimestamp(),
-        'displayName': widget.otherFirstName,
-        'photoUrl': widget.otherPhotoUrl,
-      });
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      // Forward entry: my blocked-users list.
+      batch.set(
+        db.collection('users').doc(myUid).collection('blockedUsers').doc(otherId),
+        {'blockedAt': FieldValue.serverTimestamp(), 'displayName': widget.otherFirstName, 'photoUrl': widget.otherPhotoUrl},
+      );
+      // Reverse entry: lets the blocked user stream who has blocked them.
+      batch.set(
+        db.collection('blockedBy').doc(otherId).collection('blockers').doc(myUid),
+        {'blockedAt': FieldValue.serverTimestamp()},
+      );
+      await batch.commit();
       debugPrint('[ChatBlock] blocked $otherId (${widget.otherFirstName})');
       if (mounted) Navigator.of(context).pop();
     } catch (e) {

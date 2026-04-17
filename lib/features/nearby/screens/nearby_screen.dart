@@ -451,16 +451,19 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
 
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .collection('blockedUsers')
-          .doc(user.id)
-          .set({
-        'blockedAt': FieldValue.serverTimestamp(),
-        'displayName': user.firstName,
-        'photoUrl': user.photoUrl,
-      });
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      // Forward entry: my blocked-users list.
+      batch.set(
+        db.collection('users').doc(uid).collection('blockedUsers').doc(user.id),
+        {'blockedAt': FieldValue.serverTimestamp(), 'displayName': user.firstName, 'photoUrl': user.photoUrl},
+      );
+      // Reverse entry: lets the blocked user stream who has blocked them.
+      batch.set(
+        db.collection('blockedBy').doc(user.id).collection('blockers').doc(uid),
+        {'blockedAt': FieldValue.serverTimestamp()},
+      );
+      await batch.commit();
       debugPrint('[Block] blocked ${user.id} (${user.firstName})');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
