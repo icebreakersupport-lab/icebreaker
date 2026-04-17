@@ -281,6 +281,21 @@ class _NearbyScreenState extends State<NearbyScreen> {
             return false;
           }
 
+          // Freshness gate: skip users whose location has not been updated
+          // within locationStaleThresholdSeconds (120 s).  A null timestamp
+          // means the field was never written — treat as stale.
+          final updatedAt =
+              (data['locationUpdatedAt'] as Timestamp?)?.toDate();
+          if (updatedAt == null) {
+            debugPrint('[Nearby] skipping live doc $uid — locationUpdatedAt missing');
+            return false;
+          }
+          final age = DateTime.now().difference(updatedAt).inSeconds;
+          if (age > AppConstants.locationStaleThresholdSeconds) {
+            debugPrint('[Nearby] skipping live doc $uid — location stale (${age}s old)');
+            return false;
+          }
+
           // Haversine is the authoritative distance gate.
           // Geohash is only the coarse bounding-box query helper.
           final distance =
