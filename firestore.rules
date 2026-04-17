@@ -202,6 +202,34 @@ service cloud.firestore {
       }
     }
 
+    // ── Reverse block index ───────────────────────────────────────────────────
+    // Mirrors the blockedUsers subcollection in the opposite direction.
+    // Written by the blocker at block time so the blocked user can stream
+    // the full set of UIDs that have blocked them — required for Nearby
+    // discovery filtering in either direction.
+    //
+    // Schema: blockedBy/{userId}/blockers/{blockerUid}
+    //   blockedAt : Timestamp
+    //
+    // Read  — only the blocked user (userId) may list/stream their own
+    //         blocker list.  No third party can see who blocked whom.
+    // Write — only the blocker (blockerUid) may create or delete their
+    //         own entry.  Prevents impersonation: you cannot add yourself
+    //         to someone else's reverse index, and you cannot remove a
+    //         blocker entry that isn't yours.
+    match /blockedBy/{userId}/blockers/{blockerUid} {
+      allow read:   if request.auth != null
+                    && request.auth.uid == userId;
+
+      allow create: if request.auth != null
+                    && request.auth.uid == blockerUid;
+
+      allow delete: if request.auth != null
+                    && request.auth.uid == blockerUid;
+
+      allow update: if false;
+    }
+
     // ── Reports ───────────────────────────────────────────────────────────────
     // Written by the reporting user.  Readable only by admins (server SDK).
     // Schema: reports/{auto-id}
