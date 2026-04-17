@@ -91,6 +91,14 @@ class _NearbyScreenState extends State<NearbyScreen>
   // from other screens (e.g. chat thread) propagate immediately.
   StreamSubscription<QuerySnapshot>? _blockedUidsSub;
 
+  // UIDs of users who have blocked the current user.
+  // Populated by streaming blockedBy/{myUid}/blockers.
+  Set<String> _blockedByUids = {};
+
+  // Stream subscription on blockedBy/{myUid}/blockers — the reverse index
+  // written at block time so this user can know who has blocked them.
+  StreamSubscription<QuerySnapshot>? _blockedBySub;
+
   @override
   void initState() {
     super.initState();
@@ -147,12 +155,13 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
     _myUid = myUid;
 
-    // Load radius preference and blocked UIDs in parallel.
-    // _startBlockedUsersStream returns a Future that completes on the first
-    // snapshot so initial UIDs are known before cell subscriptions open.
+    // Load radius preference and both block sets in parallel.
+    // Both stream methods return a Future that completes on the first snapshot
+    // so initial UIDs are known before cell subscriptions open.
     await Future.wait([
       _loadRadiusPref(myUid),
       _startBlockedUsersStream(myUid),
+      _startBlockedByStream(myUid),
     ]);
 
     if (!mounted) return;
@@ -260,6 +269,38 @@ class _NearbyScreenState extends State<NearbyScreen>
     return completer.future;
   }
 
+  /// Streams blockedBy/{myUid}/blockers — the reverse block index written
+  /// whenever another user blocks the current user.
+  ///
+  /// Mirrors [_startBlockedUsersStream]: returns a Future that completes on
+  /// the first snapshot so [_blockedByUids] is populated before cell
+  /// subscriptions open.  Subsequent events call [_rebuildList] immediately.
+  Future<void> _startBlockedByStream(String myUid) {
+    final completer = Completer<void>();
+    _blockedBySub?.cancel();
+    _blockedBySub = FirebaseFirestore.instance
+        .collection('blockedBy')
+        .doc(myUid)
+        .collection('blockers')
+        .snapshots()
+        .listen(
+      (snap) {
+        _blockedByUids = snap.docs.map((d) => d.id).toSet();
+        debugPrint('[Nearby] blockedByUids updated: ${_blockedByUids.length}');
+        if (!completer.isCompleted) {
+          completer.complete();
+        } else if (mounted && _myUid != null && _cellSubs.isNotEmpty) {
+          _rebuildList(_myUid!);
+        }
+      },
+      onError: (Object e) {
+        debugPrint('[Nearby] blockedBy stream error (non-fatal): $e');
+        if (!completer.isCompleted) completer.complete();
+      },
+    );
+    return completer.future;
+  }
+
   /// Opens one Firestore snapshot stream per geohash cell prefix.
   /// Each stream result completely replaces that cell's entry in
   /// [_cellSnapshots], which correctly handles users going offline.
@@ -355,6 +396,7 @@ class _NearbyScreenState extends State<NearbyScreen>
 
           if (uid == myUid) return false;
           if (_blockedUids.contains(uid)) return false;
+          if (_blockedByUids.contains(uid)) return false;
 
           final uLat = (data['latitude'] as num?)?.toDouble();
           final uLng = (data['longitude'] as num?)?.toDouble();
@@ -414,6 +456,8 @@ class _NearbyScreenState extends State<NearbyScreen>
     _myPositionSub = null;
     _blockedUidsSub?.cancel();
     _blockedUidsSub = null;
+    _blockedBySub?.cancel();
+    _blockedBySub = null;
     for (final sub in _cellSubs) {
       sub.cancel();
     }
@@ -422,6 +466,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     _subscribedHashes = [];
     _nearbyUsers = [];
     _blockedUids = {};
+    _blockedByUids = {};
     _discoveryError = null;
     _myUid = null;
     _myLat = null;
