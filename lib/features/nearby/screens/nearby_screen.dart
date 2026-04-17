@@ -137,6 +137,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     setState(() {
       _loadingDiscovery = true;
       _discoveryError = null;
+      _nearbyUsers = [];   // clear stale list so old cards don't flash
     });
 
     final myUid = FirebaseAuth.instance.currentUser?.uid;
