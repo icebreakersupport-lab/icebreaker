@@ -288,6 +288,7 @@ class _NearbyScreenState extends State<NearbyScreen> {
           return distance <= _effectiveRadiusMeters;
         })
         .map((e) => _NearbyUser.fromFirestore(e.key, e.value))
+        .whereType<_NearbyUser>()
         .toList();
 
     // Sort closest first.
@@ -603,8 +604,19 @@ class _NearbyUser {
   final String? lookingFor;
   final bool isGold;
 
-  factory _NearbyUser.fromFirestore(
+  /// Returns null (and logs) if the doc is missing position fields.
+  /// This guards against the race window where isLive=true is written
+  /// before the async GPS write completes.
+  static _NearbyUser? fromFirestore(
       String uid, Map<String, dynamic> data) {
+    final lat = (data['latitude'] as num?)?.toDouble();
+    final lng = (data['longitude'] as num?)?.toDouble();
+
+    if (lat == null || lng == null) {
+      debugPrint('[Nearby] skipping live doc $uid — position fields missing');
+      return null;
+    }
+
     // Hometown may be a map (city + state) or a plain string.
     final hometownRaw = data['hometown'];
     String? hometown;
@@ -625,8 +637,8 @@ class _NearbyUser {
       age: (data['age'] as num?)?.toInt() ?? 0,
       bio: (data['bio'] as String?) ?? '',
       photoUrl: (data['photoUrl'] as String?) ?? '',
-      lat: (data['latitude'] as num).toDouble(),
-      lng: (data['longitude'] as num).toDouble(),
+      lat: lat,
+      lng: lng,
       hometown: hometown,
       occupation: data['occupation'] as String?,
       height: data['height'] as String?,
