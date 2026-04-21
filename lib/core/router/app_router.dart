@@ -31,6 +31,8 @@ import '../../features/onboarding/screens/onboarding_photo_screen.dart';
 import '../../features/onboarding/screens/onboarding_slideshow_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
+import '../../features/settings/screens/blocked_users_screen.dart';
+import '../../features/settings/screens/reporting_and_blocking_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../constants/app_constants.dart';
 
@@ -74,11 +76,11 @@ final GoRouter appRouter = GoRouter(
     final loc = state.matchedLocation;
     final isOnAuthRoute = _authRoutes.contains(loc);
 
-    // Signed-in user on the welcome screen or pure-auth screens → send to profile.
+    // Signed-in user on the welcome screen or pure-auth screens → send to home.
     // Onboarding screens are intentionally reachable by signed-in users who
     // haven't completed their profile yet.
     const signInOnlyRoutes = {AppRoutes.splash, AppRoutes.signIn, AppRoutes.signUp};
-    if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.profile;
+    if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.home;
 
     // Unauthenticated user on a protected screen → send to sign-in.
     if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
@@ -341,6 +343,16 @@ final GoRouter appRouter = GoRouter(
     GoRoute(
       path: AppRoutes.settings,
       builder: (context, state) => const SettingsScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.blockedUsers,
+      builder: (context, state) => const BlockedUsersScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.reportingAndBlocking,
+      builder: (context, state) => const ReportingAndBlockingScreen(),
     ),
   ],
 );

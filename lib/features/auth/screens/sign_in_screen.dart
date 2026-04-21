@@ -3,6 +3,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
@@ -104,39 +105,109 @@ class _SignInScreenState extends State<SignInScreen> {
 
   /// Decides where to send the user after a successful sign-in.
   ///
-  /// Checks Firestore users/{uid}.profileComplete:
-  ///   - false / doc missing → Profile Setup (onboarding)
-  ///   - true               → Home
+  /// Fetches users/{uid} from Firestore:
+  ///   - read error          → show inline error, stay on sign-in screen
+  ///   - doc missing         → create doc with defaults, go to onboarding
+  ///   - profileComplete=false → go to onboarding
+  ///   - profileComplete=true  → go to home
   Future<void> _routeAfterAuth(User user) async {
     // ignore: avoid_print
-    print('[SignIn] ▶ STEP 2a — checking Firestore profileComplete for ${user.uid}');
-    bool profileComplete = false;
+    print('[SignIn] ▶ STEP 2a — fetching Firestore doc for ${user.uid}');
+
+    // ── Read the user doc ──────────────────────────────────────────────────
+    DocumentSnapshot<Map<String, dynamic>> doc;
     try {
-      final doc = await FirebaseFirestore.instance
+      doc = await FirebaseFirestore.instance
           .collection('users')
           .doc(user.uid)
           .get();
-      profileComplete = doc.data()?['profileComplete'] as bool? ?? false;
       // ignore: avoid_print
-      print('[SignIn] ✅ STEP 2a DONE — profileComplete=$profileComplete');
-    } catch (e) {
+      print('[SignIn] ✅ STEP 2a DONE — exists=${doc.exists}');
+    } on FirebaseException catch (e) {
       // ignore: avoid_print
-      print('[SignIn] ⚠️ STEP 2a Firestore read failed (defaulting to onboarding): $e');
+      print('[SignIn] ❌ STEP 2a Firestore read failed'
+          '\n  code:    ${e.code}'
+          '\n  message: ${e.message}');
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Could not load your profile. Please try again.';
+      });
+      return;
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('[SignIn] ❌ STEP 2a unknown error\n  $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _isLoading = false;
+        _errorMessage = 'Something went wrong. Please try again.';
+      });
+      return;
     }
+
+    // ── Doc missing: create with sensible defaults, then go to onboarding ──
+    if (!doc.exists) {
+      // ignore: avoid_print
+      print('[SignIn] ⚠️ STEP 2a — doc missing, creating with defaults');
+      try {
+        await FirebaseFirestore.instance.collection('users').doc(user.uid).set({
+          'uid': user.uid,
+          'email': user.email ?? '',
+          'createdAt': FieldValue.serverTimestamp(),
+          'profileComplete': false,
+          'plan': 'free',
+          'icebreakerCredits': AppConstants.freeIcebreakerCreditsPerSignup,
+          'liveCredits': AppConstants.freeGoLiveCreditsPerSignup,
+          'icebreakerCreditsResetAt': Timestamp.fromDate(
+            DateTime.now().add(const Duration(hours: 24)),
+          ),
+        });
+        // ignore: avoid_print
+        print('[SignIn] ✅ STEP 2a — default doc created');
+      } on FirebaseException catch (e) {
+        // ignore: avoid_print
+        print('[SignIn] ⚠️ STEP 2a — default doc creation failed: ${e.code}');
+        // Non-fatal: proceed to onboarding so the user can still fill in
+        // their profile. The doc will be written when onboarding completes.
+      }
+      if (!mounted) return;
+      // ignore: avoid_print
+      print('[SignIn] ▶ STEP 2b — doc was missing → ${AppRoutes.onboardingName}');
+      context.go(AppRoutes.onboardingName);
+      return;
+    }
+
+    // ── Route based on profileComplete flag ────────────────────────────────
+    final data = doc.data() ?? {};
+    final profileComplete = data['profileComplete'] as bool? ?? false;
+    // ignore: avoid_print
+    print('[SignIn] ▶ STEP 2b — profileComplete=$profileComplete');
 
     if (!mounted) return;
 
+    // Hydrate credit state now that we know the widget is still mounted.
+    // Fire-and-forget — navigation proceeds; the counter updates reactively.
+    LiveSessionScope.of(context).hydrateCredits(user.uid);
+
     if (profileComplete) {
-      // ignore: avoid_print
-      print('[SignIn] ▶ STEP 2b — profileComplete=true → navigating to ${AppRoutes.home}');
       context.go(AppRoutes.home);
     } else {
-      // ignore: avoid_print
-      print('[SignIn] ▶ STEP 2b — profileComplete=false → navigating to ${AppRoutes.onboardingName}');
-      context.go(AppRoutes.onboardingName);
+      context.go(_resumeOnboardingRoute(data));
     }
     // ignore: avoid_print
     print('[SignIn] ✅ STEP 2b DONE — navigation triggered');
+  }
+
+  /// Returns the onboarding route where the user dropped off by checking which
+  /// required fields are already present in their Firestore document.
+  String _resumeOnboardingRoute(Map<String, dynamic> data) {
+    if (data['firstName'] == null) return AppRoutes.onboardingName;
+    if (data['birthday'] == null) return AppRoutes.onboardingBirthday;
+    if (data['gender'] == null) return AppRoutes.onboardingGender;
+    if (data['openTo'] == null) return AppRoutes.onboardingOpenTo;
+    if (data['hometown'] == null) return AppRoutes.onboardingLocation;
+    // Has all text data but didn't finish — resume at photo/slideshow.
+    return AppRoutes.onboardingPhoto;
   }
 
   String _mapError(String code) => switch (code) {
