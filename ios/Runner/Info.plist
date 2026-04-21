@@ -2,12 +2,6 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>Icebreaker uses your location to show you people nearby in real time. Your precise location is never shared with other users — it's only used to find matches near you while the app is open.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>Icebreaker needs camera access so you can take a profile photo.</string>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>Icebreaker needs access to your photo library so you can choose a profile photo.</string>
 	<key>CADisableMinimumFrameDurationOnPhone</key>
 	<true/>
 	<key>CFBundleDevelopmentRegion</key>
@@ -32,6 +26,12 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSCameraUsageDescription</key>
+	<string>Icebreaker uses your camera to take profile photos and to verify your identity with a live selfie when you go live.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Icebreaker uses your location to show you people nearby in real time. Your precise location is never shared with other users — it's only used to find matches near you while the app is open.</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Icebreaker needs access to your photo library so you can choose a profile photo.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

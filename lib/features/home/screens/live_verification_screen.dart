@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
@@ -81,7 +82,7 @@ class _DemoAssets {
 
 // ── Step enum ────────────────────────────────────────────────────────────────
 
-enum _Step { preparing, cameraReady, cameraError, verifying, verified }
+enum _Step { preparing, cameraReady, cameraError, cameraPermissionDenied, verifying, verified }
 
 /// Immersive live-selfie capture + mock verification screen.
 ///
@@ -133,7 +134,38 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
   // ── Camera ────────────────────────────────────────────────────────────────
 
+  bool _cameraPermPermanentlyDenied = false;
+
   Future<void> _initCamera() async {
+    // ── 1. Check / request camera permission ──────────────────────────────
+    // Skip on non-mobile platforms where permission_handler is a no-op.
+    if (Platform.isIOS || Platform.isAndroid) {
+      var status = await Permission.camera.status;
+      if (status.isDenied) {
+        status = await Permission.camera.request();
+      }
+      if (status.isPermanentlyDenied || status.isRestricted) {
+        if (mounted) {
+          setState(() {
+            _cameraPermPermanentlyDenied = true;
+            _step = _Step.cameraPermissionDenied;
+          });
+        }
+        return;
+      }
+      if (!status.isGranted) {
+        // Denied (not permanent) — show retryable state.
+        if (mounted) {
+          setState(() {
+            _cameraPermPermanentlyDenied = false;
+            _step = _Step.cameraPermissionDenied;
+          });
+        }
+        return;
+      }
+    }
+
+    // ── 2. Initialise the camera controller ────────────────────────────────
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
@@ -161,8 +193,21 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         _camController = ctrl;
         _step = _Step.cameraReady;
       });
+    } on CameraException catch (e) {
+      // CameraException.code == 'cameraPermission' means the OS denied access
+      // after the controller tried to open the device (Android path).
+      if (e.code == 'cameraPermission') {
+        if (mounted) {
+          setState(() {
+            _cameraPermPermanentlyDenied = false;
+            _step = _Step.cameraPermissionDenied;
+          });
+        }
+      } else {
+        _setError('Camera unavailable. Please try again.');
+      }
     } catch (e) {
-      _setError('Camera unavailable: ${e.runtimeType}');
+      _setError('Camera unavailable. Please try again.');
     }
   }
 
@@ -388,6 +433,28 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           ),
         );
 
+      case _Step.cameraPermissionDenied:
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.no_photography_rounded,
+                    color: AppColors.textMuted, size: 40),
+                const SizedBox(height: 12),
+                Text(
+                  _cameraPermPermanentlyDenied
+                      ? 'Camera access is blocked.\nOpen Settings to enable it.'
+                      : 'Camera access is required\nfor live verification.',
+                  style: AppTextStyles.caption,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
+        );
+
       case _Step.cameraReady:
         final ctrl = _camController;
         if (ctrl == null || !ctrl.value.isInitialized) {
@@ -445,6 +512,9 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           ),
         );
 
+      case _Step.cameraPermissionDenied:
+        return const SizedBox(key: ValueKey('perm-denied'), height: 80);
+
       case _Step.cameraReady:
         return SizedBox(
           key: const ValueKey('ready'),
@@ -491,8 +561,33 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
       case _Step.preparing:
       case _Step.cameraError:
-        // Camera unavailable — demo panel becomes the primary action.
+        // Camera hardware unavailable — demo panel becomes the primary action.
         return _DemoModePanel(onSelect: _useDemoSelfie, asPrimary: true);
+
+      case _Step.cameraPermissionDenied:
+        // Permission denied — show Settings path (and retry if not permanent).
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _PermissionActionButton(
+              label: 'Open Settings',
+              icon: Icons.settings_rounded,
+              onTap: () => openAppSettings(),
+            ),
+            if (!_cameraPermPermanentlyDenied) ...[
+              const SizedBox(height: 12),
+              _PermissionActionButton(
+                label: 'Try Again',
+                icon: Icons.refresh_rounded,
+                onTap: () {
+                  setState(() => _step = _Step.preparing);
+                  _initCamera();
+                },
+                outlined: true,
+              ),
+            ],
+          ],
+        );
 
       case _Step.verifying:
       case _Step.verified:
@@ -863,6 +958,57 @@ class _DemoAvatarButton extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ── Permission action button ──────────────────────────────────────────────────
+
+class _PermissionActionButton extends StatelessWidget {
+  const _PermissionActionButton({
+    required this.label,
+    required this.icon,
+    required this.onTap,
+    this.outlined = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onTap;
+  final bool outlined;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        height: 50,
+        decoration: BoxDecoration(
+          gradient: outlined ? null : AppColors.brandGradient,
+          borderRadius: BorderRadius.circular(25),
+          border: outlined
+              ? Border.all(
+                  color: AppColors.divider,
+                  width: 1.5,
+                )
+              : null,
+        ),
+        alignment: Alignment.center,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, color: Colors.white, size: 16),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: AppTextStyles.body.copyWith(
+                color: Colors.white,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
