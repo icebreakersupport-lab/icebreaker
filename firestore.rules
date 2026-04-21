@@ -31,20 +31,6 @@ service cloud.firestore {
                   && request.auth.uid != userId
                   && resource.data.isLive == true;
 
-      // Allow any authenticated user to set status = 'under_review' on a user
-      // that is currently 'active', touching only the status field.
-      // This one-way ratchet (active → under_review only) lets the report
-      // logic on the client promote a user to under_review once 3 unique
-      // reporters have filed. Setting status back to 'active' or to 'suspended'
-      // is an admin-only operation (server SDK).
-      allow update: if request.auth != null
-                    && request.auth.uid != userId
-                    && request.resource.data.diff(resource.data)
-                         .affectedKeys().hasOnly(['status'])
-                    && request.resource.data.status == 'under_review'
-                    && (resource.data.status == 'active'
-                        || !('status' in resource.data));
-
       // ── Blocked users subcollection ────────────────────────────────────────
       // Schema: users/{userId}/blockedUsers/{blockedUserId}
       //   blockedAt   : Timestamp

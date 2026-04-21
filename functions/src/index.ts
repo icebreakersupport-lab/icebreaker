@@ -201,6 +201,58 @@ export const onUserBlocked = onDocumentCreated(
  * Notification types affected: ONLY 'chat_message'.
  * Icebreaker received / match confirmed / session alerts are NOT affected.
  */
+/**
+ * Report escalation: promote a reported user to 'under_review' once 3 unique
+ * reporters have filed against them.
+ *
+ * Trigger: creation of users/{reportedId}/reportedBy/{reporterId}
+ *
+ * Using the admin SDK here means:
+ *   - No Firestore rule allows a normal client to set status = 'under_review'.
+ *   - The count is authoritative (server-side aggregation, not client-supplied).
+ *   - The status transition is one-way: active → under_review only.
+ *     Reversing to 'active' or escalating to 'suspended' is a separate admin op.
+ *
+ * Idempotency: if status is already 'under_review' or 'suspended' the function
+ * exits without writing, so retries are safe.
+ */
+export const onReportedByCreated = onDocumentCreated(
+  'users/{reportedId}/reportedBy/{reporterId}',
+  async (event) => {
+    const { reportedId } = event.params;
+
+    const userRef = db.collection('users').doc(reportedId);
+
+    // Count all unique reporters (admin SDK bypasses security rules).
+    const countSnap = await userRef.collection('reportedBy').count().get();
+    const uniqueReporters = countSnap.data().count;
+
+    if (uniqueReporters < 3) {
+      console.log(`[report] ${reportedId} has ${uniqueReporters} reporter(s) — threshold not met`);
+      return;
+    }
+
+    // Only escalate if the user is still 'active' (or has no status set).
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) {
+      console.warn(`[report] user ${reportedId} not found — skipping escalation`);
+      return;
+    }
+
+    const currentStatus = (userSnap.data()?.status as string) ?? 'active';
+    if (currentStatus !== 'active') {
+      console.log(`[report] ${reportedId} already has status='${currentStatus}' — no change`);
+      return;
+    }
+
+    await userRef.update({ status: 'under_review' });
+    console.log(
+      `[report] ${reportedId} promoted to under_review ` +
+      `(${uniqueReporters} unique reporters)`,
+    );
+  },
+);
+
 export const onNewChatMessage = onDocumentCreated(
   'conversations/{conversationId}/messages/{messageId}',
   async (event) => {

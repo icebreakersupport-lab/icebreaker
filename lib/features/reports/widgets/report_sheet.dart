@@ -172,28 +172,6 @@ class _ReportSheetState extends State<_ReportSheet> {
       debugPrint('[Report] submitted for ${widget.reportedUserId} '
           'reason=$reason source=${widget.source}');
 
-      // ── Auto-status escalation ────────────────────────────────────────────
-      // Count unique reporters. If >= 3 and the user is still 'active',
-      // promote their status to 'under_review' so they vanish from discovery
-      // until a manual review is done.
-      try {
-        final countSnap = await reportedRef.collection('reportedBy').count().get();
-        final uniqueReporters = countSnap.count ?? 0;
-        if (uniqueReporters >= 3) {
-          final userSnap = await reportedRef.get();
-          final currentStatus = (userSnap.data()?['status'] as String?) ?? 'active';
-          if (currentStatus == 'active') {
-            await reportedRef.update({'status': 'under_review'});
-            debugPrint('[Report] ${widget.reportedUserId} promoted to under_review '
-                '($uniqueReporters unique reporters)');
-          }
-        }
-      } catch (e) {
-        // Non-fatal: the report itself succeeded. Status escalation can be
-        // retried on next report if this fails.
-        debugPrint('[Report] status escalation failed (non-fatal): $e');
-      }
-
       if (mounted) setState(() => _submitted = true);
     } catch (e) {
       debugPrint('[Report] write failed: $e');
