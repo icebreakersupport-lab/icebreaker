@@ -1,5 +1,8 @@
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -16,13 +19,12 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 /// Lets the user pick one photo from their library or take a new one.
 /// Continue is disabled until a photo is selected.
 ///
-/// Storage model (in-memory):
-///   Calls DemoProfileScope.setPhoto(0, xFile) — consistent with how
-///   GalleryScreen and EditProfileScreen set photos.
-///
-/// Firebase Storage upload is intentionally deferred.
-/// To wire it up, implement [_uploadPhoto] below and call it from [_continue].
-/// The XFile path is already available at that point.
+/// On continue:
+///   1. Uploads the image to Firebase Storage at users/{uid}/photos/0.jpg.
+///      Using a fixed slot path means re-uploads overwrite cleanly.
+///   2. Writes the download URL to Firestore users/{uid}.photoUrls (array).
+///   3. Saves the XFile to in-memory DemoProfile (slot 0).
+///   4. Advances to the onboarding slideshow.
 class OnboardingPhotoScreen extends StatefulWidget {
   const OnboardingPhotoScreen({super.key});
 
@@ -131,15 +133,86 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
     if (!_hasPhoto || _isContinuing) return;
     setState(() => _isContinuing = true);
 
-    // ── 1. In-memory profile ──────────────────────────────────────────────────
-    DemoProfileScope.of(context).setPhoto(0, _photo);
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      if (mounted) setState(() => _isContinuing = false);
+      return;
+    }
 
-    // ── 2. Firebase Storage upload (TODO) ─────────────────────────────────────
-    // Implement _uploadPhoto() here when ready.
-    // final downloadUrl = await _uploadPhoto(_photo!);
-    // Then write downloadUrl to Firestore users/{uid}.photoUrls[0].
+    // ── 1. Upload to Firebase Storage ─────────────────────────────────────────
+    // Slot 0 uses a fixed path so re-uploads overwrite rather than accumulate.
+    String downloadUrl;
+    try {
+      final file = File(_photo!.path);
+      final ref = FirebaseStorage.instance
+          .ref()
+          .child('users/$uid/photos/0.jpg');
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ▶ uploading to ${ref.fullPath}');
+      await ref.putFile(
+        file,
+        SettableMetadata(contentType: 'image/jpeg'),
+      );
+      downloadUrl = await ref.getDownloadURL();
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ✅ upload complete — url=$downloadUrl');
+    } on FirebaseException catch (e) {
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ❌ Storage error: ${e.code} — ${e.message}');
+      if (!mounted) return;
+      setState(() => _isContinuing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Photo upload failed. Please try again.', style: AppTextStyles.bodyS),
+          backgroundColor: AppColors.bgSurface,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    } catch (e) {
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ❌ unexpected upload error: $e');
+      if (!mounted) return;
+      setState(() => _isContinuing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Something went wrong. Please try again.', style: AppTextStyles.bodyS),
+          backgroundColor: AppColors.bgSurface,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
 
-    // ── 3. Advance to slideshow / feature walkthrough ─────────────────────────
+    // ── 2. Persist URL to Firestore ────────────────────────────────────────────
+    try {
+      await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .set({'photoUrls': [downloadUrl]}, SetOptions(merge: true));
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ✅ photoUrls written to Firestore');
+    } on FirebaseException catch (e) {
+      // ignore: avoid_print
+      print('[Onboarding/Photo] ❌ Firestore write failed: ${e.code}');
+      // The file is in Storage but the URL didn't reach Firestore.
+      // Show error — do not advance, so the user can retry.
+      if (!mounted) return;
+      setState(() => _isContinuing = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Could not save photo. Please try again.', style: AppTextStyles.bodyS),
+          backgroundColor: AppColors.bgSurface,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+      return;
+    }
+
+    // ── 3. Update in-memory profile ────────────────────────────────────────────
+    if (mounted) DemoProfileScope.of(context).setPhoto(0, _photo);
+
+    // ── 4. Advance to slideshow ────────────────────────────────────────────────
     if (!mounted) return;
     context.go(AppRoutes.onboardingSlideshow);
   }

@@ -1,0 +1,38 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    // ── User photos ────────────────────────────────────────────────────────────
+    // Path: users/{uid}/photos/{filename}
+    //
+    // Write — only the user who owns the folder (uid == auth.uid).
+    //         Enforces 10 MB max and image/* content type so the slot
+    //         cannot be used to store arbitrary data.
+    //
+    // Read  — any authenticated user may read profile photos.
+    //         Discovery surfaces (Nearby, chat threads) load photos by URL;
+    //         restricting to participants would require passing auth tokens
+    //         into every image request which is impractical at this stage.
+    match /users/{uid}/photos/{filename} {
+      allow read:  if request.auth != null;
+
+      allow write: if request.auth != null
+                   && request.auth.uid == uid
+                   && request.resource.size < 10 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+
+    // ── Live selfies ───────────────────────────────────────────────────────────
+    // Path: users/{uid}/selfies/{filename}
+    // Same access model as photos — owner writes, authenticated users read.
+    match /users/{uid}/selfies/{filename} {
+      allow read:  if request.auth != null;
+
+      allow write: if request.auth != null
+                   && request.auth.uid == uid
+                   && request.resource.size < 10 * 1024 * 1024
+                   && request.resource.contentType.matches('image/.*');
+    }
+  }
+}

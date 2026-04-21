@@ -44,6 +44,22 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
       try {
+        final doc = await FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .get();
+
+        final photoUrls = (doc.data()?['photoUrls'] as List?)?.cast<String>() ?? [];
+        if (photoUrls.isEmpty) {
+          // Photo wasn't saved — go back to photo screen instead of marking
+          // the profile complete without a real photo on record.
+          // ignore: avoid_print
+          print('[Onboarding/Slideshow] ⚠️ no photoUrls — redirecting to photo screen');
+          if (!mounted) return;
+          context.go(AppRoutes.onboardingPhoto);
+          return;
+        }
+
         await FirebaseFirestore.instance
             .collection('users')
             .doc(uid)
@@ -52,8 +68,9 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
         print('[Onboarding/Slideshow] ✅ profileComplete=true written for $uid');
       } on FirebaseException catch (e) {
         // ignore: avoid_print
-        print('[Onboarding/Slideshow] ⚠️ Firestore write failed: ${e.code}');
-        // Non-fatal: proceed to home. The flag can be corrected on next sign-in.
+        print('[Onboarding/Slideshow] ⚠️ Firestore error: ${e.code}');
+        // Non-fatal: proceed to home. The flag will be corrected on next sign-in
+        // once the photo check passes.
       }
     }
     if (!mounted) return;
