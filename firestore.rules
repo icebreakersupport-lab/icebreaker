@@ -31,6 +31,20 @@ service cloud.firestore {
                   && request.auth.uid != userId
                   && resource.data.isLive == true;
 
+      // Allow any authenticated user to set status = 'under_review' on a user
+      // that is currently 'active', touching only the status field.
+      // This one-way ratchet (active → under_review only) lets the report
+      // logic on the client promote a user to under_review once 3 unique
+      // reporters have filed. Setting status back to 'active' or to 'suspended'
+      // is an admin-only operation (server SDK).
+      allow update: if request.auth != null
+                    && request.auth.uid != userId
+                    && request.resource.data.diff(resource.data)
+                         .affectedKeys().hasOnly(['status'])
+                    && request.resource.data.status == 'under_review'
+                    && (resource.data.status == 'active'
+                        || !('status' in resource.data));
+
       // ── Blocked users subcollection ────────────────────────────────────────
       // Schema: users/{userId}/blockedUsers/{blockedUserId}
       //   blockedAt   : Timestamp
@@ -50,6 +64,31 @@ service cloud.firestore {
         allow read:   if request.auth != null
                       && (request.auth.uid == userId
                        || request.auth.uid == blockedUserId);
+      }
+
+      // ── Report dedup index ─────────────────────────────────────────────────
+      // Schema: users/{userId}/reportedBy/{reporterId}
+      //   reportedAt : Timestamp
+      //   reason     : String
+      //
+      // Document ID == reporterId.  One doc per (reporter, reported) pair —
+      // the natural key prevents duplicate reports from the same person.
+      //
+      // Write — only the reporter (auth.uid == reporterId).
+      // Read  — only the owner of the profile being reported (userId).
+      //         Owner needs read so the client can count unique reporters.
+      match /reportedBy/{reporterId} {
+        allow create: if request.auth != null
+                      && request.auth.uid == reporterId
+                      && request.resource.data.keys().hasAll(['reportedAt', 'reason'])
+                      && request.resource.data.reason in
+                           ['spam', 'harassment', 'inappropriate_content',
+                            'fake_profile', 'other'];
+
+        allow read:   if request.auth != null
+                      && request.auth.uid == userId;
+
+        allow update, delete: if false;
       }
     }
 

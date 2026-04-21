@@ -471,6 +471,10 @@ class _NearbyScreenState extends State<NearbyScreen>
           if (_blockedUids.contains(uid)) return false;
           if (_blockedByUids.contains(uid)) return false;
 
+          // Users under review or suspended are hidden from discovery.
+          final status = (data['status'] as String?) ?? 'active';
+          if (status == 'under_review' || status == 'suspended') return false;
+
           // ── Mutual preference filtering ──────────────────────────────────
 
           final theirGender = data['gender'] as String? ?? '';
@@ -700,6 +704,42 @@ class _NearbyScreenState extends State<NearbyScreen>
     );
   }
 
+  // ── Filter sheet ──────────────────────────────────────────────────────────
+
+  void _showFilterSheet() {
+    if (_myUid == null) return;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: AppColors.bgSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (_) => _FilterSheet(
+        initialShowMe: _myShowMe ?? 'everyone',
+        initialAgeMin: _myAgeRangeMin.toDouble(),
+        initialAgeMax: _myAgeRangeMax.clamp(18, 65).toDouble(),
+        initialDistance: _effectiveRadiusMeters.clamp(30.0, 60.0),
+        onSaved: (showMe, ageMin, ageMax, distance) {
+          final uid = _myUid;
+          if (uid == null) return;
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set({
+                'showMe': showMe,
+                'ageRangeMin': ageMin.round(),
+                'ageRangeMax': ageMax.round(),
+                'maxDistanceMeters': distance.round(),
+              }, SetOptions(merge: true));
+          // Step 10's _myPositionSub listener will pick up the preference
+          // field changes and call _rebuildList automatically — no extra work
+          // needed here.
+        },
+      ),
+    );
+  }
+
   PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: Colors.transparent,
@@ -710,9 +750,7 @@ class _NearbyScreenState extends State<NearbyScreen>
         IconButton(
           icon: const Icon(Icons.tune_rounded,
               color: AppColors.textSecondary),
-          onPressed: () {
-            // TODO: open preference filter sheet
-          },
+          onPressed: _showFilterSheet,
         ),
       ],
     );
@@ -917,6 +955,273 @@ class _NearbyScreenState extends State<NearbyScreen>
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// _FilterSheet
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Single bottom sheet that exposes all three discovery preference controls:
+///   - Show Me   (radio list)
+///   - Age Range (RangeSlider)
+///   - Max Distance (Slider)
+///
+/// Fires [onSaved] once with all four values when the user taps Save.
+/// The caller writes them to Firestore; Step 10's own-doc stream picks up the
+/// changes and rebuilds the discovery list automatically.
+class _FilterSheet extends StatefulWidget {
+  const _FilterSheet({
+    required this.initialShowMe,
+    required this.initialAgeMin,
+    required this.initialAgeMax,
+    required this.initialDistance,
+    required this.onSaved,
+  });
+
+  final String initialShowMe;
+  final double initialAgeMin;
+  final double initialAgeMax;
+  final double initialDistance;
+  final void Function(String showMe, double ageMin, double ageMax,
+      double distance) onSaved;
+
+  @override
+  State<_FilterSheet> createState() => _FilterSheetState();
+}
+
+class _FilterSheetState extends State<_FilterSheet> {
+  late String _showMe;
+  late RangeValues _ageRange;
+  late double _distance;
+
+  static const List<(String, String)> _showMeOptions = [
+    ('everyone', 'Everyone'),
+    ('men', 'Men'),
+    ('women', 'Women'),
+    ('non_binary', 'Non-binary'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _showMe = widget.initialShowMe;
+    _ageRange = RangeValues(widget.initialAgeMin, widget.initialAgeMax);
+    _distance = widget.initialDistance;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).viewInsets.bottom +
+        MediaQuery.of(context).padding.bottom;
+
+    return Padding(
+      padding: EdgeInsets.only(bottom: bottomPad),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Drag handle
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(top: 12, bottom: 20),
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+
+            // Title
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              child: Text('Discovery Filters', style: AppTextStyles.h3),
+            ),
+
+            // ── Show Me ───────────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
+              child: Text(
+                'SHOW ME',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted,
+                  letterSpacing: 0.8,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+            Container(
+              margin: const EdgeInsets.symmetric(horizontal: 20),
+              decoration: BoxDecoration(
+                color: AppColors.bgElevated,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.divider),
+              ),
+              child: Column(
+                children: [
+                  for (int i = 0; i < _showMeOptions.length; i++) ...[
+                    InkWell(
+                      borderRadius: BorderRadius.vertical(
+                        top: i == 0 ? const Radius.circular(16) : Radius.zero,
+                        bottom: i == _showMeOptions.length - 1
+                            ? const Radius.circular(16)
+                            : Radius.zero,
+                      ),
+                      onTap: () =>
+                          setState(() => _showMe = _showMeOptions[i].$1),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(
+                            horizontal: 16, vertical: 14),
+                        child: Row(
+                          children: [
+                            Expanded(
+                              child: Text(
+                                _showMeOptions[i].$2,
+                                style: AppTextStyles.body
+                                    .copyWith(fontWeight: FontWeight.w500),
+                              ),
+                            ),
+                            if (_showMe == _showMeOptions[i].$1)
+                              const Icon(Icons.check_rounded,
+                                  color: AppColors.brandPink, size: 20),
+                          ],
+                        ),
+                      ),
+                    ),
+                    if (i < _showMeOptions.length - 1)
+                      const Divider(
+                          height: 1,
+                          color: AppColors.divider,
+                          indent: 16,
+                          endIndent: 16),
+                  ],
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 28),
+
+            // ── Age Range ─────────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'AGE RANGE',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.8,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    '${_ageRange.start.round()} – ${_ageRange.end.round()}',
+                    style: AppTextStyles.body.copyWith(
+                      color: AppColors.brandPink,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: RangeSlider(
+                values: _ageRange,
+                min: 18,
+                max: 65,
+                divisions: 47,
+                activeColor: AppColors.brandPink,
+                inactiveColor: AppColors.divider,
+                onChanged: (v) => setState(() => _ageRange = v),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('18', style: AppTextStyles.caption),
+                  Text('65', style: AppTextStyles.caption),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 28),
+
+            // ── Max Distance ──────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    'MAX DISTANCE',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textMuted,
+                      letterSpacing: 0.8,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                  Text(
+                    '${_distance.round()} m',
+                    style: AppTextStyles.body.copyWith(
+                      color: AppColors.brandCyan,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 4),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Slider(
+                value: _distance,
+                min: 30,
+                max: 60,
+                divisions: 3,
+                activeColor: AppColors.brandCyan,
+                inactiveColor: AppColors.divider,
+                onChanged: (v) => setState(() => _distance = v),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 24),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text('30 m', style: AppTextStyles.caption),
+                  Text('60 m', style: AppTextStyles.caption),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 28),
+
+            // ── Save button ───────────────────────────────────────────────────
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 24),
+              child: PillButton.primary(
+                label: 'Save',
+                width: double.infinity,
+                height: 52,
+                onTap: () {
+                  Navigator.of(context).pop();
+                  widget.onSaved(
+                      _showMe, _ageRange.start, _ageRange.end, _distance);
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // _DiscoveryError
 // ─────────────────────────────────────────────────────────────────────────────
 
