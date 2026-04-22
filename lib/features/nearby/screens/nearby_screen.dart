@@ -475,6 +475,10 @@ class _NearbyScreenState extends State<NearbyScreen>
           final status = (data['status'] as String?) ?? 'active';
           if (status == 'under_review' || status == 'suspended') return false;
 
+          // Users who turned off Discoverable are hidden even while live.
+          final discoverable = (data['discoverable'] as bool?) ?? true;
+          if (!discoverable) return false;
+
           // ── Mutual preference filtering ──────────────────────────────────
 
           final theirGender = data['gender'] as String? ?? '';

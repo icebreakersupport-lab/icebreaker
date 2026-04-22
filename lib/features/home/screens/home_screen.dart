@@ -1,10 +1,14 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/location_service.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -31,10 +35,17 @@ class HomeScreen extends StatefulWidget {
   State<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends State<HomeScreen> {
+class _HomeScreenState extends State<HomeScreen>
+    with WidgetsBindingObserver {
   Timer? _countdownTimer;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
 
   @override
   void didChangeDependencies() {
@@ -44,12 +55,42 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _countdownTimer?.cancel();
     super.dispose();
   }
 
+  /// On every app-foreground event: reload the Firebase Auth user so that
+  /// [emailVerified] reflects any verification the user completed outside the
+  /// app (e.g. clicking the link in their inbox), then rebuild.
+  ///
+  /// Without this, [_handleGoLive] would see the stale cached value and show
+  /// the verification gate even though the user has already verified.
+  /// [app.dart] fires the same reload but with no setState on this widget,
+  /// so this observer closes that gap.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _reloadAuthUser();
+    }
+  }
+
+  Future<void> _reloadAuthUser() async {
+    try {
+      await FirebaseAuth.instance.currentUser?.reload();
+      debugPrint('[Home] auth user reloaded on resume — '
+          'emailVerified=${FirebaseAuth.instance.currentUser?.emailVerified}');
+    } catch (e) {
+      debugPrint('[Home] auth reload on resume failed (non-fatal): $e');
+    }
+    if (mounted) setState(() {});
+  }
+
   void _syncCountdownTimer(bool isLive) {
     if (isLive && (_countdownTimer == null || !_countdownTimer!.isActive)) {
+      // Ticks every second only to refresh the countdown display.
+      // Actual expiry is handled by LiveSession._expiryTimer which survives
+      // all tab navigation.
       _countdownTimer = Timer.periodic(const Duration(seconds: 1), (_) {
         if (mounted) setState(() {});
       });
@@ -61,14 +102,251 @@ class _HomeScreenState extends State<HomeScreen> {
 
   // ── Actions ───────────────────────────────────────────────────────────────
 
-  void _handleGoLive() {
+  Future<void> _handleGoLive() async {
+    var user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      _showVerificationRequiredSheet();
+      return;
+    }
+
+    // ── Gate 1: profile complete ───────────────────────────────────────────
+    // One Firestore read confirms onboarding finished and first photo saved.
+    // We do this first so a brand-new user who hasn't finished onboarding
+    // gets a clear path to fix it rather than hitting a cryptic location error.
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .get();
+      final profileComplete =
+          (doc.data()?['profileComplete'] as bool?) ?? false;
+      if (!profileComplete) {
+        if (!mounted) return;
+        context.push(AppRoutes.profileChecklist);
+        return;
+      }
+    } catch (e) {
+      debugPrint('[Home] profileComplete check failed (non-fatal): $e');
+      // Don't block the user on a network error — fall through.
+    }
+
+    // ── Gate 2: location permission ────────────────────────────────────────
+    // Discovery writes GPS to Firestore — Go Live makes no sense without it.
+    final locationPerm = await LocationService.checkPermission();
+    final locationOk = locationPerm == LocationPermission.always ||
+        locationPerm == LocationPermission.whileInUse;
+    if (!locationOk) {
+      if (!mounted) return;
+      _showLocationRequiredSheet(
+        permanent: locationPerm == LocationPermission.deniedForever,
+      );
+      return;
+    }
+
+    // ── Gate 3: email OR phone verified ───────────────────────────────────
+    // Reload before deciding so a link clicked in the email client is
+    // reflected immediately without waiting for the periodic resume reload.
+    if (!user.emailVerified) {
+      try {
+        await user.reload();
+      } catch (e) {
+        debugPrint('[Home] auth reload before go-live failed (non-fatal): $e');
+      }
+      if (!mounted) return;
+      user = FirebaseAuth.instance.currentUser;
+    }
+    final phoneVerified =
+        (user?.phoneNumber?.isNotEmpty) ?? false;
+    if (user == null || (!user.emailVerified && !phoneVerified)) {
+      _showVerificationRequiredSheet();
+      return;
+    }
+
+    // ── Gate 4: live credits ───────────────────────────────────────────────
+    if (!mounted) return;
     final session = LiveSessionScope.of(context);
     if (session.liveCredits <= 0) {
-      // No credits remaining — send user to Shop to top up.
       context.push(AppRoutes.shop);
-    } else {
-      context.push(AppRoutes.liveVerify);
+      return;
     }
+
+    context.push(AppRoutes.liveVerify);
+  }
+
+  void _showLocationRequiredSheet({required bool permanent}) {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bgSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) => Padding(
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 40),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 24),
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const Icon(Icons.location_off_rounded,
+                color: AppColors.brandCyan, size: 48),
+            const SizedBox(height: 16),
+            Text(
+              'Location access needed',
+              style: AppTextStyles.h3,
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              permanent
+                  ? 'Location is blocked in device settings. Open Settings to enable it for Icebreaker, then try again.'
+                  : 'Icebreaker needs location permission to show you to nearby people while you\'re live.',
+              style: AppTextStyles.bodyS
+                  .copyWith(color: AppColors.textSecondary),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 28),
+            PillButton.primary(
+              label: 'Open Settings',
+              icon: Icons.settings_rounded,
+              width: double.infinity,
+              height: 52,
+              onTap: () {
+                Navigator.of(sheetCtx).pop();
+                LocationService.openSettings();
+              },
+            ),
+            if (!permanent) ...[
+              const SizedBox(height: 12),
+              PillButton.outlined(
+                label: 'Not now',
+                width: double.infinity,
+                height: 52,
+                onTap: () => Navigator.of(sheetCtx).pop(),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Bottom sheet shown when the user taps GO LIVE without a verified email.
+  /// Explains the requirement and offers a direct path to Settings to send
+  /// the verification email.
+  void _showVerificationRequiredSheet() {
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.bgSurface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      builder: (sheetCtx) {
+        // Local state for the "I've verified" in-progress indicator.
+        var checking = false;
+        return StatefulBuilder(
+          builder: (_, setSheetState) => Padding(
+            padding: const EdgeInsets.fromLTRB(24, 12, 24, 40),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Drag handle
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 24),
+                    decoration: BoxDecoration(
+                      color: AppColors.divider,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const Icon(
+                  Icons.mark_email_unread_outlined,
+                  color: AppColors.brandCyan,
+                  size: 48,
+                ),
+                const SizedBox(height: 16),
+                Text(
+                  'Verify your email to go Live',
+                  style: AppTextStyles.h3,
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'A verified email is required before starting a Live session. '
+                  'Check your inbox for a verification link, or send one from Settings.',
+                  style: AppTextStyles.bodyS
+                      .copyWith(color: AppColors.textSecondary),
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 28),
+                PillButton.primary(
+                  label: 'Go to Settings',
+                  width: double.infinity,
+                  height: 52,
+                  onTap: () {
+                    Navigator.of(sheetCtx).pop();
+                    context.push(AppRoutes.settings);
+                  },
+                ),
+                const SizedBox(height: 12),
+                // "I've already verified" path — reloads auth state and
+                // proceeds to Go Live if verified, or shows a clear message
+                // if the email link hasn't been clicked yet.
+                PillButton.outlined(
+                  label: checking ? 'Checking…' : 'I\'ve verified — check now',
+                  icon: checking ? null : Icons.refresh_rounded,
+                  width: double.infinity,
+                  height: 52,
+                  onTap: checking
+                      ? null
+                      : () async {
+                          setSheetState(() => checking = true);
+                          // Capture navigators/messengers before the async gap.
+                          final sheetNav = Navigator.of(sheetCtx);
+                          final messenger =
+                              ScaffoldMessenger.of(context);
+                          try {
+                            await FirebaseAuth.instance.currentUser?.reload();
+                          } catch (e) {
+                            debugPrint(
+                                '[Home] reload in sheet failed (non-fatal): $e');
+                          }
+                          if (!mounted) return;
+                          final verified = FirebaseAuth.instance.currentUser
+                                  ?.emailVerified ??
+                              false;
+                          sheetNav.pop();
+                          if (verified) {
+                            // Email is now verified — proceed to Go Live.
+                            _handleGoLive();
+                          } else {
+                            messenger.showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Email not yet verified. Open the link in your inbox, then try again.',
+                                ),
+                              ),
+                            );
+                          }
+                        },
+                ),
+              ],
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _handleEndSession() {
@@ -107,16 +385,6 @@ class _HomeScreenState extends State<HomeScreen> {
       centerTitle: true,
       // Icebreaker logo in top-left — static when offline, heartbeat when live.
       // Profile is still accessible via the bottom nav tab.
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 10),
-        child: Center(
-          child: IcebreakerLogo(
-            size: 42,
-            showGlow: session.isLive,
-            ambientGlow: 1.0,
-          ),
-        ),
-      ),
       // "icebreaker •" — FittedBox prevents overflow on narrow windows.
       title: FittedBox(
         fit: BoxFit.scaleDown,
@@ -227,11 +495,12 @@ class _HomeScreenState extends State<HomeScreen> {
                         shape: BoxShape.circle,
                         gradient: RadialGradient(
                           colors: [
-                            AppColors.brandPink.withValues(alpha: 0.20),
-                            AppColors.brandPurple.withValues(alpha: 0.12),
+                            AppColors.brandCyan.withValues(alpha: 0.10),
+                            AppColors.brandPink.withValues(alpha: 0.22),
+                            AppColors.brandPurple.withValues(alpha: 0.14),
                             Colors.transparent,
                           ],
-                          stops: const [0.0, 0.5, 1.0],
+                          stops: const [0.0, 0.30, 0.60, 1.0],
                         ),
                       ),
                     ),
@@ -302,19 +571,19 @@ class _HomeScreenState extends State<HomeScreen> {
       children: [
         Expanded(
           child: _StatusPill(
-            icon: Icons.bolt_rounded,
+            icon: Icons.favorite_rounded,
             iconColor: AppColors.brandPink,
-            count: '${session.liveCredits}',
-            label: 'Live Session',
+            count: '${session.icebreakerCredits}',
+            label: 'Icebreakers',
           ),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: _StatusPill(
-            icon: Icons.ac_unit_rounded,
+            icon: Icons.bolt_rounded,
             iconColor: AppColors.brandCyan,
-            count: '3',
-            label: 'Icebreakers',
+            count: '${session.liveCredits}',
+            label: 'Live Session',
           ),
         ),
       ],
@@ -335,10 +604,10 @@ class _HomeScreenState extends State<HomeScreen> {
         children: [
           Expanded(
             child: _CompactStat(
-              icon: Icons.bolt_rounded,
+              icon: Icons.favorite_rounded,
               iconColor: AppColors.brandPink,
-              count: '${session.liveCredits}',
-              label: 'Live Session',
+              count: '${session.icebreakerCredits}',
+              label: 'Icebreakers',
             ),
           ),
           Container(
@@ -349,10 +618,10 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
           Expanded(
             child: _CompactStat(
-              icon: Icons.ac_unit_rounded,
+              icon: Icons.bolt_rounded,
               iconColor: AppColors.brandCyan,
-              count: '3',
-              label: 'Icebreakers',
+              count: '${session.liveCredits}',
+              label: 'Live Session',
             ),
           ),
         ],
@@ -639,9 +908,9 @@ class _LiveStatStrip extends StatelessWidget {
         children: [
           Expanded(
             child: _CompactStat(
-              icon: Icons.ac_unit_rounded,
-              iconColor: AppColors.brandCyan,
-              count: '3',
+              icon: Icons.favorite_rounded,
+              iconColor: AppColors.brandPink,
+              count: '${session.icebreakerCredits}',
               label: 'Icebreakers',
             ),
           ),
@@ -654,7 +923,7 @@ class _LiveStatStrip extends StatelessWidget {
           Expanded(
             child: _CompactStat(
               icon: Icons.bolt_rounded,
-              iconColor: AppColors.brandPink,
+              iconColor: AppColors.brandCyan,
               count: '${session.liveCredits}',
               label: 'Live Sessions',
             ),

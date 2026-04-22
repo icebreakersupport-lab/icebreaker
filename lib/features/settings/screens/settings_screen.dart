@@ -23,6 +23,7 @@ class _UserSettings {
     this.ageRangeMin = 18,
     this.ageRangeMax = 35,
     this.maxDistanceMeters = 30,
+    this.discoverable = true,
     this.photosToMatchesOnly = false,
     this.doNotDisturb = false,
     this.subscriptionTier = 'free',
@@ -45,6 +46,12 @@ class _UserSettings {
   /// Range: 30–60 m.  Lower end matches the physical detection radius; upper
   /// end lets users see further when conditions allow.
   int maxDistanceMeters;
+
+  /// Firestore field: discoverable.
+  /// When false, the user is hidden from all Nearby discovery results even
+  /// while live.  Defaults to true.  Does not prevent the user from going
+  /// live or receiving icebreakers from people who already know their UID.
+  bool discoverable;
 
   // ── Privacy ────────────────────────────────────────────────────────────────
 
@@ -81,6 +88,7 @@ class _UserSettings {
       ageRangeMax: (data['ageRangeMax'] as num?)?.toInt() ?? 35,
       maxDistanceMeters:
           ((data['maxDistanceMeters'] as num?)?.toInt() ?? 30).clamp(30, 60),
+      discoverable: (data['discoverable'] as bool?) ?? true,
       photosToMatchesOnly: (data['photosToMatchesOnly'] as bool?) ?? false,
       doNotDisturb: (data['doNotDisturb'] as bool?) ?? false,
       subscriptionTier: (data['plan'] as String?) ?? 'free',
@@ -741,6 +749,17 @@ class _SettingsScreenState extends State<SettingsScreen>
             label: 'Max Distance',
             onTap: _showMaxDistancePicker,
             trailing: _ValueChip(label: '${s.maxDistanceMeters} m'),
+          ),
+          _SettingsToggleRow(
+            icon: Icons.travel_explore_rounded,
+            iconColor: AppColors.brandPurple,
+            label: 'Discoverable',
+            subtitle: 'Show me to people nearby while live',
+            value: s.discoverable,
+            onChanged: (v) {
+              setState(() => s.discoverable = v);
+              _save('discoverable', v);
+            },
           ),
         ]),
         const SizedBox(height: 24),
