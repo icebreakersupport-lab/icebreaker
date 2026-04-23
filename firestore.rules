@@ -107,28 +107,62 @@ service cloud.firestore {
     }
 
     // ── Meetups ───────────────────────────────────────────────────────────────
-    // Created by the icebreaker recipient when they accept.
-    // Both participants can read and write limited status updates.
+    // State machine (status values):
+    //   finding                       → both users seeing each other on the map
+    //   talking                       → both pressed "I found them"; 10-min timer
+    //   awaiting_post_talk_decision   → talk timer expired; decision screen open
+    //   continued_private             → both chose we_got_this; chat unlocked
+    //   no_match                      → at least one chose nice_meeting_you
+    //   expired_finding               → find timer expired without both confirming
+    //   matched (legacy), ended       → also accepted as terminal
+    //
+    // Client writes are tightly scoped:
+    //   - Create the doc on icebreaker acceptance (status='finding',
+    //     foundConfirmedBy:[], plus the identity fields).
+    //   - Append own UID to foundConfirmedBy via arrayUnion (I-found-them tap).
+    //   - All status/timer transitions are owned by Cloud Functions (admin SDK).
+    //
+    // Fields Cloud Functions set (clients cannot write these directly):
+    //   findExpiresAt, talkExpiresAt, status (post-create), concludedAt,
+    //   matchedAt.
     match /meetups/{meetupId} {
 
       allow read: if request.auth != null
                   && request.auth.uid in resource.data.participants;
 
-      // The recipient creates the meetup doc with both UIDs when they accept
-      // the icebreaker.  Creator must be listed in participants and the doc
-      // must include exactly two participants.
+      // Creation by the accepting recipient.  Must include both UIDs, the
+      // initial 'finding' status, and an empty foundConfirmedBy array.
+      // Timer (findExpiresAt) is stamped by the onMeetupCreated Cloud Function.
       allow create: if request.auth != null
                     && request.auth.uid in request.resource.data.participants
-                    && request.resource.data.participants.size() == 2;
+                    && request.resource.data.participants.size() == 2
+                    && request.resource.data.status == 'finding'
+                    && request.resource.data.foundConfirmedBy.size() == 0;
 
-      // Participants may update limited status fields only.
-      // Core identity fields (participants, participantNames, icebreakerId,
-      // createdAt) are immutable after creation.
+      // Participant updates are limited to appending the caller's own UID to
+      // foundConfirmedBy.  Everything else (status, timers, conclude fields,
+      // identity fields) is server-side only.
+      //
+      // The other participant's membership must not change: this prevents a
+      // caller from arrayUnion'ing BOTH UIDs at once to unilaterally promote
+      // the meetup to 'talking' (which onMeetupFoundConfirmed would then pick
+      // up).  Combined with hasOnly(participants), the only permitted delta
+      // is adding the caller's own UID.
       allow update: if request.auth != null
                     && request.auth.uid in resource.data.participants
-                    && !request.resource.data.diff(resource.data).affectedKeys()
-                        .hasAny(['participants', 'participantNames',
-                                 'participantPhotos', 'icebreakerId', 'createdAt']);
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['foundConfirmedBy'])
+                    && request.resource.data.foundConfirmedBy
+                        .hasOnly(resource.data.participants)
+                    && (
+                      (resource.data.participants[0] == request.auth.uid
+                        ? resource.data.participants[1]
+                        : resource.data.participants[0]) in resource.data.foundConfirmedBy
+                      ==
+                      (resource.data.participants[0] == request.auth.uid
+                        ? resource.data.participants[1]
+                        : resource.data.participants[0]) in request.resource.data.foundConfirmedBy
+                    );
 
       allow delete: if false;
 
@@ -147,6 +181,9 @@ service cloud.firestore {
         // A user may only create their own decision document, provided:
         //   - the document ID matches their UID (prevents impersonation)
         //   - they are a listed participant in the meetup
+        //   - the parent meetup is in the awaiting_post_talk_decision phase
+        //     (decisions submitted during finding/talking are rejected — the
+        //     server-side function repeats this check as defence in depth)
         //   - the decision value is one of the two valid choices
         //   - the uid field in the payload also matches their uid
         allow create: if request.auth != null
@@ -154,11 +191,49 @@ service cloud.firestore {
                       && request.auth.uid in
                          get(/databases/$(database)/documents/meetups/$(meetupId))
                          .data.participants
+                      && get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.status == 'awaiting_post_talk_decision'
                       && request.resource.data.decision in
                          ['we_got_this', 'nice_meeting_you']
                       && request.resource.data.uid == request.auth.uid;
 
         // Decisions are immutable once submitted.
+        allow update, delete: if false;
+      }
+
+      // ── End requests ───────────────────────────────────────────────────────
+      // Either participant may end a continued_private meetup at any time
+      // (e.g. from chat "End match" action).  The onEndRequestCreated Cloud
+      // Function picks up the first write and flips the meetup to 'ended',
+      // which cascades through onMeetupTerminal to clear currentMeetupId on
+      // both users and release them back to Nearby.
+      //
+      // Schema: meetups/{meetupId}/endRequests/{uid}
+      //   uid         : String — the requester's own UID (= doc ID)
+      //   requestedAt : Timestamp (serverTimestamp)
+      //
+      // Constraints:
+      //   - Doc ID must equal caller UID (prevents impersonation).
+      //   - Caller must be a participant.
+      //   - Meetup must currently be in continued_private — earlier phases
+      //     have their own exit paths (decisions, timers).
+      //   - Immutable once written.
+      match /endRequests/{uid} {
+
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/meetups/$(meetupId))
+                       .data.participants;
+
+        allow create: if request.auth != null
+                      && request.auth.uid == uid
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.participants
+                      && get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.status == 'continued_private'
+                      && request.resource.data.uid == request.auth.uid;
+
         allow update, delete: if false;
       }
     }
@@ -225,6 +300,55 @@ service cloud.firestore {
         // Messages are immutable once written.
         allow update, delete: if false;
       }
+    }
+
+    // ── Live sessions ─────────────────────────────────────────────────────────
+    // One active-or-terminal session doc per user, keyed by uid.  Structurally
+    // enforces the "one active session per user" invariant — you cannot have
+    // two docs, because the doc ID IS the uid.
+    //
+    // Schema (Phase 1, schemaVersion=1):
+    //   uid                        : string  (== doc ID)
+    //   status                     : 'active' | 'ended' | 'expired'
+    //   endedReason                : 'manual' | 'blocked' | 'crash_recovered' | 'other' | null
+    //   startedAt                  : Timestamp (serverTimestamp)
+    //   expiresAt                  : Timestamp (startedAt + 1h)
+    //   endedAt                    : Timestamp? (set when terminal)
+    //   verificationMethod         : 'live_selfie' | 'test_mode_profile_photo' | 'test_mode_demo'
+    //   verificationCompletedAt    : Timestamp
+    //   currentMeetupId            : string?   (mirrored from users.currentMeetupId in Phase 1)
+    //   visibilityState            : 'discoverable' | 'hidden_in_meetup' | 'continued_private'
+    //   lat, lng                   : number?
+    //   geohash                    : string? (7-char; used by Nearby cell query)
+    //   locationUpdatedAt          : Timestamp?
+    //   maxDistanceMetersSnapshot  : number
+    //   discoverableSnapshot       : bool
+    //   showMeSnapshot             : string
+    //   ageRangeMinSnapshot        : number
+    //   ageRangeMaxSnapshot        : number
+    //   liveCreditsAtStart         : number
+    //   platform                   : 'ios' | 'android' | 'macos' | 'windows' | 'linux' | 'web'
+    //   schemaVersion              : number (1 for this iteration)
+    //   createdAt, updatedAt       : Timestamp
+    //
+    // Write  — only the session owner (uid == doc ID == auth.uid).
+    //          Cloud Functions bypass rules and may also write (for meetup
+    //          visibility transitions in Phase 2).
+    // Read   — owner, plus any authenticated user when visibilityState is
+    //          'discoverable' (for Nearby discovery).  Non-discoverable
+    //          sessions (hidden_in_meetup, continued_private, terminal) are
+    //          readable only by the owner.
+    match /live_sessions/{userId} {
+      allow write: if request.auth != null
+                   && request.auth.uid == userId;
+
+      allow read:  if request.auth != null
+                   && request.auth.uid == userId;
+
+      allow read:  if request.auth != null
+                   && request.auth.uid != userId
+                   && resource.data.visibilityState == 'discoverable'
+                   && resource.data.status == 'active';
     }
 
     // ── Reverse block index ───────────────────────────────────────────────────
