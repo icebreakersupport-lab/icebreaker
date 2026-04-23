@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../core/models/live_session_model.dart';
 import '../../../core/state/demo_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
@@ -301,7 +302,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       if (widget.isRedo) {
         session.updateSelfie(_capturedPath!);
       } else {
-        session.goLive(selfieFilePath: _capturedPath);
+        session.goLive(
+          selfieFilePath: _capturedPath,
+          verificationMethod: LiveVerificationMethod.liveSelfie,
+        );
       }
       Navigator.of(context).pop();
     } catch (e) {
@@ -341,7 +345,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     if (widget.isRedo) {
       session.updateSelfie(path);
     } else {
-      session.goLive(selfieFilePath: path);
+      session.goLive(
+        selfieFilePath: path,
+        verificationMethod: LiveVerificationMethod.testModeDemo,
+      );
     }
     Navigator.of(context).pop();
   }
@@ -394,7 +401,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     if (widget.isRedo) {
       session.updateSelfie(path);
     } else {
-      session.goLive(selfieFilePath: path);
+      session.goLive(
+        selfieFilePath: path,
+        verificationMethod: LiveVerificationMethod.testModeProfilePhoto,
+      );
     }
     Navigator.of(context).pop();
   }

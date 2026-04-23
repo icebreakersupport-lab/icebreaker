@@ -5,49 +5,85 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/widgets.dart';
 
 import '../constants/app_constants.dart';
+import '../models/live_session_model.dart';
+import '../services/live_session_repository.dart';
 import '../services/location_service.dart';
 
-/// Holds the single source of truth for whether the user has an active
-/// Live session, when it expires, and the current Icebreaker credit balance.
+/// In-memory live-presence state, backed by `live_sessions/{uid}` in Firestore.
 ///
-/// Consumed via [LiveSessionScope] anywhere in the widget tree.
-/// The notifier is owned by [IcebreakerApp] and lives for the app lifetime.
+/// Phase 1 dual-write: every live-presence mutation writes BOTH
+///   - `live_sessions/{uid}` via [LiveSessionRepository] (new source of truth)
+///   - legacy fields on `users/{uid}` (for existing Cloud Functions)
+/// so rollback is safe and the notification / meetup functions keep working
+/// untouched.  Phase 2 will drop the `users/{uid}` mirror.
+///
+/// This class still owns:
+///   - the one-shot expiry timer (fires `endSession(expired)`)
+///   - the 60-second location refresh timer
+///   - the 24-hour icebreaker-credit reset timer + credit state
+///   - a stream subscription to `live_sessions/{uid}` that reconciles
+///     in-memory state whenever the doc changes (including Cloud Function
+///     writes in Phase 2)
+///   - a stream subscription to `users/{uid}.currentMeetupId` so meetup
+///     entry/exit is mirrored into `live_sessions.visibilityState` during
+///     Phase 1.
 class LiveSession extends ChangeNotifier {
+  LiveSession({LiveSessionRepository? repo})
+      : _repo = repo ?? LiveSessionRepository();
+
+  final LiveSessionRepository _repo;
+
+  // ── Presence state (mirrors the Firestore doc) ─────────────────────────────
+
   bool _isLive = false;
   DateTime? _expiresAt;
   int _liveCredits = 1;
   String? _selfieFilePath;
 
-  /// One-shot timer that calls [endSession] when the live session expires.
-  /// Survives tab navigation because [LiveSession] is app-lifetime scoped.
+  /// Full session model from the most recent snapshot, or null when there is
+  /// no active/terminal doc for this user.  Exposed so UI that needs richer
+  /// detail (verification method, visibility) can read it without a second
+  /// query.
+  LiveSessionModel? _currentSession;
+  LiveSessionModel? get currentSession => _currentSession;
+
+  // ── Timers ────────────────────────────────────────────────────────────────
+
+  /// One-shot timer that calls `endSession(expired)` when the session expires.
+  /// Always re-derived from `expiresAt` so it survives cold starts / resumes.
   Timer? _expiryTimer;
 
-  /// Periodic timer that refreshes the user's GPS position in Firestore every
+  /// Periodic timer that refreshes the user's GPS position every
   /// [AppConstants.locationUpdateIntervalSeconds] seconds while live.
-  /// Cancelled immediately in [endSession] so the user's position is stale
-  /// after going offline rather than reflecting their last-known location.
   Timer? _locationTimer;
 
-  /// One-shot timer that fires at the exact moment the free-credit reset
-  /// window elapses.  When it fires, [hydrateCredits] is called with the
-  /// stored uid, applying the reset, updating Firestore, notifying listeners,
-  /// and scheduling the next timer automatically.
+  /// One-shot timer for the 24-hour icebreaker-credit reset.  Fires
+  /// [hydrateCredits] with the stored uid.
   Timer? _resetTimer;
 
-  /// UID of the currently signed-in user.  Set on first successful hydration
-  /// so the reset timer closure can call [hydrateCredits] without a widget
-  /// context.
+  // ── Stream subscriptions ──────────────────────────────────────────────────
+
+  /// Stream on `live_sessions/{uid}` — reconciles in-memory state.
+  StreamSubscription<LiveSessionModel?>? _sessionSub;
+
+  /// Stream on `users/{uid}` — used ONLY to observe `currentMeetupId`
+  /// changes written by Cloud Functions, so we can mirror them into
+  /// `live_sessions/{uid}.visibilityState` during Phase 1.  Remove in Phase 2
+  /// when functions write visibility directly.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _meetupMirrorSub;
+
+  /// Last value we mirrored, so we don't re-write on every unrelated field change.
+  String? _lastMirroredCurrentMeetupId;
+
+  // ── Identity + credits ────────────────────────────────────────────────────
+
+  /// UID of the currently signed-in user.
   String? _uid;
 
-  /// In-memory Icebreaker credit balance.
-  /// Authoritative value comes from Firestore via [hydrateCredits].
   int _icebreakerCredits = AppConstants.freeIcebreakerCreditsPerSignup;
-
-  /// When the current 24-hour free-credit window resets.
-  /// Null until [hydrateCredits] runs successfully.
   DateTime? _icebreakerCreditsResetAt;
 
-  // ── Getters ────────────────────────────────────────────────────────────────
+  // ── Getters ───────────────────────────────────────────────────────────────
 
   bool get isLive => _isLive;
   DateTime? get expiresAt => _expiresAt;
@@ -63,83 +99,114 @@ class LiveSession extends ChangeNotifier {
     return remaining.isNegative ? Duration.zero : remaining;
   }
 
-  // ── Session mutators ───────────────────────────────────────────────────────
+  // ── Session mutators ──────────────────────────────────────────────────────
 
-  void goLive({String? selfieFilePath}) {
+  /// Starts a new live session.  Writes to both `live_sessions/{uid}` (new
+  /// source of truth) and the legacy `users/{uid}` mirror.
+  ///
+  /// [verificationMethod] captures which path proved identity for this
+  /// session (real selfie on mobile, or one of the DEV Test Mode fallbacks).
+  /// It is persisted so the session record clearly indicates what happened.
+  Future<void> goLive({
+    String? selfieFilePath,
+    LiveVerificationMethod verificationMethod =
+        LiveVerificationMethod.liveSelfie,
+  }) async {
+    final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      debugPrint('[LiveSession] goLive: no uid — skipping');
+      return;
+    }
+
     _isLive = true;
     _expiresAt = DateTime.now().add(const Duration(hours: 1));
     if (selfieFilePath != null) _selfieFilePath = selfieFilePath;
     if (_liveCredits > 0) _liveCredits--;
     _scheduleExpiry();
-    // Mark the user as live in Firestore and clear DND in a single write so
-    // the notification Cloud Function sees a consistent state.
-    //
-    // Null-uid fix: _uid is set by hydrateCredits(), which may not have
-    // completed yet on a very fast cold-launch path.  Fall back to FirebaseAuth
-    // directly so goLive() never silently skips the Firestore update.
-    //
-    // Known limitation: if the app is force-killed while live, endSession()
-    // never fires and isLive stays true in Firestore until the next cold-start
-    // (where hydrateCredits resets it).  Addressed by TODO below.
-    final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null) {
-      // Write isLive immediately so the user is discoverable without waiting
-      // for GPS.  Position fields are written in a follow-up update once the
-      // GPS fix arrives (typically < 2 s with a warm GPS cache).
-      FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .update({'isLive': true, 'doNotDisturb': false}).catchError(
-        (Object e) =>
-            debugPrint('[LiveSession] goLive Firestore update failed: $e'),
-      );
-
-      // Async GPS write — does not block the session starting.
-      _writePositionToFirestore(uid);
-
-      // Start the periodic refresh so position stays current as the user moves.
-      _startLocationRefresh(uid);
-    }
     notifyListeners();
+
+    // Snapshot discovery-relevant settings so Nearby can mutual-filter off the
+    // session doc alone without a second users/{uid} read.
+    final snap = await _readDiscoverySnapshot(uid);
+
+    // 1. live_sessions/{uid} — new source of truth.
+    try {
+      await _repo.startSession(
+        uid: uid,
+        verificationMethod: verificationMethod,
+        maxDistanceMetersSnapshot: snap.maxDistanceMeters,
+        discoverableSnapshot: snap.discoverable,
+        showMeSnapshot: snap.showMe,
+        ageRangeMinSnapshot: snap.ageRangeMin,
+        ageRangeMaxSnapshot: snap.ageRangeMax,
+        liveCreditsAtStart: _liveCredits + 1, // pre-decrement value
+      );
+    } catch (e) {
+      debugPrint('[LiveSession] live_sessions startSession failed: $e');
+    }
+
+    // 2. users/{uid} — legacy Phase 1 mirror for the notification Cloud Fn.
+    FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .update({'isLive': true, 'doNotDisturb': false}).catchError(
+      (Object e) =>
+          debugPrint('[LiveSession] goLive users mirror failed: $e'),
+    );
+
+    // 3. Subscribe to the live_sessions stream going forward.
+    _subscribeToSession(uid);
+
+    // 4. Start the meetup-visibility mirror observer (Phase 1 only).
+    _subscribeToMeetupMirror(uid);
+
+    // 5. First GPS write + periodic refresh.
+    _writePositionBothPlaces(uid);
+    _startLocationRefresh(uid);
   }
 
   /// Arms a periodic timer that refreshes the GPS position every
   /// [AppConstants.locationUpdateIntervalSeconds] seconds.
-  /// Safe to call multiple times — always cancels the previous timer first.
   void _startLocationRefresh(String uid) {
     _locationTimer?.cancel();
     _locationTimer = Timer.periodic(
       const Duration(seconds: AppConstants.locationUpdateIntervalSeconds),
       (_) {
         debugPrint('[LiveSession] periodic location refresh');
-        _writePositionToFirestore(uid);
+        _writePositionBothPlaces(uid);
       },
     );
   }
 
-  /// Reads the device's current GPS position and writes latitude, longitude,
-  /// and geohash to the user's Firestore doc.  Non-fatal — if GPS is
-  /// unavailable the user is still live but simply won't appear in nearby
-  /// discovery until a position is written.
-  Future<void> _writePositionToFirestore(String uid) async {
+  /// Reads the device GPS and writes position to BOTH live_sessions/{uid}
+  /// (new) and users/{uid} (legacy mirror for Phase 1).
+  Future<void> _writePositionBothPlaces(String uid) async {
     final pos = await LocationService.getPosition();
     if (pos == null) {
-      debugPrint('[LiveSession] no GPS position — skipping position write');
+      debugPrint('[LiveSession] no GPS position — skipping write');
       return;
     }
     final geohash = LocationService.encode(pos.latitude, pos.longitude);
-    try {
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
-        'latitude': pos.latitude,
-        'longitude': pos.longitude,
-        'geohash': geohash,
-        'locationUpdatedAt': FieldValue.serverTimestamp(),
-      });
-      debugPrint('[LiveSession] position written: '
-          '${pos.latitude},${pos.longitude} geohash=$geohash');
-    } catch (e) {
-      debugPrint('[LiveSession] position write failed (non-fatal): $e');
-    }
+
+    // New: live_sessions/{uid}.
+    _repo.writePosition(
+      uid: uid,
+      lat: pos.latitude,
+      lng: pos.longitude,
+      geohash: geohash,
+    ).catchError((Object e) {
+      debugPrint('[LiveSession] live_sessions position write failed: $e');
+    });
+
+    // Legacy mirror: users/{uid}.
+    FirebaseFirestore.instance.collection('users').doc(uid).update({
+      'latitude': pos.latitude,
+      'longitude': pos.longitude,
+      'geohash': geohash,
+      'locationUpdatedAt': FieldValue.serverTimestamp(),
+    }).catchError((Object e) {
+      debugPrint('[LiveSession] users position mirror failed: $e');
+    });
   }
 
   void _scheduleExpiry() {
@@ -147,27 +214,24 @@ class LiveSession extends ChangeNotifier {
     if (_expiresAt == null) return;
     final remaining = _expiresAt!.difference(DateTime.now());
     if (remaining <= Duration.zero) {
-      endSession();
+      _endSessionInternal(LiveSessionStatus.expired, null);
       return;
     }
-    _expiryTimer = Timer(remaining, endSession);
+    _expiryTimer = Timer(remaining, () {
+      _endSessionInternal(LiveSessionStatus.expired, null);
+    });
   }
 
-  /// Called by the app lifecycle observer when the app returns from the
-  /// background.  If a live session is active:
-  ///   1. Writes the current GPS position immediately (timer may have been
-  ///      throttled or paused by iOS in the background).
-  ///   2. Restarts [_locationTimer] so the 60-second cadence is correct from
-  ///      the moment of resume, not from whenever the old timer last fired.
-  ///
-  /// No-op when not live.
+  /// App-resume hook.  If a session is active: refresh GPS immediately
+  /// (iOS may have throttled the periodic timer in the background) and
+  /// restart the location timer with a fresh cadence.
   void onResume() {
     if (!_isLive) return;
     final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     debugPrint('[LiveSession] onResume — refreshing position and restarting timer');
-    _writePositionToFirestore(uid);
-    _startLocationRefresh(uid); // cancels any throttled timer and starts fresh
+    _writePositionBothPlaces(uid);
+    _startLocationRefresh(uid);
   }
 
   void updateSelfie(String path) {
@@ -175,66 +239,255 @@ class LiveSession extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Public end-session entry point — user tapped End Live.
   void endSession() {
+    _endSessionInternal(LiveSessionStatus.ended, LiveSessionEndedReason.manual);
+  }
+
+  /// Shared internal end path for all reasons (manual, expired, crash
+  /// recovery).  Writes both stores and tears down timers.
+  void _endSessionInternal(
+      LiveSessionStatus finalStatus, LiveSessionEndedReason? reason) {
     _expiryTimer?.cancel();
     _expiryTimer = null;
     _locationTimer?.cancel();
     _locationTimer = null;
     _isLive = false;
     _expiresAt = null;
-    // Mirror the in-memory state to Firestore so the notification Cloud
-    // Function correctly treats the user as off-live after a session ends.
+
     final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
+      // 1. live_sessions/{uid} — mark terminal.
+      if (finalStatus == LiveSessionStatus.expired) {
+        _repo.markExpired(uid: uid).catchError((Object e) {
+          debugPrint('[LiveSession] live_sessions markExpired failed: $e');
+        });
+      } else {
+        _repo
+            .markEnded(
+                uid: uid, reason: reason ?? LiveSessionEndedReason.other)
+            .catchError((Object e) {
+          debugPrint('[LiveSession] live_sessions markEnded failed: $e');
+        });
+      }
+
+      // 2. users/{uid} — legacy mirror.
       FirebaseFirestore.instance.collection('users').doc(uid).update({
         'isLive': false,
-        // Clear position so the user is never shown as nearby while offline.
         'latitude': FieldValue.delete(),
         'longitude': FieldValue.delete(),
         'geohash': FieldValue.delete(),
         'locationUpdatedAt': FieldValue.delete(),
-      }).catchError(
-        (Object e) =>
-            debugPrint('[LiveSession] endSession Firestore update failed: $e'),
-      );
+      }).catchError((Object e) {
+        debugPrint('[LiveSession] users mirror endSession failed: $e');
+      });
     }
+
+    notifyListeners();
+  }
+
+  // ── live_sessions stream subscription ─────────────────────────────────────
+
+  /// Subscribes to `live_sessions/{uid}` and reconciles in-memory presence
+  /// state whenever the doc changes.  Safe to call multiple times — always
+  /// cancels the previous subscription first.
+  void _subscribeToSession(String uid) {
+    _sessionSub?.cancel();
+    _sessionSub = _repo.watch(uid).listen((model) {
+      _currentSession = model;
+      if (model == null) {
+        // Doc was deleted — treat as not live.
+        if (_isLive) {
+          _isLive = false;
+          _expiresAt = null;
+          _expiryTimer?.cancel();
+          _locationTimer?.cancel();
+          notifyListeners();
+        }
+        return;
+      }
+
+      // Reconcile presence from the server-side doc.  If the function / repo
+      // transitioned us to terminal, stop local timers and flip in-memory.
+      if (model.status != LiveSessionStatus.active) {
+        if (_isLive) {
+          _isLive = false;
+          _expiresAt = null;
+          _expiryTimer?.cancel();
+          _expiryTimer = null;
+          _locationTimer?.cancel();
+          _locationTimer = null;
+          notifyListeners();
+        }
+        return;
+      }
+
+      // Active — align expiry / timer with the server-side expiresAt so clock
+      // skew corrections flow in automatically.
+      final changed =
+          !_isLive || _expiresAt?.millisecondsSinceEpoch !=
+              model.expiresAt.millisecondsSinceEpoch;
+      _isLive = true;
+      _expiresAt = model.expiresAt;
+      if (changed) {
+        _scheduleExpiry();
+        notifyListeners();
+      }
+    }, onError: (Object e) {
+      debugPrint('[LiveSession] live_sessions stream error: $e');
+    });
+  }
+
+  // ── Phase-1 meetup visibility mirror ──────────────────────────────────────
+
+  /// Watches `users/{uid}.currentMeetupId` (written by Cloud Functions on
+  /// meetup create / terminal / block) and mirrors the change into
+  /// `live_sessions/{uid}.{currentMeetupId, visibilityState}` so Nearby's
+  /// visibility filter on the new collection stays accurate during Phase 1.
+  ///
+  /// Remove in Phase 2 once the Cloud Functions write directly to
+  /// `live_sessions/{uid}`.
+  void _subscribeToMeetupMirror(String uid) {
+    _meetupMirrorSub?.cancel();
+    _meetupMirrorSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .listen((snap) {
+      if (!snap.exists) return;
+      final newMeetupId = snap.data()?['currentMeetupId'] as String?;
+      if (newMeetupId == _lastMirroredCurrentMeetupId) return;
+      _lastMirroredCurrentMeetupId = newMeetupId;
+      _repo
+          .writeMeetupVisibility(uid: uid, currentMeetupId: newMeetupId)
+          .catchError((Object e) {
+        // Non-fatal — Nearby falls back to status==active filter at the
+        // very worst.
+        debugPrint('[LiveSession] meetup visibility mirror failed: $e');
+      });
+    }, onError: (Object e) {
+      debugPrint('[LiveSession] users stream error (mirror): $e');
+    });
+  }
+
+  // ── Cold-start / sign-in hydration ────────────────────────────────────────
+
+  /// Read `live_sessions/{uid}` on cold-start / sign-in and reconcile:
+  ///   • If doc is missing or terminal → not live (no-op beyond subscribing
+  ///     to the stream for future writes).
+  ///   • If doc is active && expiresAt > now → restore in-memory state, arm
+  ///     the expiry timer from the real expiresAt, start the 60 s location
+  ///     refresh, and subscribe to future updates.
+  ///   • If doc is active && expiresAt <= now → the previous session was
+  ///     killed while backgrounded; flip to expired in both stores and clear
+  ///     the users mirror so Nearby / notifications are consistent.
+  ///
+  /// Non-fatal — any Firestore error falls through to "not live" with a log.
+  Future<void> hydrateOnLaunch(String uid) async {
+    _uid = uid;
+    try {
+      final model = await _repo.load(uid);
+      _currentSession = model;
+
+      if (model == null) {
+        debugPrint('[LiveSession] hydrateOnLaunch: no session doc');
+        // Still subscribe so a subsequent goLive() or Cloud Function write
+        // flows in without a new subscription call.
+        _subscribeToSession(uid);
+        _subscribeToMeetupMirror(uid);
+        return;
+      }
+
+      if (model.status != LiveSessionStatus.active) {
+        debugPrint('[LiveSession] hydrateOnLaunch: doc is terminal '
+            '(${liveSessionStatusName(model.status)}) — no restore');
+        _subscribeToSession(uid);
+        _subscribeToMeetupMirror(uid);
+        return;
+      }
+
+      final now = DateTime.now();
+      if (!model.expiresAt.isAfter(now)) {
+        debugPrint('[LiveSession] hydrateOnLaunch: active doc is past expiry — '
+            'force-expiring (crash-recovered)');
+        _endSessionInternal(
+            LiveSessionStatus.expired, LiveSessionEndedReason.crashRecovered);
+        _subscribeToSession(uid);
+        _subscribeToMeetupMirror(uid);
+        return;
+      }
+
+      // Live session is genuinely still valid — restore in-memory.
+      _isLive = true;
+      _expiresAt = model.expiresAt;
+      _scheduleExpiry();
+      _subscribeToSession(uid);
+      _subscribeToMeetupMirror(uid);
+      _startLocationRefresh(uid);
+      // One immediate position write so geohash is fresh for Nearby.
+      _writePositionBothPlaces(uid);
+      notifyListeners();
+      debugPrint('[LiveSession] hydrateOnLaunch: restored active session, '
+          'expiresAt=${model.expiresAt}');
+    } catch (e, st) {
+      debugPrint('[LiveSession] hydrateOnLaunch failed (non-fatal): $e\n$st');
+    }
+  }
+
+  /// Tear down all subscriptions and timers — called on sign-out.
+  void clearForSignOut() {
+    _sessionSub?.cancel();
+    _sessionSub = null;
+    _meetupMirrorSub?.cancel();
+    _meetupMirrorSub = null;
+    _expiryTimer?.cancel();
+    _expiryTimer = null;
+    _locationTimer?.cancel();
+    _locationTimer = null;
+    _resetTimer?.cancel();
+    _resetTimer = null;
+    _isLive = false;
+    _expiresAt = null;
+    _selfieFilePath = null;
+    _currentSession = null;
+    _lastMirroredCurrentMeetupId = null;
+    _uid = null;
     notifyListeners();
   }
 
   @override
   void dispose() {
+    _sessionSub?.cancel();
+    _meetupMirrorSub?.cancel();
     _expiryTimer?.cancel();
     _locationTimer?.cancel();
     _resetTimer?.cancel();
     super.dispose();
   }
 
-  // ── Icebreaker credit mutators ─────────────────────────────────────────────
+  // ── Icebreaker credit mutators ────────────────────────────────────────────
 
   /// Directly set the credit balance and reset window (called after a
   /// successful send transaction where Firestore is the authoritative source).
   void setCredits(int credits, DateTime? resetAt) {
     _icebreakerCredits = credits.clamp(0, 9999);
     _icebreakerCreditsResetAt = resetAt;
-    // Re-arm the reset timer with the updated window.
     if (_uid != null) _scheduleResetTimer(_uid!);
     notifyListeners();
   }
 
-  // ── Free-credit reset ──────────────────────────────────────────────────────
+  // ── Free-credit reset + legacy crash recovery ─────────────────────────────
 
   /// Reads all credit fields from `users/{uid}`, applies the 24-hour free-tier
-  /// reset if the window has elapsed (or was never set), and schedules a
-  /// one-shot timer so the reset fires automatically while the app is open —
-  /// no restart required.
+  /// reset if the window has elapsed, and schedules the next reset timer.
   ///
-  /// Only mutates credits for `plan == 'free'`.  Plus/Gold values are read
-  /// and synced as-is without any reset being applied.
-  ///
-  /// Non-fatal — falls back to current in-memory values on any Firestore error.
-  /// Call on cold-start, sign-in, and app resume.
+  /// Also performs LEGACY crash recovery on `users.isLive` — a stale `true`
+  /// from a force-killed prior session is cleared here.  This remains for
+  /// Phase 1 so the notification Cloud Function does not read a stale mirror.
+  /// Phase 2 replaces this entirely with the live_sessions crash check in
+  /// [hydrateOnLaunch].
   Future<void> hydrateCredits(String uid) async {
-    _uid = uid; // retain so the reset timer can call back without context
+    _uid = uid;
     try {
       final db = FirebaseFirestore.instance;
       final snap = await db.collection('users').doc(uid).get();
@@ -251,9 +504,6 @@ class LiveSession extends ChangeNotifier {
 
       final now = DateTime.now();
 
-      // Reset condition (free users only):
-      //   • storedResetAt is null  → field never written; initialise now
-      //   • now > storedResetAt    → 24-hour window has elapsed
       final windowExpired =
           isFree && (storedResetAt == null || now.isAfter(storedResetAt));
 
@@ -282,14 +532,7 @@ class LiveSession extends ChangeNotifier {
         _icebreakerCredits = newIcebreakers;
         _liveCredits = newLiveCredits;
         _icebreakerCreditsResetAt = newResetAt;
-
-        debugPrint('[LiveSession] ✅ reset applied —'
-            ' icebreakerCredits=$newIcebreakers'
-            ' liveCredits=$newLiveCredits'
-            ' newResetAt=$newResetAt');
       } else {
-        // No reset due — sync stored values.
-        // Fall back to free defaults for fields absent from legacy docs.
         _icebreakerCredits =
             (storedIcebreakers ?? AppConstants.freeIcebreakerCreditsPerSignup)
                 .clamp(0, 9999);
@@ -297,41 +540,27 @@ class LiveSession extends ChangeNotifier {
             (storedLiveCredits ?? AppConstants.freeGoLiveCreditsPerSignup)
                 .clamp(0, 9999);
         _icebreakerCreditsResetAt = storedResetAt;
-
-        debugPrint('[LiveSession] ✅ hydrated (no reset) —'
-            ' icebreakerCredits=$_icebreakerCredits'
-            ' liveCredits=$_liveCredits'
-            ' resetAt=$_icebreakerCreditsResetAt');
       }
 
-      // Crash recovery: if Firestore says isLive=true but we have no active
-      // session in memory, the previous session was never cleanly ended
-      // (app force-killed).  Correct it now so DND enforcement is accurate.
+      // Legacy crash recovery on the users mirror — safe alongside the
+      // authoritative live_sessions check in [hydrateOnLaunch].
       final storedIsLive = (data['isLive'] as bool?) ?? false;
       if (!_isLive && storedIsLive) {
-        debugPrint('[LiveSession] ⚠ crash-recovery: resetting stale isLive=true');
-        db
-            .collection('users')
-            .doc(uid)
-            .update({'isLive': false}).catchError(
-          (Object e) => debugPrint('[LiveSession] crash-recovery write failed: $e'),
+        debugPrint('[LiveSession] ⚠ crash-recovery: clearing stale users.isLive');
+        db.collection('users').doc(uid).update({'isLive': false}).catchError(
+          (Object e) =>
+              debugPrint('[LiveSession] crash-recovery mirror write failed: $e'),
         );
       }
 
       notifyListeners();
-
-      // Schedule a timer for the next reset boundary so credits restore while
-      // the app is open, without requiring a restart or user action.
       _scheduleResetTimer(uid);
     } catch (e, st) {
       debugPrint('[LiveSession] ❌ hydrateCredits failed (non-fatal): $e\n$st');
     }
   }
 
-  /// Arms a one-shot timer that fires exactly when [_icebreakerCreditsResetAt]
-  /// elapses and calls [hydrateCredits] to apply the reset in-process.
-  ///
-  /// Safe to call multiple times — always cancels the previous timer first.
+  /// Arms a one-shot timer that fires exactly when the reset window elapses.
   void _scheduleResetTimer(String uid) {
     _resetTimer?.cancel();
     _resetTimer = null;
@@ -340,8 +569,6 @@ class LiveSession extends ChangeNotifier {
 
     final remaining = _icebreakerCreditsResetAt!.difference(DateTime.now());
     if (remaining <= Duration.zero) {
-      // Already past — run hydration immediately (shouldn't happen normally,
-      // but guards against clock skew or a very tight race).
       hydrateCredits(uid);
       return;
     }
@@ -354,14 +581,55 @@ class LiveSession extends ChangeNotifier {
       hydrateCredits(uid);
     });
   }
+
+  // ── Discovery snapshot helper ─────────────────────────────────────────────
+
+  Future<_DiscoverySnapshot> _readDiscoverySnapshot(String uid) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final data = doc.data() ?? const {};
+      return _DiscoverySnapshot(
+        maxDistanceMeters:
+            ((data['maxDistanceMeters'] as num?)?.toInt() ?? 30).clamp(30, 60),
+        discoverable: (data['discoverable'] as bool?) ?? true,
+        showMe: (data['showMe'] as String?) ?? 'everyone',
+        ageRangeMin: (data['ageRangeMin'] as num?)?.toInt() ?? 18,
+        ageRangeMax: (data['ageRangeMax'] as num?)?.toInt() ?? 99,
+      );
+    } catch (e) {
+      debugPrint('[LiveSession] discovery snapshot read failed: $e');
+      return const _DiscoverySnapshot(
+        maxDistanceMeters: 30,
+        discoverable: true,
+        showMe: 'everyone',
+        ageRangeMin: 18,
+        ageRangeMax: 99,
+      );
+    }
+  }
 }
 
-// ── Scope ──────────────────────────────────────────────────────────────────────
+class _DiscoverySnapshot {
+  const _DiscoverySnapshot({
+    required this.maxDistanceMeters,
+    required this.discoverable,
+    required this.showMe,
+    required this.ageRangeMin,
+    required this.ageRangeMax,
+  });
+  final int maxDistanceMeters;
+  final bool discoverable;
+  final String showMe;
+  final int ageRangeMin;
+  final int ageRangeMax;
+}
+
+// ── Scope ────────────────────────────────────────────────────────────────────
 
 /// InheritedNotifier that exposes [LiveSession] to the entire widget tree.
-///
-/// Any widget that reads via [LiveSessionScope.of] rebuilds automatically
-/// when the live state changes.
 class LiveSessionScope extends InheritedNotifier<LiveSession> {
   const LiveSessionScope({
     super.key,

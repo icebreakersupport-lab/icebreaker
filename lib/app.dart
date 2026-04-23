@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
@@ -34,12 +36,40 @@ class _IcebreakerAppState extends State<IcebreakerApp>
   /// onTokenRefresh stream listener set up in initState.
   bool _fcmInitialized = false;
 
+  /// Subscription to authStateChanges so we hydrate the profile when a user
+  /// signs in and clear it when they sign out.
+  StreamSubscription<User?>? _authSub;
+
+  /// Last hydrated uid — guards against re-running the Firestore fetch on
+  /// unrelated auth-state pings (e.g. token refresh emitting the same user).
+  String? _hydratedForUid;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _hydrateCreditsIfSignedIn();
+    _hydrateProfileIfSignedIn();
+    _listenForAuthChanges();
     _listenForTokenRefresh();
+  }
+
+  /// Clears in-memory profile photos + live session on sign-out and hydrates
+  /// both when a different user signs in.  Keeps all per-account state honest
+  /// across account switches without a full app restart.
+  void _listenForAuthChanges() {
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      if (user == null) {
+        debugPrint('[App] auth cleared — wiping DemoProfile + LiveSession');
+        _hydratedForUid = null;
+        _profile.clearPhotos();
+        _session.clearForSignOut();
+        return;
+      }
+      if (_hydratedForUid == user.uid) return;
+      _hydratePhotosForUid(user.uid);
+      _session.hydrateOnLaunch(user.uid);
+    });
   }
 
   /// Keeps users/{uid}.fcmToken fresh if the FCM service rotates the token
@@ -97,6 +127,29 @@ class _IcebreakerAppState extends State<IcebreakerApp>
     }
   }
 
+  /// On cold start, if the user is already signed in (token persisted by
+  /// Firebase Auth), pull users/{uid}.photoUrls so Profile/Gallery show the
+  /// persisted photos immediately rather than waiting for the user to edit.
+  void _hydrateProfileIfSignedIn() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) _hydratePhotosForUid(uid);
+  }
+
+  Future<void> _hydratePhotosForUid(String uid) async {
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(uid)
+          .get();
+      final raw = (doc.data()?['photoUrls'] as List?)?.cast<String>() ?? [];
+      _profile.hydrateFromFirestore(raw);
+      _hydratedForUid = uid;
+      debugPrint('[App] hydrated ${raw.length} photoUrls for uid=$uid');
+    } catch (e) {
+      debugPrint('[App] photoUrls hydrate failed: $e');
+    }
+  }
+
   /// Requests push-notification permission and writes the FCM token to
   /// users/{uid}.fcmToken.
   ///
@@ -134,6 +187,7 @@ class _IcebreakerAppState extends State<IcebreakerApp>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _authSub?.cancel();
     _session.dispose();
     _profile.dispose();
     super.dispose();
