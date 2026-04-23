@@ -185,19 +185,83 @@ class _SettingsScreenState extends State<SettingsScreen>
 
   /// On app resume, reload the Firebase Auth user so [emailVerified] reflects
   /// any verification the user completed outside the app (e.g. clicking the
-  /// link in their inbox).  Then rebuild so the row updates immediately.
+  /// link in their inbox).  Then rebuild so the row updates immediately, and
+  /// surface a confirmation snackbar if verification just flipped to true.
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      final beforeVerified =
+          FirebaseAuth.instance.currentUser?.emailVerified ?? false;
       FirebaseAuth.instance.currentUser
           ?.reload()
           .then((_) {
-            if (mounted) setState(() {});
+            if (!mounted) return;
+            final afterVerified =
+                FirebaseAuth.instance.currentUser?.emailVerified ?? false;
+            setState(() {});
+            if (!beforeVerified && afterVerified) {
+              debugPrint('[verifyEmail] ✅ flipped to verified on resume');
+              _cooldownTimer?.cancel();
+              _emailCooldownSeconds = 0;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Email verified — you\'re all set.'),
+                ),
+              );
+            }
           })
           .catchError((Object e) {
             debugPrint('[Settings] user reload failed: $e');
             return null;
           });
+    }
+  }
+
+  /// Reloads the current user and refreshes the UI.  Used by the explicit
+  /// "Refresh status" action so the user can confirm a clicked link without
+  /// having to background-and-foreground the app.
+  Future<void> _refreshVerificationStatus() async {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) return;
+    final before = user.emailVerified;
+    debugPrint('[verifyEmail] refresh-status: before=$before');
+    try {
+      await user.reload();
+      final fresh = FirebaseAuth.instance.currentUser;
+      final after = fresh?.emailVerified ?? false;
+      debugPrint('[verifyEmail] refresh-status: after=$after');
+      if (!mounted) return;
+      setState(() {});
+      if (!before && after) {
+        _cooldownTimer?.cancel();
+        _emailCooldownSeconds = 0;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Email verified — you\'re all set.'),
+          ),
+        );
+      } else if (!after) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content:
+                Text('Not verified yet. Open the link in your inbox, then try again.'),
+          ),
+        );
+      }
+    } on FirebaseAuthException catch (e) {
+      debugPrint('[verifyEmail] refresh-status failed:'
+          '\n  code=${e.code}'
+          '\n  message=${e.message}');
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            e.code == 'network-request-failed'
+                ? 'No network connection. Check your connection and try again.'
+                : 'Could not refresh status (${e.code}).',
+          ),
+        ),
+      );
     }
   }
 
@@ -675,8 +739,10 @@ class _SettingsScreenState extends State<SettingsScreen>
             ),
           ),
           // Email Verification: tappable when unverified — sends a Firebase
-          // verification email.  Chip updates to "Verified" once the user
-          // clicks the link and returns to the app (reload on resume).
+          // verification email.  During cooldown, the row still taps through to
+          // a status refresh so the user can confirm a clicked link without
+          // waiting for the resend timer or backgrounding the app.  Chip
+          // updates to "Verified" once the user clicks the link and returns.
           _SettingsRow(
             icon: Icons.email_outlined,
             iconColor:
@@ -685,13 +751,15 @@ class _SettingsScreenState extends State<SettingsScreen>
             subtitle: emailVerified
                 ? null
                 : _emailCooldownSeconds > 0
-                    ? 'Check your inbox — retry in ${_emailCooldownSeconds}s'
+                    ? 'Check your inbox — retry in ${_emailCooldownSeconds}s · tap to refresh'
                     : _emailJustSent
                         ? 'Check your inbox — tap to resend'
                         : 'Tap to send a verification email',
-            onTap: emailVerified || _emailSending || _emailCooldownSeconds > 0
+            onTap: emailVerified || _emailSending
                 ? null
-                : _sendVerificationEmail,
+                : _emailCooldownSeconds > 0
+                    ? _refreshVerificationStatus
+                    : _sendVerificationEmail,
             trailing: _emailSending
                 ? const SizedBox(
                     width: 18,
