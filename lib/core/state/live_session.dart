@@ -11,11 +11,12 @@ import '../services/location_service.dart';
 
 /// In-memory live-presence state, backed by `live_sessions/{uid}` in Firestore.
 ///
-/// Phase 1 dual-write: every live-presence mutation writes BOTH
-///   - `live_sessions/{uid}` via [LiveSessionRepository] (new source of truth)
-///   - legacy fields on `users/{uid}` (for existing Cloud Functions)
-/// so rollback is safe and the notification / meetup functions keep working
-/// untouched.  Phase 2 will drop the `users/{uid}` mirror.
+/// Dual-write is owned by [LiveSessionRepository]: every live-presence mutation
+/// commits BOTH the authoritative `live_sessions/{uid}` write AND the legacy
+/// `users/{uid}` mirror (`isLive`, position fields, `doNotDisturb`) in a single
+/// Firestore batch, so the two stores either both land or both fail — no
+/// split-brain state is possible.  Phase 2 drops the mirror once the relevant
+/// Cloud Functions are cut over to read `live_sessions/{uid}` directly.
 ///
 /// This class still owns:
 ///   - the one-shot expiry timer (fires `endSession(expired)`)
@@ -101,8 +102,10 @@ class LiveSession extends ChangeNotifier {
 
   // ── Session mutators ──────────────────────────────────────────────────────
 
-  /// Starts a new live session.  Writes to both `live_sessions/{uid}` (new
-  /// source of truth) and the legacy `users/{uid}` mirror.
+  /// Starts a new live session.  The authoritative `live_sessions/{uid}`
+  /// write and the legacy `users/{uid}` mirror are committed atomically by
+  /// the repository — if the batch fails, no server state was changed and we
+  /// roll back the in-memory flip so the UI and server stay consistent.
   ///
   /// [verificationMethod] captures which path proved identity for this
   /// session (real selfie on mobile, or one of the DEV Test Mode fallbacks).
@@ -118,18 +121,25 @@ class LiveSession extends ChangeNotifier {
       return;
     }
 
+    // Snapshot discovery-relevant settings so both the session doc and
+    // Nearby's mutual filter can operate off the session alone, independent
+    // of any mid-session Settings edits to users/{uid}.
+    final snap = await _readDiscoverySnapshot(uid);
+
+    // Remember the prior values so we can roll back if the batch fails.
+    final prevIsLive = _isLive;
+    final prevExpiresAt = _expiresAt;
+    final prevSelfiePath = _selfieFilePath;
+    final prevCredits = _liveCredits;
+
     _isLive = true;
     _expiresAt = DateTime.now().add(const Duration(hours: 1));
     if (selfieFilePath != null) _selfieFilePath = selfieFilePath;
+    final creditsToPersist = _liveCredits;
     if (_liveCredits > 0) _liveCredits--;
     _scheduleExpiry();
     notifyListeners();
 
-    // Snapshot discovery-relevant settings so Nearby can mutual-filter off the
-    // session doc alone without a second users/{uid} read.
-    final snap = await _readDiscoverySnapshot(uid);
-
-    // 1. live_sessions/{uid} — new source of truth.
     try {
       await _repo.startSession(
         uid: uid,
@@ -139,29 +149,27 @@ class LiveSession extends ChangeNotifier {
         showMeSnapshot: snap.showMe,
         ageRangeMinSnapshot: snap.ageRangeMin,
         ageRangeMaxSnapshot: snap.ageRangeMax,
-        liveCreditsAtStart: _liveCredits + 1, // pre-decrement value
+        liveCreditsAtStart: creditsToPersist,
       );
-    } catch (e) {
-      debugPrint('[LiveSession] live_sessions startSession failed: $e');
+    } catch (e, st) {
+      // Authoritative write failed — nothing landed server-side (atomic
+      // batch).  Roll back the in-memory flip so the UI doesn't show a
+      // "live" state that the server never acknowledged.
+      debugPrint('[LiveSession] startSession failed — rolling back: $e\n$st');
+      _expiryTimer?.cancel();
+      _expiryTimer = null;
+      _isLive = prevIsLive;
+      _expiresAt = prevExpiresAt;
+      _selfieFilePath = prevSelfiePath;
+      _liveCredits = prevCredits;
+      notifyListeners();
+      rethrow;
     }
 
-    // 2. users/{uid} — legacy Phase 1 mirror for the notification Cloud Fn.
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .update({'isLive': true, 'doNotDisturb': false}).catchError(
-      (Object e) =>
-          debugPrint('[LiveSession] goLive users mirror failed: $e'),
-    );
-
-    // 3. Subscribe to the live_sessions stream going forward.
+    // Server state landed — safe to subscribe and arm the refresh loop.
     _subscribeToSession(uid);
-
-    // 4. Start the meetup-visibility mirror observer (Phase 1 only).
     _subscribeToMeetupMirror(uid);
-
-    // 5. First GPS write + periodic refresh.
-    _writePositionBothPlaces(uid);
+    _writePosition(uid);
     _startLocationRefresh(uid);
   }
 
@@ -173,40 +181,34 @@ class LiveSession extends ChangeNotifier {
       const Duration(seconds: AppConstants.locationUpdateIntervalSeconds),
       (_) {
         debugPrint('[LiveSession] periodic location refresh');
-        _writePositionBothPlaces(uid);
+        _writePosition(uid);
       },
     );
   }
 
-  /// Reads the device GPS and writes position to BOTH live_sessions/{uid}
-  /// (new) and users/{uid} (legacy mirror for Phase 1).
-  Future<void> _writePositionBothPlaces(String uid) async {
+  /// Reads the device GPS and writes the position to both `live_sessions`
+  /// and the `users` mirror inside a single atomic batch (see
+  /// [LiveSessionRepository.writePosition]).  A null GPS result (permission
+  /// revoked, timeout, airplane mode) is treated as "skip this tick" rather
+  /// than writing a half-state — the next tick re-reads.
+  Future<void> _writePosition(String uid) async {
     final pos = await LocationService.getPosition();
     if (pos == null) {
       debugPrint('[LiveSession] no GPS position — skipping write');
       return;
     }
     final geohash = LocationService.encode(pos.latitude, pos.longitude);
-
-    // New: live_sessions/{uid}.
-    _repo.writePosition(
-      uid: uid,
-      lat: pos.latitude,
-      lng: pos.longitude,
-      geohash: geohash,
-    ).catchError((Object e) {
-      debugPrint('[LiveSession] live_sessions position write failed: $e');
-    });
-
-    // Legacy mirror: users/{uid}.
-    FirebaseFirestore.instance.collection('users').doc(uid).update({
-      'latitude': pos.latitude,
-      'longitude': pos.longitude,
-      'geohash': geohash,
-      'locationUpdatedAt': FieldValue.serverTimestamp(),
-    }).catchError((Object e) {
-      debugPrint('[LiveSession] users position mirror failed: $e');
-    });
+    try {
+      await _repo.writePosition(
+        uid: uid,
+        lat: pos.latitude,
+        lng: pos.longitude,
+        geohash: geohash,
+      );
+    } catch (e) {
+      // Batch either landed fully or not at all.  Retry on the next tick.
+      debugPrint('[LiveSession] writePosition batch failed (will retry): $e');
+    }
   }
 
   void _scheduleExpiry() {
@@ -230,7 +232,7 @@ class LiveSession extends ChangeNotifier {
     final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     debugPrint('[LiveSession] onResume — refreshing position and restarting timer');
-    _writePositionBothPlaces(uid);
+    _writePosition(uid);
     _startLocationRefresh(uid);
   }
 
@@ -245,7 +247,11 @@ class LiveSession extends ChangeNotifier {
   }
 
   /// Shared internal end path for all reasons (manual, expired, crash
-  /// recovery).  Writes both stores and tears down timers.
+  /// recovery).  The repository commits the `live_sessions/{uid}` terminal
+  /// write and the `users/{uid}` mirror clear in a single batch — split-brain
+  /// is not possible.  On batch failure we log and leave the in-memory flip
+  /// in place; the next `hydrateOnLaunch` will reconcile a stale active doc
+  /// via the crash-recovery path.
   void _endSessionInternal(
       LiveSessionStatus finalStatus, LiveSessionEndedReason? reason) {
     _expiryTimer?.cancel();
@@ -257,29 +263,16 @@ class LiveSession extends ChangeNotifier {
 
     final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
-      // 1. live_sessions/{uid} — mark terminal.
+      final Future<void> write;
       if (finalStatus == LiveSessionStatus.expired) {
-        _repo.markExpired(uid: uid).catchError((Object e) {
-          debugPrint('[LiveSession] live_sessions markExpired failed: $e');
-        });
+        write = _repo.markExpired(uid: uid, reason: reason);
       } else {
-        _repo
-            .markEnded(
-                uid: uid, reason: reason ?? LiveSessionEndedReason.other)
-            .catchError((Object e) {
-          debugPrint('[LiveSession] live_sessions markEnded failed: $e');
-        });
+        write = _repo.markEnded(
+            uid: uid, reason: reason ?? LiveSessionEndedReason.other);
       }
-
-      // 2. users/{uid} — legacy mirror.
-      FirebaseFirestore.instance.collection('users').doc(uid).update({
-        'isLive': false,
-        'latitude': FieldValue.delete(),
-        'longitude': FieldValue.delete(),
-        'geohash': FieldValue.delete(),
-        'locationUpdatedAt': FieldValue.delete(),
-      }).catchError((Object e) {
-        debugPrint('[LiveSession] users mirror endSession failed: $e');
+      write.catchError((Object e) {
+        debugPrint('[LiveSession] terminal batch failed (will be reconciled '
+            'on next hydrateOnLaunch): $e');
       });
     }
 
@@ -291,6 +284,11 @@ class LiveSession extends ChangeNotifier {
   /// Subscribes to `live_sessions/{uid}` and reconciles in-memory presence
   /// state whenever the doc changes.  Safe to call multiple times — always
   /// cancels the previous subscription first.
+  ///
+  /// [notifyListeners] is called on every snapshot so downstream
+  /// ChangeNotifier listeners (notably Nearby's own-position listener) observe
+  /// position updates in addition to presence transitions.  Listeners that
+  /// only care about transitions must dedup on their own state.
   void _subscribeToSession(String uid) {
     _sessionSub?.cancel();
     _sessionSub = _repo.watch(uid).listen((model) {
@@ -302,8 +300,8 @@ class LiveSession extends ChangeNotifier {
           _expiresAt = null;
           _expiryTimer?.cancel();
           _locationTimer?.cancel();
-          notifyListeners();
         }
+        notifyListeners();
         return;
       }
 
@@ -317,22 +315,20 @@ class LiveSession extends ChangeNotifier {
           _expiryTimer = null;
           _locationTimer?.cancel();
           _locationTimer = null;
-          notifyListeners();
         }
+        notifyListeners();
         return;
       }
 
       // Active — align expiry / timer with the server-side expiresAt so clock
       // skew corrections flow in automatically.
-      final changed =
+      final timingChanged =
           !_isLive || _expiresAt?.millisecondsSinceEpoch !=
               model.expiresAt.millisecondsSinceEpoch;
       _isLive = true;
       _expiresAt = model.expiresAt;
-      if (changed) {
-        _scheduleExpiry();
-        notifyListeners();
-      }
+      if (timingChanged) _scheduleExpiry();
+      notifyListeners();
     }, onError: (Object e) {
       debugPrint('[LiveSession] live_sessions stream error: $e');
     });
@@ -425,7 +421,7 @@ class LiveSession extends ChangeNotifier {
       _subscribeToMeetupMirror(uid);
       _startLocationRefresh(uid);
       // One immediate position write so geohash is fresh for Nearby.
-      _writePositionBothPlaces(uid);
+      _writePosition(uid);
       notifyListeners();
       debugPrint('[LiveSession] hydrateOnLaunch: restored active session, '
           'expiresAt=${model.expiresAt}');

@@ -17,31 +17,43 @@ import '../../../shared/widgets/pill_button.dart';
 import '../widgets/nearby_focus_card.dart';
 import '../widgets/nearby_about_me_card.dart';
 
-/// Nearby tab — real Firestore-backed discovery carousel.
+/// Nearby tab — Firestore-backed discovery carousel.
 ///
-/// Discovery pipeline (Phase 1 — live_sessions authoritative):
-///   1. Load the user's saved maxDistanceMeters (30–60 m) from users/{uid}.
-///   2. Load the user's blocked UIDs.
-///   3. Read initial device GPS position.
-///   4. Compute current geohash-7 cell + 8 neighbors.
-///   5. Subscribe to one Firestore stream per cell on `live_sessions` where
-///      `visibilityState == 'discoverable'` AND geohash falls in the prefix
-///      range.  Terminal docs clear their geohash so they drop out naturally;
-///      meetup-hidden sessions are filtered out by `visibilityState` at the
-///      query level.  Results are merged in [_cellSnapshots].
-///   6. For each uid that appears in a cell, the display / filter fields
-///      that do NOT live on live_sessions (firstName, age, gender, bio,
-///      photoUrl, plan, status, hometown, etc.) are loaded once from
-///      users/{uid} into [_profileCache].
-///   7. Subscribe to the current user's own users/{uid} doc to detect
-///      preference changes (showMe, ageRange, maxDistanceMeters) — those
-///      fields stay on users/{uid}; live_sessions only carries snapshots at
-///      session start.  Own-position tracking is also on the users/{uid}
-///      mirror during Phase 1.  When the user moves to a new geohash cell,
-///      cell subscriptions are replaced.
-///   8. [_rebuildList] joins cell snapshots with [_profileCache], applies
-///      mutual preference filtering, excludes self + blocked + stale-position
-///      users, and enforces the Haversine distance gate.
+/// Discovery pipeline (Phase 1 — `live_sessions` is the authoritative source
+/// of truth for live presence and discovery semantics):
+///
+///   1. Load the signed-in user's STABLE profile fields (gender, age) from
+///      users/{uid} — these never change mid-session and are used for the
+///      counterparty's mutual filtering of me.
+///   2. Read the signed-in user's discovery SNAPSHOTS (maxDistance, showMe,
+///      ageRange) from `LiveSession.currentSession` — these were captured
+///      into `live_sessions/{uid}.*Snapshot` when Go Live started, and are
+///      intentionally immutable for the session's lifetime.  Mid-session
+///      Settings edits to users/{uid} do NOT re-enter the active session;
+///      they take effect at the next Go Live.
+///   3. Load the user's blocked UIDs + reverse-block index (both streamed).
+///   4. Read the user's position from `LiveSession.currentSession.lat/lng`
+///      (or a direct device-GPS fallback on the very first pass, before the
+///      first session position write has landed).
+///   5. Compute current geohash-7 cell + 8 neighbours.
+///   6. Subscribe to one Firestore stream per cell on `live_sessions` where
+///        status         == 'active'
+///        visibilityState == 'discoverable'
+///        geohash        ∈ [prefix, prefix + '~')
+///      The query shape matches the security rule exactly — Firestore can
+///      prove the rule from the query alone and accept the listener.
+///   7. For each candidate uid, STABLE profile fields (firstName, age,
+///      gender, bio, photoUrl, plan, status, hometown, occupation, height,
+///      lookingFor) are lazily loaded from users/{uid} into [_profileCache].
+///   8. Changes to the current user's live_sessions doc (new position,
+///      session ended) come via a [LiveSession] listener.  Resubscribe cells
+///      when the geohash window moves; rebuild in place otherwise.
+///   9. [_rebuildList] joins the candidate's live_sessions doc (position,
+///      freshness, discovery snapshots) with the cached users profile
+///      (identity + stable attributes), applies mutual preference filtering
+///      off BOTH sides' session snapshots (never off their mutable users
+///      prefs), excludes self + blocked + stale-position users, and enforces
+///      the Haversine distance gate using my own maxDistance snapshot.
 ///
 /// Geohash is a coarse bounding-box query helper only — the Haversine
 /// distance is the authoritative filter that enforces the selected radius.
@@ -70,21 +82,29 @@ class _NearbyScreenState extends State<NearbyScreen>
   // _rebuildList without re-reading FirebaseAuth.
   String? _myUid;
 
-  // Current user's position — updated by the own-doc position stream.
+  // Current user's position — sourced from LiveSession.currentSession after
+  // the session's first writePosition lands; bootstrapped from direct device
+  // GPS on the very first pass so cells can subscribe before that write
+  // round-trips.
   double? _myLat;
   double? _myLng;
 
-  // User's chosen discovery radius from Settings (30–60 m).
-  // Default to minimum until loaded from Firestore.
+  // Active session snapshots — captured at Go Live time and held constant
+  // for the session's lifetime.  Source: LiveSession.currentSession.
+  //
+  // Intentional: mid-session edits to users/{uid}.{showMe, ageRangeMin/Max,
+  // maxDistanceMeters} do NOT alter these values.  A live session is
+  // deterministic — new prefs take effect at the next Go Live.
   double _effectiveRadiusMeters = AppConstants.nearbyRadiusMeters;
-
-  // Current user's preference fields — loaded from their own Firestore doc
-  // at discovery start.  Used in _rebuildList for mutual filtering.
-  String? _myShowMe;    // 'everyone' | 'men' | 'women' | 'non_binary'
-  String? _myGender;   // 'male' | 'female' | 'non_binary' | 'other'
-  int? _myAge;
+  String? _myShowMe;     // 'everyone' | 'men' | 'women' | 'non_binary'
   int _myAgeRangeMin = AppConstants.minAge;
   int _myAgeRangeMax = 99;
+
+  // STABLE profile fields — read from users/{uid} once at discovery start
+  // (gender + age effectively don't change mid-session).  Used so the
+  // counterparty's mutual filter can evaluate me.
+  String? _myGender; // 'male' | 'female' | 'non_binary' | 'other'
+  int? _myAge;
 
   // Blocked user UIDs.
   Set<String> _blockedUids = {};
@@ -109,9 +129,10 @@ class _NearbyScreenState extends State<NearbyScreen>
   // The geohash prefixes currently subscribed.
   List<String> _subscribedHashes = [];
 
-  // Stream subscription on the current user's own doc — detects position
-  // updates written by LiveSession's periodic location refresh.
-  StreamSubscription<DocumentSnapshot>? _myPositionSub;
+  // Cached LiveSession ref + listener handle — the source of own-position +
+  // session lifecycle updates.  Subscribed in didChangeDependencies, cleaned
+  // up in dispose / _stopDiscovery.
+  LiveSession? _liveSession;
 
   // Stream subscription on the current user's blockedUsers subcollection.
   // Keeps _blockedUids authoritative while Nearby is open so blocks made
@@ -150,7 +171,17 @@ class _NearbyScreenState extends State<NearbyScreen>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final isLive = LiveSessionScope.isLive(context);
+    final session = LiveSessionScope.of(context);
+
+    // Attach our listener the first time we see the session, or re-attach if
+    // the session instance ever changes (e.g. sign-in/sign-out swap).
+    if (!identical(_liveSession, session)) {
+      _liveSession?.removeListener(_onLiveSessionChanged);
+      _liveSession = session;
+      _liveSession!.addListener(_onLiveSessionChanged);
+    }
+
+    final isLive = session.isLive;
     if (isLive && _cellSubs.isEmpty) {
       _startDiscovery();
     } else if (!isLive && _cellSubs.isNotEmpty) {
@@ -158,9 +189,50 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
   }
 
+  /// Fires whenever [LiveSession] notifies — i.e. on every
+  /// `live_sessions/{myUid}` snapshot update (position, status, etc.).
+  ///
+  /// Handles the position-update case here: when my own location changes,
+  /// resubscribe cell streams if the geohash window has moved, otherwise
+  /// rebuild the list so the Haversine distance gate is re-evaluated.
+  ///
+  /// Session-lifecycle transitions (active → ended/expired) are handled by
+  /// [didChangeDependencies] via the InheritedNotifier rebuild path, so this
+  /// callback bails early on a non-active session.
+  void _onLiveSessionChanged() {
+    if (!mounted) return;
+    final myUid = _myUid;
+    if (myUid == null || _cellSubs.isEmpty) return;
+
+    final model = _liveSession?.currentSession;
+    if (model == null || !model.isActive) return;
+
+    final lat = model.lat;
+    final lng = model.lng;
+    if (lat == null || lng == null) return;
+    if (lat == _myLat && lng == _myLng) return;
+
+    _myLat = lat;
+    _myLng = lng;
+    debugPrint('[Nearby] position updated from LiveSession: $lat, $lng');
+
+    final newHashes = LocationService.queryHashes(lat, lng);
+    final hashesChanged = newHashes.length != _subscribedHashes.length ||
+        !newHashes.toSet().containsAll(_subscribedHashes);
+
+    if (hashesChanged) {
+      debugPrint('[Nearby] moved to new cells — resubscribing');
+      _cellSnapshots.clear();
+      _subscribeCells(myUid, newHashes);
+    } else {
+      _rebuildList(myUid);
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _liveSession?.removeListener(_onLiveSessionChanged);
     _stopDiscovery();
     _pageController.dispose();
     super.dispose();
@@ -182,68 +254,102 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
     _myUid = myUid;
 
-    // Load radius preference and both block sets in parallel.
-    // Both stream methods return a Future that completes on the first snapshot
-    // so initial UIDs are known before cell subscriptions open.
+    // Capture the session snapshots (radius, showMe, age range) from the
+    // authoritative live_sessions/{uid} doc via the in-memory model.  These
+    // values were frozen at Go Live time and stay constant for the session.
+    _applySessionSnapshots();
+
+    // Load stable profile fields (gender + age) and both block streams in
+    // parallel.  Both stream methods return a Future that completes on the
+    // first snapshot so initial UIDs are known before cell subscriptions open.
     await Future.wait([
-      _loadMyPrefs(myUid),
+      _loadMyStableProfile(myUid),
       _startBlockedUsersStream(myUid),
       _startBlockedByStream(myUid),
     ]);
 
     if (!mounted) return;
 
-    // Get initial GPS position.  On real devices a cold GPS fix can fail on
-    // the first attempt and succeed a few seconds later, so we make one
-    // automatic retry after a short delay before giving up.
-    Position? pos = await LocationService.getPosition();
-    if (!mounted) return;
+    // Bootstrap position.  Prefer the live_sessions doc (authoritative, and
+    // the source of truth for my geohash cell) when it already carries a
+    // position; fall back to a direct device-GPS read if the first session
+    // write has not yet landed — otherwise we'd delay subscribing cells by
+    // up to the periodic location-refresh cadence.
+    double? lat = _liveSession?.currentSession?.lat;
+    double? lng = _liveSession?.currentSession?.lng;
 
-    if (pos == null) {
-      debugPrint('[Nearby] GPS attempt 1 failed — retrying in 3 s');
-      await Future.delayed(const Duration(seconds: 3));
+    if (lat == null || lng == null) {
+      Position? pos = await LocationService.getPosition();
       if (!mounted) return;
-      pos = await LocationService.getPosition();
-      if (!mounted) return;
+      if (pos == null) {
+        debugPrint('[Nearby] GPS attempt 1 failed — retrying in 3 s');
+        await Future.delayed(const Duration(seconds: 3));
+        if (!mounted) return;
+        pos = await LocationService.getPosition();
+        if (!mounted) return;
+      }
+      if (pos == null) {
+        // Both attempts failed.  Distinguish permission denial from GPS
+        // unavailability so we can show the right error state and action.
+        final permission = await LocationService.checkPermission();
+        final isPermissionIssue =
+            permission == LocationPermission.denied ||
+            permission == LocationPermission.deniedForever ||
+            permission == LocationPermission.unableToDetermine;
+        debugPrint('[Nearby] GPS failed — permission=$permission '
+            'isPermissionIssue=$isPermissionIssue');
+        if (!mounted) return;
+        setState(() {
+          _loadingDiscovery = false;
+          _discoveryError = isPermissionIssue
+              ? _DiscoveryError.permissionDenied
+              : _DiscoveryError.gpsFailed;
+        });
+        return;
+      }
+      lat = pos.latitude;
+      lng = pos.longitude;
     }
 
-    if (pos == null) {
-      // Both attempts failed.  Distinguish permission denial from GPS
-      // unavailability so we can show the right error state and action.
-      final permission = await LocationService.checkPermission();
-      final isPermissionIssue =
-          permission == LocationPermission.denied ||
-          permission == LocationPermission.deniedForever ||
-          permission == LocationPermission.unableToDetermine;
-      debugPrint('[Nearby] GPS failed — permission=$permission '
-          'isPermissionIssue=$isPermissionIssue');
-      if (!mounted) return;
-      setState(() {
-        _loadingDiscovery = false;
-        _discoveryError = isPermissionIssue
-            ? _DiscoveryError.permissionDenied
-            : _DiscoveryError.gpsFailed;
-      });
-      return;
-    }
-
-    _myLat = pos.latitude;
-    _myLng = pos.longitude;
+    _myLat = lat;
+    _myLng = lng;
 
     // Subscribe to geohash cells.
-    final hashes = LocationService.queryHashes(pos.latitude, pos.longitude);
+    final hashes = LocationService.queryHashes(lat, lng);
     _subscribeCells(myUid, hashes);
-
-    // Subscribe to own position updates (written every 60 s by LiveSession).
-    _startPositionTracking(myUid);
 
     setState(() => _loadingDiscovery = false);
   }
 
-  /// Loads the current user's discovery preferences from their own Firestore
-  /// doc.  A single get() provides radius, show-me, age range, age, and
-  /// gender — all needed for mutual preference filtering in [_rebuildList].
-  Future<void> _loadMyPrefs(String myUid) async {
+  /// Copies the current session's frozen snapshots into the in-memory fields
+  /// that drive Nearby's filter.  Intentional: mid-session edits to
+  /// users/{uid} are NOT reflected here — they take effect at the next Go
+  /// Live.  Called once at [_startDiscovery] and never again during the
+  /// session's lifetime.
+  void _applySessionSnapshots() {
+    final session = _liveSession?.currentSession;
+    if (session == null) {
+      debugPrint('[Nearby] no live session snapshot available — falling back '
+          'to defaults');
+      return;
+    }
+    _effectiveRadiusMeters = session.maxDistanceMetersSnapshot
+        .toDouble()
+        .clamp(AppConstants.nearbyRadiusMeters, 60.0);
+    _myShowMe = session.showMeSnapshot;
+    _myAgeRangeMin = session.ageRangeMinSnapshot;
+    _myAgeRangeMax = session.ageRangeMaxSnapshot;
+    debugPrint('[Nearby] session snapshots applied — '
+        'showMe=$_myShowMe '
+        'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
+        'radius=$_effectiveRadiusMeters m');
+  }
+
+  /// Loads the current user's STABLE profile fields (gender + age) from
+  /// users/{uid}.  These are used so the counterparty's mutual filter can
+  /// evaluate me — the mutable discovery preferences (showMe, ageRange,
+  /// maxDistance) come from the session snapshot, not from users/{uid}.
+  Future<void> _loadMyStableProfile(String myUid) async {
     try {
       final doc = await FirebaseFirestore.instance
           .collection('users')
@@ -251,33 +357,12 @@ class _NearbyScreenState extends State<NearbyScreen>
           .get();
       if (!doc.exists) return;
       final data = doc.data()!;
-
-      // Radius.
-      final rawRadius = (data['maxDistanceMeters'] as num?)?.toDouble();
-      if (rawRadius != null) {
-        _effectiveRadiusMeters =
-            rawRadius.clamp(AppConstants.nearbyRadiusMeters, 60.0);
-      }
-
-      // Gender preference — showMe supersedes openTo if both are present.
-      _myShowMe = (data['showMe'] as String?) ??
-          (data['openTo'] as String?);
-
-      // Age range.
-      _myAgeRangeMin =
-          (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
-      _myAgeRangeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
-
-      // Own profile for mutual checks.
       _myGender = data['gender'] as String?;
       _myAge = (data['age'] as num?)?.toInt();
-
-      debugPrint('[Nearby] prefs loaded — '
-          'showMe=$_myShowMe age=$_myAge gender=$_myGender '
-          'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
-          'radius=$_effectiveRadiusMeters m');
+      debugPrint('[Nearby] stable profile loaded — '
+          'gender=$_myGender age=$_myAge');
     } catch (e) {
-      debugPrint('[Nearby] prefs load failed (non-fatal): $e');
+      debugPrint('[Nearby] stable profile load failed (non-fatal): $e');
     }
   }
 
@@ -354,10 +439,11 @@ class _NearbyScreenState extends State<NearbyScreen>
   /// offline (terminal docs clear their geohash, so they drop out of the
   /// prefix range query).
   ///
-  /// `visibilityState == 'discoverable'` at the query level means meetup-hidden
-  /// and continued-private sessions never reach the client.  An unauthenticated
-  /// or stale terminal doc cannot leak because the security rules require
-  /// visibilityState==discoverable + status==active for cross-user reads.
+  /// Query shape MUST match the security rule: the rule requires
+  /// `status == 'active' && visibilityState == 'discoverable'` on every
+  /// cross-user read, and Firestore only accepts the listener if both
+  /// conditions are proven at the query level.  Omitting either filter
+  /// triggers a permission-denied error on the stream itself.
   void _subscribeCells(String myUid, List<String> hashes) {
     for (final sub in _cellSubs) {
       sub.cancel();
@@ -371,6 +457,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     for (final hash in hashes) {
       final sub = db
           .collection('live_sessions')
+          .where('status', isEqualTo: 'active')
           .where('visibilityState', isEqualTo: 'discoverable')
           .where('geohash', isGreaterThanOrEqualTo: hash)
           .where('geohash', isLessThan: '$hash~')
@@ -416,106 +503,23 @@ class _NearbyScreenState extends State<NearbyScreen>
     });
   }
 
-  /// Listens to the current user's own Firestore doc for two kinds of changes:
-  ///
-  /// 1. Preference changes (showMe, ageRange, radius, gender, age) — written
-  ///    by Settings.  Updates in-memory values and triggers [_rebuildList] so
-  ///    the new preferences are applied immediately without a session restart.
-  ///
-  /// 2. Position changes (latitude/longitude) — written every 60 s by
-  ///    LiveSession.  Resubscribes to new geohash cells if the user has moved
-  ///    far enough, or runs [_rebuildList] if they're still in the same cells.
-  void _startPositionTracking(String myUid) {
-    _myPositionSub?.cancel();
-    _myPositionSub = FirebaseFirestore.instance
-        .collection('users')
-        .doc(myUid)
-        .snapshots()
-        .listen((snap) {
-      if (!snap.exists || !mounted) return;
-      final data = snap.data()!;
-
-      // ── Preference fields ─────────────────────────────────────────────────
-      // Read the same fields as _loadMyPrefs so the two code paths stay in
-      // sync.  showMe supersedes openTo when both are present.
-      final newShowMe =
-          (data['showMe'] as String?) ?? (data['openTo'] as String?);
-      final newGender = data['gender'] as String?;
-      final newAge = (data['age'] as num?)?.toInt();
-      final newAgeRangeMin =
-          (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
-      final newAgeRangeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
-      final rawRadius = (data['maxDistanceMeters'] as num?)?.toDouble();
-      final newRadius = rawRadius != null
-          ? rawRadius.clamp(AppConstants.nearbyRadiusMeters, 60.0)
-          : _effectiveRadiusMeters;
-
-      final prefsChanged = newShowMe != _myShowMe ||
-          newGender != _myGender ||
-          newAge != _myAge ||
-          newAgeRangeMin != _myAgeRangeMin ||
-          newAgeRangeMax != _myAgeRangeMax ||
-          newRadius != _effectiveRadiusMeters;
-
-      if (prefsChanged) {
-        _myShowMe = newShowMe;
-        _myGender = newGender;
-        _myAge = newAge;
-        _myAgeRangeMin = newAgeRangeMin;
-        _myAgeRangeMax = newAgeRangeMax;
-        _effectiveRadiusMeters = newRadius;
-        debugPrint('[Nearby] prefs updated — showMe=$_myShowMe '
-            'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
-            'radius=$_effectiveRadiusMeters m');
-      }
-
-      // ── Position ──────────────────────────────────────────────────────────
-      final lat = (data['latitude'] as num?)?.toDouble();
-      final lng = (data['longitude'] as num?)?.toDouble();
-
-      if (lat == null || lng == null) {
-        // No position yet — rebuild if prefs changed so filters apply.
-        if (prefsChanged && _cellSubs.isNotEmpty) _rebuildList(myUid);
-        return;
-      }
-
-      if (lat == _myLat && lng == _myLng) {
-        // Position unchanged — rebuild only if prefs changed.
-        if (prefsChanged && _cellSubs.isNotEmpty) _rebuildList(myUid);
-        return;
-      }
-
-      _myLat = lat;
-      _myLng = lng;
-      debugPrint('[Nearby] position updated: $lat, $lng');
-
-      final newHashes = LocationService.queryHashes(lat, lng);
-      final hashesChanged =
-          newHashes.length != _subscribedHashes.length ||
-          !newHashes.toSet().containsAll(_subscribedHashes);
-
-      if (hashesChanged) {
-        // User moved to a new geohash cell — refresh cell subscriptions.
-        // _rebuildList will run automatically via the new cell streams.
-        debugPrint('[Nearby] moved to new cells — resubscribing');
-        _cellSnapshots.clear();
-        _subscribeCells(myUid, newHashes);
-      } else {
-        // Same cells — Haversine + preference filters recomputed.
-        _rebuildList(myUid);
-      }
-    });
-  }
-
   /// Merges all cell snapshots, joins with cached user profiles, applies
   /// filters, and updates [_nearbyUsers].
   ///
   /// Data sources per candidate:
   ///   - `sess` (live_sessions/{uid}): position (lat/lng/locationUpdatedAt),
-  ///     visibilityState, discoverableSnapshot.
-  ///   - `prof` (users/{uid}, via _profileCache): firstName, age, gender,
-  ///     bio, photoUrl, plan, status, hometown, occupation, height,
-  ///     lookingFor, showMe/openTo, ageRangeMin/Max.
+  ///     visibilityState, and the SESSION SNAPSHOTS
+  ///     (discoverableSnapshot, showMeSnapshot, ageRangeMinSnapshot,
+  ///     ageRangeMaxSnapshot) — these are frozen at the candidate's Go Live
+  ///     time and are the authoritative values for mutual filtering.
+  ///   - `prof` (users/{uid}, via _profileCache): stable identity fields
+  ///     only — firstName, age, gender, bio, photoUrl, plan, status, hometown,
+  ///     occupation, height, lookingFor.
+  ///
+  /// Mid-session edits to users/{uid}.{showMe, ageRangeMin/Max,
+  /// maxDistanceMeters, discoverable} do NOT reach this filter — neither for
+  /// me (I use my own session snapshots captured at Go Live) nor for the
+  /// candidate (I read their `*Snapshot` fields off their session doc).
   void _rebuildList(String myUid) {
     final lat = _myLat;
     final lng = _myLng;
@@ -545,20 +549,23 @@ class _NearbyScreenState extends State<NearbyScreen>
           final status = (prof['status'] as String?) ?? 'active';
           if (status == 'under_review' || status == 'suspended') return false;
 
-          // Belt-and-suspenders on the `Discoverable` toggle: the query is
-          // already scoped to visibilityState==discoverable, but the snapshot
-          // on the session records what the user chose at Go-Live time.
-          // If they flipped Discoverable off mid-session, Settings writes the
-          // new value to users/{uid}.discoverable — honour that here too.
-          final discoverable = (prof['discoverable'] as bool?) ?? true;
-          if (!discoverable) return false;
+          // Candidate's `Discoverable` preference — read from the SESSION
+          // snapshot, not from their mutable users/{uid} doc.  The query is
+          // already scoped to visibilityState==discoverable; this honours the
+          // snapshot value for completeness and symmetry with our own snapshot.
+          final discoverableSnap =
+              (sess['discoverableSnapshot'] as bool?) ?? true;
+          if (!discoverableSnap) return false;
 
           // ── Mutual preference filtering ──────────────────────────────────
+          // Both sides' values come from the SESSION snapshots, not from the
+          // mutable users doc, so that a mid-session Settings edit by either
+          // party cannot re-enter the running session.
 
           final theirGender = prof['gender'] as String? ?? '';
           final theirAge = (prof['age'] as num?)?.toInt();
 
-          // My showMe preference applied to their gender.
+          // My showMe snapshot applied to their (stable) gender.
           final myShowMe = _myShowMe;
           if (myShowMe != null &&
               myShowMe != 'everyone' &&
@@ -566,17 +573,15 @@ class _NearbyScreenState extends State<NearbyScreen>
             return false;
           }
 
-          // My age range applied to their age.
+          // My age range snapshot applied to their (stable) age.
           if (theirAge != null &&
               (theirAge < _myAgeRangeMin || theirAge > _myAgeRangeMax)) {
             return false;
           }
 
-          // Their showMe preference applied to my gender.
-          // showMe supersedes openTo; 'everyone' or missing → no filter.
-          final theirShowMe = (prof['showMe'] as String?) ??
-              (prof['openTo'] as String?) ??
-              'everyone';
+          // Their showMe snapshot applied to my (stable) gender.
+          final theirShowMe =
+              (sess['showMeSnapshot'] as String?) ?? 'everyone';
           final myGender = _myGender;
           if (myGender != null &&
               theirShowMe != 'everyone' &&
@@ -584,10 +589,12 @@ class _NearbyScreenState extends State<NearbyScreen>
             return false;
           }
 
-          // Their age range applied to my age.
+          // Their age range snapshot applied to my (stable) age.
           final theirAgeMin =
-              (prof['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
-          final theirAgeMax = (prof['ageRangeMax'] as num?)?.toInt() ?? 99;
+              (sess['ageRangeMinSnapshot'] as num?)?.toInt() ??
+                  AppConstants.minAge;
+          final theirAgeMax =
+              (sess['ageRangeMaxSnapshot'] as num?)?.toInt() ?? 99;
           final myAge = _myAge;
           if (myAge != null &&
               (myAge < theirAgeMin || myAge > theirAgeMax)) {
@@ -616,8 +623,9 @@ class _NearbyScreenState extends State<NearbyScreen>
             return false;
           }
 
-          // Haversine is the authoritative distance gate.
-          // Geohash is only the coarse bounding-box query helper.
+          // Haversine is the authoritative distance gate, using MY radius
+          // snapshot (captured at Go Live).  Geohash is only the coarse
+          // bounding-box query helper.
           final distance =
               LocationService.distanceMeters(lat, lng, uLat, uLng);
           return distance <= _effectiveRadiusMeters;
@@ -653,8 +661,6 @@ class _NearbyScreenState extends State<NearbyScreen>
   }
 
   void _stopDiscovery() {
-    _myPositionSub?.cancel();
-    _myPositionSub = null;
     _blockedUidsSub?.cancel();
     _blockedUidsSub = null;
     _blockedBySub?.cancel();
@@ -675,6 +681,7 @@ class _NearbyScreenState extends State<NearbyScreen>
     _myAge = null;
     _myAgeRangeMin = AppConstants.minAge;
     _myAgeRangeMax = 99;
+    _effectiveRadiusMeters = AppConstants.nearbyRadiusMeters;
     _discoveryError = null;
     _myUid = null;
     _myLat = null;
@@ -808,6 +815,12 @@ class _NearbyScreenState extends State<NearbyScreen>
         onSaved: (showMe, ageMin, ageMax, distance) {
           final uid = _myUid;
           if (uid == null) return;
+          // Writes the new preferences to users/{uid}.  By design, these do
+          // NOT alter the currently running live session — a live session is
+          // deterministic and reads only from its live_sessions snapshot.
+          // The new prefs take effect at the next Go Live, when
+          // [LiveSession._readDiscoverySnapshot] re-captures them into the
+          // next session doc.
           FirebaseFirestore.instance
               .collection('users')
               .doc(uid)
@@ -817,9 +830,6 @@ class _NearbyScreenState extends State<NearbyScreen>
                 'ageRangeMax': ageMax.round(),
                 'maxDistanceMeters': distance.round(),
               }, SetOptions(merge: true));
-          // Step 10's _myPositionSub listener will pick up the preference
-          // field changes and call _rebuildList automatically — no extra work
-          // needed here.
         },
       ),
     );
@@ -1049,9 +1059,9 @@ class _NearbyScreenState extends State<NearbyScreen>
 ///   - Age Range (RangeSlider)
 ///   - Max Distance (Slider)
 ///
-/// Fires [onSaved] once with all four values when the user taps Save.
-/// The caller writes them to Firestore; Step 10's own-doc stream picks up the
-/// changes and rebuilds the discovery list automatically.
+/// Fires [onSaved] once with all four values when the user taps Save.  The
+/// caller writes them to users/{uid}.  They take effect at the next Go Live
+/// (the current session is frozen against its live_sessions snapshot).
 class _FilterSheet extends StatefulWidget {
   const _FilterSheet({
     required this.initialShowMe,

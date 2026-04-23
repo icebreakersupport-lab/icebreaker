@@ -5,30 +5,41 @@ import 'package:flutter/foundation.dart';
 
 import '../models/live_session_model.dart';
 
-/// Firestore I/O for `live_sessions/{uid}`.
+/// Firestore I/O for `live_sessions/{uid}` — the authoritative client-side
+/// source of truth for live presence in Phase 1.
 ///
-/// Phase 1 strategy is dual-write:
-///   - This repository writes `live_sessions/{uid}` as the authoritative
-///     source of truth for the client.
-///   - The caller ALSO mirror-writes `users/{uid}.{isLive, geohash, latitude,
-///     longitude, locationUpdatedAt, doNotDisturb}` so the existing Cloud
-///     Functions (which read those fields on `users/{uid}`) keep working
-///     unchanged.  Phase 2 removes that mirror once the functions are updated.
+/// Dual-write (Phase 1):
+///   Every mutation that affects live presence commits the authoritative
+///   `live_sessions/{uid}` write AND the legacy `users/{uid}` mirror inside
+///   a single Firestore [WriteBatch] so the two stores can never diverge.
+///   The batch either fully lands or fully fails; there is no best-effort
+///   half-written state to reconcile.
 ///
-/// No timers, no in-memory state, no ChangeNotifier — this layer is stateless.
+///   The mirror exists so the current Cloud Functions
+///   (onIcebreakerCreated, notification gates, block paths, meetup Fns)
+///   that still read `users/{uid}.{isLive, geohash, latitude, longitude,
+///   locationUpdatedAt, doNotDisturb}` keep working unchanged.  Phase 2
+///   deletes the mirror once those functions are cut over to read from
+///   `live_sessions/{uid}` directly.
+///
+/// This layer is stateless — no timers, no ChangeNotifier, no in-memory
+/// session state.  See `live_session.dart` for the state machine.
 class LiveSessionRepository {
   LiveSessionRepository({FirebaseFirestore? db})
       : _db = db ?? FirebaseFirestore.instance;
 
   final FirebaseFirestore _db;
 
-  DocumentReference<Map<String, dynamic>> _doc(String uid) =>
+  DocumentReference<Map<String, dynamic>> _liveDoc(String uid) =>
       _db.collection('live_sessions').doc(uid);
+
+  DocumentReference<Map<String, dynamic>> _userDoc(String uid) =>
+      _db.collection('users').doc(uid);
 
   /// One-shot read of `live_sessions/{uid}`.  Returns null when the doc is
   /// missing (user has never gone live, or the doc was cleared).
   Future<LiveSessionModel?> load(String uid) async {
-    final snap = await _doc(uid).get();
+    final snap = await _liveDoc(uid).get();
     if (!snap.exists) return null;
     return LiveSessionModel.fromSnapshot(snap);
   }
@@ -36,18 +47,18 @@ class LiveSessionRepository {
   /// Live stream of `live_sessions/{uid}` — drives in-memory state in
   /// `LiveSession`.  Emits null when the doc is deleted or does not exist.
   Stream<LiveSessionModel?> watch(String uid) {
-    return _doc(uid).snapshots().map((snap) {
+    return _liveDoc(uid).snapshots().map((snap) {
       if (!snap.exists) return null;
       return LiveSessionModel.fromSnapshot(snap);
     });
   }
 
-  /// Creates (or overwrites) the session doc when a user goes live.
+  /// Starts a new live session.  Atomically:
+  ///   • writes a fresh full doc at `live_sessions/{uid}` (overwriting any
+  ///     prior terminal doc — the uid is the primary key), and
+  ///   • flips the `users/{uid}` mirror to `isLive: true, doNotDisturb: false`.
   ///
-  /// Writes a full, self-contained document — not a merge — because a new
-  /// session must not inherit stale fields from a prior terminal doc (e.g.
-  /// [endedAt] / [endedReason]).  The doc ID is the uid, so this implicitly
-  /// replaces any previous session record.
+  /// Throws if the batch fails so the caller can roll back in-memory state.
   Future<void> startSession({
     required String uid,
     required LiveVerificationMethod verificationMethod,
@@ -61,7 +72,8 @@ class LiveSessionRepository {
     final now = DateTime.now();
     final expires = now.add(const Duration(hours: 1));
 
-    await _doc(uid).set({
+    final batch = _db.batch();
+    batch.set(_liveDoc(uid), {
       'uid': uid,
       'status': liveSessionStatusName(LiveSessionStatus.active),
       'endedReason': null,
@@ -90,34 +102,50 @@ class LiveSessionRepository {
       'createdAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    batch.update(_userDoc(uid), {
+      'isLive': true,
+      'doNotDisturb': false,
+    });
+    await batch.commit();
   }
 
-  /// Writes the latest GPS position + geohash onto the live session doc.
-  /// Called by the 60-second location timer while a session is active, and
-  /// once on app resume.  No-op if [uid]'s doc does not exist.
+  /// Writes the latest GPS position + geohash onto both the session doc
+  /// (authoritative) and the users mirror in one atomic batch.
   Future<void> writePosition({
     required String uid,
     required double lat,
     required double lng,
     required String geohash,
-  }) {
-    return _doc(uid).update({
+  }) async {
+    final batch = _db.batch();
+    batch.update(_liveDoc(uid), {
       'lat': lat,
       'lng': lng,
       'geohash': geohash,
       'locationUpdatedAt': FieldValue.serverTimestamp(),
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    batch.update(_userDoc(uid), {
+      'latitude': lat,
+      'longitude': lng,
+      'geohash': geohash,
+      'locationUpdatedAt': FieldValue.serverTimestamp(),
+    });
+    await batch.commit();
   }
 
-  /// Marks the session as ended (user tapped End Live, or another terminal
-  /// non-expiry reason).  Clears location fields so a terminal doc cannot be
-  /// queried as a valid Nearby candidate by a future client bug.
+  /// Marks the session as ended (user tapped End Live, blocked terminal, or
+  /// another non-expiry reason).  Atomically:
+  ///   • flips `live_sessions/{uid}` to `status: ended`, records [reason],
+  ///     clears position fields, resets visibility to discoverable, and
+  ///   • flips the `users/{uid}` mirror to `isLive: false` and deletes the
+  ///     mirrored position fields so Nearby / notifications stay consistent.
   Future<void> markEnded({
     required String uid,
     required LiveSessionEndedReason reason,
-  }) {
-    return _doc(uid).update({
+  }) async {
+    final batch = _db.batch();
+    batch.update(_liveDoc(uid), {
       'status': liveSessionStatusName(LiveSessionStatus.ended),
       'endedReason': liveSessionEndedReasonName(reason),
       'endedAt': FieldValue.serverTimestamp(),
@@ -129,15 +157,33 @@ class LiveSessionRepository {
       'locationUpdatedAt': null,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    batch.update(_userDoc(uid), {
+      'isLive': false,
+      'latitude': FieldValue.delete(),
+      'longitude': FieldValue.delete(),
+      'geohash': FieldValue.delete(),
+      'locationUpdatedAt': FieldValue.delete(),
+    });
+    await batch.commit();
   }
 
-  /// Marks the session as expired — the 1-hour clock ran out.  Same clearing
-  /// behavior as [markEnded] but with the `expired` status so metrics / audit
-  /// can distinguish "timer" from "user action".
-  Future<void> markExpired({required String uid}) {
-    return _doc(uid).update({
+  /// Marks the session as expired — same clearing behavior as [markEnded] but
+  /// with `status: 'expired'` so metrics / audit can distinguish "timer ran
+  /// out" from "user action".
+  ///
+  /// [reason] is optional: null for a routine timer expiry, or
+  /// [LiveSessionEndedReason.crashRecovered] when `hydrateOnLaunch` trips a
+  /// still-active doc whose `expiresAt` is already in the past (the app was
+  /// force-killed mid-session and has just relaunched past the 1 h window).
+  Future<void> markExpired({
+    required String uid,
+    LiveSessionEndedReason? reason,
+  }) async {
+    final batch = _db.batch();
+    batch.update(_liveDoc(uid), {
       'status': liveSessionStatusName(LiveSessionStatus.expired),
-      'endedReason': null,
+      'endedReason':
+          reason == null ? null : liveSessionEndedReasonName(reason),
       'endedAt': FieldValue.serverTimestamp(),
       'visibilityState':
           liveSessionVisibilityName(LiveSessionVisibility.discoverable),
@@ -147,17 +193,27 @@ class LiveSessionRepository {
       'locationUpdatedAt': null,
       'updatedAt': FieldValue.serverTimestamp(),
     });
+    batch.update(_userDoc(uid), {
+      'isLive': false,
+      'latitude': FieldValue.delete(),
+      'longitude': FieldValue.delete(),
+      'geohash': FieldValue.delete(),
+      'locationUpdatedAt': FieldValue.delete(),
+    });
+    await batch.commit();
   }
 
-  /// Phase-1 visibility mirror: when `users/{uid}.currentMeetupId` changes,
-  /// reflect that into the live session so Nearby's visibility filter on the
-  /// new collection stays accurate.  Phase 2 replaces this with a direct
-  /// Cloud Function write.
+  /// Phase-1 meetup visibility mirror: when Cloud Functions flip
+  /// `users/{uid}.currentMeetupId`, the client reflects that change here so
+  /// Nearby's visibility filter stays accurate.  Single-doc update — no
+  /// batched mirror because the users mirror for this field is already being
+  /// written by the Cloud Function.  Phase 2 replaces this with a direct
+  /// Cloud Function write to `live_sessions/{uid}`.
   Future<void> writeMeetupVisibility({
     required String uid,
     required String? currentMeetupId,
   }) {
-    return _doc(uid).update({
+    return _liveDoc(uid).update({
       'currentMeetupId': currentMeetupId,
       'visibilityState': liveSessionVisibilityName(
         currentMeetupId == null
