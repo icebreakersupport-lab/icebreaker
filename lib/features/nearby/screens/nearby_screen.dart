@@ -19,19 +19,29 @@ import '../widgets/nearby_about_me_card.dart';
 
 /// Nearby tab — real Firestore-backed discovery carousel.
 ///
-/// Discovery pipeline:
-///   1. Load the user's saved maxDistanceMeters (30–60 m) from Firestore.
+/// Discovery pipeline (Phase 1 — live_sessions authoritative):
+///   1. Load the user's saved maxDistanceMeters (30–60 m) from users/{uid}.
 ///   2. Load the user's blocked UIDs.
 ///   3. Read initial device GPS position.
 ///   4. Compute current geohash-7 cell + 8 neighbors.
-///   5. Subscribe to one Firestore stream per cell (isLive == true within
-///      the geohash prefix range).  Results are merged in [_cellSnapshots].
-///   6. Subscribe to the current user's own Firestore doc to detect position
-///      changes written by LiveSession's 60-second refresh timer.  When the
-///      position moves to a new geohash cell, cell subscriptions are replaced.
-///      Within the same cell, only [_rebuildList] is called.
-///   7. [_rebuildList] applies the exact Haversine distance filter
-///      (≤ _effectiveRadiusMeters) and excludes self + blocked users.
+///   5. Subscribe to one Firestore stream per cell on `live_sessions` where
+///      `visibilityState == 'discoverable'` AND geohash falls in the prefix
+///      range.  Terminal docs clear their geohash so they drop out naturally;
+///      meetup-hidden sessions are filtered out by `visibilityState` at the
+///      query level.  Results are merged in [_cellSnapshots].
+///   6. For each uid that appears in a cell, the display / filter fields
+///      that do NOT live on live_sessions (firstName, age, gender, bio,
+///      photoUrl, plan, status, hometown, etc.) are loaded once from
+///      users/{uid} into [_profileCache].
+///   7. Subscribe to the current user's own users/{uid} doc to detect
+///      preference changes (showMe, ageRange, maxDistanceMeters) — those
+///      fields stay on users/{uid}; live_sessions only carries snapshots at
+///      session start.  Own-position tracking is also on the users/{uid}
+///      mirror during Phase 1.  When the user moves to a new geohash cell,
+///      cell subscriptions are replaced.
+///   8. [_rebuildList] joins cell snapshots with [_profileCache], applies
+///      mutual preference filtering, excludes self + blocked + stale-position
+///      users, and enforces the Haversine distance gate.
 ///
 /// Geohash is a coarse bounding-box query helper only — the Haversine
 /// distance is the authoritative filter that enforces the selected radius.
@@ -79,10 +89,19 @@ class _NearbyScreenState extends State<NearbyScreen>
   // Blocked user UIDs.
   Set<String> _blockedUids = {};
 
-  // Per-cell snapshots: geohashPrefix → { userId → userData }.
+  // Per-cell snapshots: geohashPrefix → { userId → live_sessions data }.
   // Replacing the entire cell map on each snapshot correctly removes users
   // who went offline between snapshots without requiring docChanges tracking.
   final Map<String, Map<String, Map<String, dynamic>>> _cellSnapshots = {};
+
+  // Per-uid users/{uid} profile cache for display + mutual-filter fields
+  // that do NOT live on live_sessions.  Populated lazily the first time
+  // each uid appears in a cell.  Cleared in _stopDiscovery.
+  final Map<String, Map<String, dynamic>> _profileCache = {};
+
+  // UIDs currently being fetched by _ensureProfileLoaded — guards against
+  // duplicate reads when the same uid shows up in multiple overlapping cells.
+  final Set<String> _profileInFlight = {};
 
   // Active Firestore cell stream subscriptions.
   final List<StreamSubscription> _cellSubs = [];
@@ -329,9 +348,16 @@ class _NearbyScreenState extends State<NearbyScreen>
     return completer.future;
   }
 
-  /// Opens one Firestore snapshot stream per geohash cell prefix.
-  /// Each stream result completely replaces that cell's entry in
-  /// [_cellSnapshots], which correctly handles users going offline.
+  /// Opens one Firestore snapshot stream per geohash cell prefix against the
+  /// `live_sessions` collection.  Each stream result completely replaces that
+  /// cell's entry in [_cellSnapshots], which correctly handles users going
+  /// offline (terminal docs clear their geohash, so they drop out of the
+  /// prefix range query).
+  ///
+  /// `visibilityState == 'discoverable'` at the query level means meetup-hidden
+  /// and continued-private sessions never reach the client.  An unauthenticated
+  /// or stale terminal doc cannot leak because the security rules require
+  /// visibilityState==discoverable + status==active for cross-user reads.
   void _subscribeCells(String myUid, List<String> hashes) {
     for (final sub in _cellSubs) {
       sub.cancel();
@@ -339,13 +365,13 @@ class _NearbyScreenState extends State<NearbyScreen>
     _cellSubs.clear();
     _subscribedHashes = hashes;
 
-    debugPrint('[Nearby] subscribing to ${hashes.length} cells: $hashes');
+    debugPrint('[Nearby] subscribing to ${hashes.length} live_sessions cells: $hashes');
 
     final db = FirebaseFirestore.instance;
     for (final hash in hashes) {
       final sub = db
-          .collection('users')
-          .where('isLive', isEqualTo: true)
+          .collection('live_sessions')
+          .where('visibilityState', isEqualTo: 'discoverable')
           .where('geohash', isGreaterThanOrEqualTo: hash)
           .where('geohash', isLessThan: '$hash~')
           .snapshots()
@@ -353,10 +379,41 @@ class _NearbyScreenState extends State<NearbyScreen>
         _cellSnapshots[hash] = {
           for (final doc in snap.docs) doc.id: doc.data(),
         };
+        // Kick off any missing profile loads; _rebuildList is idempotent so
+        // the initial pass before profiles land is safe (users without a
+        // cached profile are skipped and re-evaluated once the fetch returns).
+        for (final uid in snap.docs.map((d) => d.id)) {
+          if (uid != myUid) _ensureProfileLoaded(uid, myUid);
+        }
         if (mounted) _rebuildList(myUid);
+      }, onError: (Object e) {
+        debugPrint('[Nearby] live_sessions cell stream error: $e');
       });
       _cellSubs.add(sub);
     }
+  }
+
+  /// Ensures users/{uid} is loaded into [_profileCache].  No-op if the uid
+  /// is already cached or a fetch is already in flight.  Triggers a
+  /// [_rebuildList] once the profile lands so users that appeared before
+  /// their profile was ready get re-evaluated.
+  void _ensureProfileLoaded(String uid, String myUid) {
+    if (_profileCache.containsKey(uid)) return;
+    if (_profileInFlight.contains(uid)) return;
+    _profileInFlight.add(uid);
+    FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .get()
+        .then((doc) {
+      _profileInFlight.remove(uid);
+      if (!doc.exists) return;
+      _profileCache[uid] = doc.data()!;
+      if (mounted && _cellSubs.isNotEmpty) _rebuildList(myUid);
+    }).catchError((Object e) {
+      _profileInFlight.remove(uid);
+      debugPrint('[Nearby] profile fetch failed for $uid (non-fatal): $e');
+    });
   }
 
   /// Listens to the current user's own Firestore doc for two kinds of changes:
@@ -450,7 +507,15 @@ class _NearbyScreenState extends State<NearbyScreen>
     });
   }
 
-  /// Merges all cell snapshots, applies filters, and updates [_nearbyUsers].
+  /// Merges all cell snapshots, joins with cached user profiles, applies
+  /// filters, and updates [_nearbyUsers].
+  ///
+  /// Data sources per candidate:
+  ///   - `sess` (live_sessions/{uid}): position (lat/lng/locationUpdatedAt),
+  ///     visibilityState, discoverableSnapshot.
+  ///   - `prof` (users/{uid}, via _profileCache): firstName, age, gender,
+  ///     bio, photoUrl, plan, status, hometown, occupation, height,
+  ///     lookingFor, showMe/openTo, ageRangeMin/Max.
   void _rebuildList(String myUid) {
     final lat = _myLat;
     final lng = _myLng;
@@ -465,24 +530,33 @@ class _NearbyScreenState extends State<NearbyScreen>
     final users = merged.entries
         .where((e) {
           final uid = e.key;
-          final data = e.value;
+          final sess = e.value;
 
           if (uid == myUid) return false;
           if (_blockedUids.contains(uid)) return false;
           if (_blockedByUids.contains(uid)) return false;
 
+          // Profile not yet loaded — skip for this pass; the one-shot fetch
+          // in _ensureProfileLoaded will trigger a rebuild when it lands.
+          final prof = _profileCache[uid];
+          if (prof == null) return false;
+
           // Users under review or suspended are hidden from discovery.
-          final status = (data['status'] as String?) ?? 'active';
+          final status = (prof['status'] as String?) ?? 'active';
           if (status == 'under_review' || status == 'suspended') return false;
 
-          // Users who turned off Discoverable are hidden even while live.
-          final discoverable = (data['discoverable'] as bool?) ?? true;
+          // Belt-and-suspenders on the `Discoverable` toggle: the query is
+          // already scoped to visibilityState==discoverable, but the snapshot
+          // on the session records what the user chose at Go-Live time.
+          // If they flipped Discoverable off mid-session, Settings writes the
+          // new value to users/{uid}.discoverable — honour that here too.
+          final discoverable = (prof['discoverable'] as bool?) ?? true;
           if (!discoverable) return false;
 
           // ── Mutual preference filtering ──────────────────────────────────
 
-          final theirGender = data['gender'] as String? ?? '';
-          final theirAge = (data['age'] as num?)?.toInt();
+          final theirGender = prof['gender'] as String? ?? '';
+          final theirAge = (prof['age'] as num?)?.toInt();
 
           // My showMe preference applied to their gender.
           final myShowMe = _myShowMe;
@@ -500,8 +574,8 @@ class _NearbyScreenState extends State<NearbyScreen>
 
           // Their showMe preference applied to my gender.
           // showMe supersedes openTo; 'everyone' or missing → no filter.
-          final theirShowMe = (data['showMe'] as String?) ??
-              (data['openTo'] as String?) ??
+          final theirShowMe = (prof['showMe'] as String?) ??
+              (prof['openTo'] as String?) ??
               'everyone';
           final myGender = _myGender;
           if (myGender != null &&
@@ -512,16 +586,17 @@ class _NearbyScreenState extends State<NearbyScreen>
 
           // Their age range applied to my age.
           final theirAgeMin =
-              (data['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
-          final theirAgeMax = (data['ageRangeMax'] as num?)?.toInt() ?? 99;
+              (prof['ageRangeMin'] as num?)?.toInt() ?? AppConstants.minAge;
+          final theirAgeMax = (prof['ageRangeMax'] as num?)?.toInt() ?? 99;
           final myAge = _myAge;
           if (myAge != null &&
               (myAge < theirAgeMin || myAge > theirAgeMax)) {
             return false;
           }
 
-          final uLat = (data['latitude'] as num?)?.toDouble();
-          final uLng = (data['longitude'] as num?)?.toDouble();
+          // ── Position + freshness (from live_sessions) ────────────────────
+          final uLat = (sess['lat'] as num?)?.toDouble();
+          final uLng = (sess['lng'] as num?)?.toDouble();
           if (uLat == null || uLng == null || lat == null || lng == null) {
             return false;
           }
@@ -530,14 +605,14 @@ class _NearbyScreenState extends State<NearbyScreen>
           // within locationStaleThresholdSeconds (120 s).  A null timestamp
           // means the field was never written — treat as stale.
           final updatedAt =
-              (data['locationUpdatedAt'] as Timestamp?)?.toDate();
+              (sess['locationUpdatedAt'] as Timestamp?)?.toDate();
           if (updatedAt == null) {
-            debugPrint('[Nearby] skipping live doc $uid — locationUpdatedAt missing');
+            debugPrint('[Nearby] skipping session $uid — locationUpdatedAt missing');
             return false;
           }
           final age = DateTime.now().difference(updatedAt).inSeconds;
           if (age > AppConstants.locationStaleThresholdSeconds) {
-            debugPrint('[Nearby] skipping live doc $uid — location stale (${age}s old)');
+            debugPrint('[Nearby] skipping session $uid — location stale (${age}s old)');
             return false;
           }
 
@@ -547,7 +622,11 @@ class _NearbyScreenState extends State<NearbyScreen>
               LocationService.distanceMeters(lat, lng, uLat, uLng);
           return distance <= _effectiveRadiusMeters;
         })
-        .map((e) => _NearbyUser.fromFirestore(e.key, e.value))
+        .map((e) => _NearbyUser.fromJoin(
+              uid: e.key,
+              session: e.value,
+              profile: _profileCache[e.key]!,
+            ))
         .whereType<_NearbyUser>()
         .toList();
 
@@ -585,6 +664,8 @@ class _NearbyScreenState extends State<NearbyScreen>
     }
     _cellSubs.clear();
     _cellSnapshots.clear();
+    _profileCache.clear();
+    _profileInFlight.clear();
     _subscribedHashes = [];
     _nearbyUsers = [];
     _blockedUids = {};
@@ -1272,21 +1353,25 @@ class _NearbyUser {
   final String? lookingFor;
   final bool isGold;
 
-  /// Returns null (and logs) if the doc is missing position fields.
-  /// This guards against the race window where isLive=true is written
-  /// before the async GPS write completes.
-  static _NearbyUser? fromFirestore(
-      String uid, Map<String, dynamic> data) {
-    final lat = (data['latitude'] as num?)?.toDouble();
-    final lng = (data['longitude'] as num?)?.toDouble();
+  /// Builds a _NearbyUser by joining a `live_sessions/{uid}` doc with the
+  /// cached `users/{uid}` profile.  Returns null (and logs) if the session
+  /// is missing position fields — this is the race window between the
+  /// session being created (status=active) and the first GPS write landing.
+  static _NearbyUser? fromJoin({
+    required String uid,
+    required Map<String, dynamic> session,
+    required Map<String, dynamic> profile,
+  }) {
+    final lat = (session['lat'] as num?)?.toDouble();
+    final lng = (session['lng'] as num?)?.toDouble();
 
     if (lat == null || lng == null) {
-      debugPrint('[Nearby] skipping live doc $uid — position fields missing');
+      debugPrint('[Nearby] skipping session $uid — position fields missing');
       return null;
     }
 
     // Hometown may be a map (city + state) or a plain string.
-    final hometownRaw = data['hometown'];
+    final hometownRaw = profile['hometown'];
     String? hometown;
     if (hometownRaw is Map) {
       final city = hometownRaw['city'] as String? ?? '';
@@ -1301,17 +1386,17 @@ class _NearbyUser {
 
     return _NearbyUser(
       id: uid,
-      firstName: (data['firstName'] as String?) ?? 'Someone',
-      age: (data['age'] as num?)?.toInt() ?? 0,
-      bio: (data['bio'] as String?) ?? '',
-      photoUrl: (data['photoUrl'] as String?) ?? '',
+      firstName: (profile['firstName'] as String?) ?? 'Someone',
+      age: (profile['age'] as num?)?.toInt() ?? 0,
+      bio: (profile['bio'] as String?) ?? '',
+      photoUrl: (profile['photoUrl'] as String?) ?? '',
       lat: lat,
       lng: lng,
       hometown: hometown,
-      occupation: data['occupation'] as String?,
-      height: data['height'] as String?,
-      lookingFor: data['lookingFor'] as String?,
-      isGold: (data['plan'] as String?) == 'gold',
+      occupation: profile['occupation'] as String?,
+      height: profile['height'] as String?,
+      lookingFor: profile['lookingFor'] as String?,
+      isGold: (profile['plan'] as String?) == 'gold',
     );
   }
 }
