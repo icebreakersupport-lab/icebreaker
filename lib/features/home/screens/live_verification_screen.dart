@@ -2,9 +2,11 @@ import 'dart:io';
 import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
+import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../core/state/demo_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -82,7 +84,23 @@ class _DemoAssets {
 
 // ── Step enum ────────────────────────────────────────────────────────────────
 
-enum _Step { preparing, cameraReady, cameraError, cameraPermissionDenied, verifying, verified }
+enum _Step {
+  preparing,
+  cameraReady,
+  cameraError,
+  cameraPermissionDenied,
+  verifying,
+  verified,
+  // ─── DEV-ONLY ──────────────────────────────────────────────────────────────
+  // Non-mobile debug fallback used when the host device has no usable camera
+  // (e.g. Mac mini without a built-in webcam).  Only reachable when
+  // [_LiveVerificationScreenState._testModeAllowed] is true — i.e. debug build
+  // AND non-mobile platform.  Never reachable on iOS/Android in any build.
+  // Removing it after launch: delete this enum value, the `testMode` cases
+  // below, [_TestModePanel], and the `_testModeAllowed` branches in
+  // [_LiveVerificationScreenState].
+  testMode,
+}
 
 /// Immersive live-selfie capture + mock verification screen.
 ///
@@ -136,6 +154,37 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
   bool _cameraPermPermanentlyDenied = false;
 
+  /// True on web, macOS, Windows, Linux — platforms where the real live-selfie
+  /// requirement is relaxed for development.  iOS and Android always return
+  /// false, preserving the production camera flow on mobile.
+  bool get _isNonMobile {
+    if (kIsWeb) return true;
+    return Platform.isMacOS || Platform.isWindows || Platform.isLinux;
+  }
+
+  /// DEV-ONLY gate for the Test Mode fallback.  True only when the app is a
+  /// debug build (`kDebugMode`) AND running on a non-mobile platform.  Any
+  /// release build (including release macOS) gets the normal camera-error UX.
+  bool get _testModeAllowed => kDebugMode && _isNonMobile;
+
+  /// Called from every camera-unavailable code path.  On mobile (and on
+  /// non-mobile release builds) this enters the normal `cameraError` state so
+  /// the user is not silently given a production bypass.  On non-mobile debug
+  /// builds it enters the Test Mode fallback instead.
+  void _handleCameraUnavailable(String message) {
+    if (!mounted) return;
+    if (_testModeAllowed) {
+      debugPrint('[liveVerify] camera unavailable on non-mobile debug — '
+          'entering Test Mode: $message');
+      setState(() => _step = _Step.testMode);
+    } else {
+      setState(() {
+        _step = _Step.cameraError;
+        _errorMessage = message;
+      });
+    }
+  }
+
   Future<void> _initCamera() async {
     // ── 1. Check / request camera permission ──────────────────────────────
     // Skip on non-mobile platforms where permission_handler is a no-op.
@@ -169,7 +218,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        _setError('No camera found on this device.');
+        _handleCameraUnavailable('No camera found on this device.');
         return;
       }
 
@@ -204,10 +253,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           });
         }
       } else {
-        _setError('Camera unavailable. Please try again.');
+        _handleCameraUnavailable('Camera unavailable. Please try again.');
       }
     } catch (e) {
-      _setError('Camera unavailable. Please try again.');
+      _handleCameraUnavailable('Camera unavailable. Please try again.');
     }
   }
 
@@ -295,6 +344,87 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       session.goLive(selfieFilePath: path);
     }
     Navigator.of(context).pop();
+  }
+
+  // ── DEV-ONLY: Test Mode "use my profile photo" ────────────────────────────
+
+  /// Non-mobile debug fallback: runs the go-live flow using the user's primary
+  /// profile photo instead of a camera capture.  Falls back to demo selfie 0 if
+  /// the profile has no photo (so a fresh second account can still go live).
+  ///
+  /// Only callable from the Test Mode UI, which is only reachable when
+  /// [_testModeAllowed] is true.  Remove when removing Test Mode.
+  Future<void> _useProfilePhoto() async {
+    if (_step == _Step.verifying || _step == _Step.verified) return;
+    final profile = DemoProfileScope.of(context);
+
+    // Prefer a locally-picked XFile (in-session pick) — its path is a real
+    // file on disk and goes straight to LiveSession.goLive.
+    final localPath = profile.mainPhoto?.path;
+    String? path = localPath;
+
+    // If no local pick, try to download the persisted URL to a temp file.
+    if (path == null && profile.mainPhotoUrl.isNotEmpty) {
+      path = await _downloadToTemp(profile.mainPhotoUrl);
+    }
+
+    // Last-resort fallback so a brand-new account without photos can still
+    // test the go-live flow — uses demo selfie 0.
+    if (path == null) {
+      debugPrint('[liveVerify] test-mode: no profile photo — '
+          'falling back to demo selfie 0');
+      await _useDemoSelfie(0);
+      return;
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _capturedPath = path;
+      _step = _Step.verifying;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 1500));
+    if (!mounted) return;
+    setState(() => _step = _Step.verified);
+
+    await Future<void>.delayed(const Duration(milliseconds: 600));
+    if (!mounted) return;
+
+    final session = LiveSessionScope.of(context);
+    if (widget.isRedo) {
+      session.updateSelfie(path);
+    } else {
+      session.goLive(selfieFilePath: path);
+    }
+    Navigator.of(context).pop();
+  }
+
+  /// Downloads [url] to a temporary file and returns the local path, or null
+  /// on failure.  Used only by [_useProfilePhoto] in Test Mode.
+  Future<String?> _downloadToTemp(String url) async {
+    HttpClient? client;
+    try {
+      client = HttpClient();
+      final req = await client.getUrl(Uri.parse(url));
+      final resp = await req.close();
+      if (resp.statusCode != 200) {
+        debugPrint('[liveVerify] test-mode download non-200: ${resp.statusCode}');
+        return null;
+      }
+      final bytes = <int>[];
+      await for (final chunk in resp) {
+        bytes.addAll(chunk);
+      }
+      final path = '${Directory.systemTemp.path}'
+          '/icebreaker_testmode_${DateTime.now().millisecondsSinceEpoch}.jpg';
+      await File(path).writeAsBytes(bytes, flush: true);
+      return path;
+    } catch (e) {
+      debugPrint('[liveVerify] test-mode download failed: $e');
+      return null;
+    } finally {
+      client?.close();
+    }
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -455,6 +585,25 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           ),
         );
 
+      // DEV-ONLY Test Mode: show the user's primary profile photo (or a
+      // placeholder) inside the selfie frame so the flow looks real.
+      case _Step.testMode:
+        final profile = DemoProfileScope.of(context);
+        final localPath = profile.mainPhoto?.path;
+        final url = profile.mainPhotoUrl;
+        if (localPath != null) {
+          return Image.file(File(localPath),
+              width: frameSize, height: frameSize, fit: BoxFit.cover);
+        }
+        if (url.isNotEmpty) {
+          return Image.network(url,
+              width: frameSize,
+              height: frameSize,
+              fit: BoxFit.cover,
+              errorBuilder: (_, _, _) => const _TestModePlaceholder());
+        }
+        return const _TestModePlaceholder();
+
       case _Step.cameraReady:
         final ctrl = _camController;
         if (ctrl == null || !ctrl.value.isInitialized) {
@@ -514,6 +663,24 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
       case _Step.cameraPermissionDenied:
         return const SizedBox(key: ValueKey('perm-denied'), height: 80);
+
+      // DEV-ONLY Test Mode status copy.
+      case _Step.testMode:
+        return SizedBox(
+          key: const ValueKey('test-mode'),
+          height: 96,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Center(
+              child: Text(
+                'Camera-based live verification is only required on mobile. '
+                'Test Mode is enabled on this device.',
+                style: AppTextStyles.caption,
+                textAlign: TextAlign.center,
+              ),
+            ),
+          ),
+        );
 
       case _Step.cameraReady:
         return SizedBox(
@@ -592,6 +759,15 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       case _Step.verifying:
       case _Step.verified:
         return const SizedBox(height: 72);
+
+      // DEV-ONLY Test Mode: primary action uses profile photo; demo selfies
+      // remain as secondary options so a fresh account without photos can
+      // still test the flow.
+      case _Step.testMode:
+        return _TestModePanel(
+          onUseProfilePhoto: _useProfilePhoto,
+          onPickDemo: _useDemoSelfie,
+        );
     }
   }
 }
@@ -1038,6 +1214,127 @@ class _HeaderIconButton extends StatelessWidget {
           child: Icon(icon, color: AppColors.textSecondary, size: 18),
         ),
       ),
+    );
+  }
+}
+
+// ── DEV-ONLY: Test Mode fallback ─────────────────────────────────────────────
+//
+// Everything below is reachable ONLY from [_Step.testMode], which is itself
+// only reachable in debug builds on non-mobile platforms (see
+// [_LiveVerificationScreenState._testModeAllowed]).  iOS and Android keep the
+// real live-selfie requirement in every build mode.
+//
+// Removing for launch: delete [_TestModePanel], [_TestModePlaceholder], the
+// [_Step.testMode] enum value, the `testMode` cases in the three builder
+// switches, the `_testModeAllowed` / `_isNonMobile` / `_handleCameraUnavailable`
+// / `_useProfilePhoto` / `_downloadToTemp` methods, and the
+// `flutter/foundation.dart` + `demo_profile.dart` imports at the top.
+
+/// Placeholder shown inside the selfie frame when Test Mode is active but the
+/// user has no primary profile photo yet.
+class _TestModePlaceholder extends StatelessWidget {
+  const _TestModePlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      color: const Color(0xFF0B0720),
+      child: const Center(
+        child: Icon(
+          Icons.person_rounded,
+          size: 56,
+          color: AppColors.textMuted,
+        ),
+      ),
+    );
+  }
+}
+
+/// Action area shown in Test Mode.  Primary CTA uses the user's profile photo
+/// (downloading it from Firebase Storage if needed).  Demo selfies remain as
+/// secondary options so a brand-new account with no photos can still test the
+/// go-live flow.
+class _TestModePanel extends StatelessWidget {
+  const _TestModePanel({
+    required this.onUseProfilePhoto,
+    required this.onPickDemo,
+  });
+
+  final Future<void> Function() onUseProfilePhoto;
+  final void Function(int index) onPickDemo;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // DEV badge — matches the existing demo panel styling.
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+          decoration: BoxDecoration(
+            color: const Color(0xFF1A1530),
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(color: const Color(0xFF3A3060)),
+          ),
+          child: Text(
+            'DEV · TEST MODE',
+            style: AppTextStyles.overline.copyWith(
+              color: const Color(0xFF7A6EA8),
+              letterSpacing: 1.6,
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 14),
+
+        // Primary: go live with profile photo.
+        GestureDetector(
+          onTap: onUseProfilePhoto,
+          child: Container(
+            height: 50,
+            padding: const EdgeInsets.symmetric(horizontal: 22),
+            decoration: BoxDecoration(
+              gradient: AppColors.brandGradient,
+              borderRadius: BorderRadius.circular(25),
+            ),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.bolt_rounded,
+                    color: Colors.white, size: 18),
+                const SizedBox(width: 8),
+                Text(
+                  'Go Live with my profile photo',
+                  style: AppTextStyles.body.copyWith(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+
+        const SizedBox(height: 14),
+
+        Text(
+          'or pick a demo selfie',
+          style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+        ),
+        const SizedBox(height: 10),
+
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            for (int i = 0; i < _DemoAssets.count; i++) ...[
+              if (i > 0) const SizedBox(width: 20),
+              _DemoAvatarButton(index: i, onTap: () => onPickDemo(i)),
+            ],
+          ],
+        ),
+      ],
     );
   }
 }
