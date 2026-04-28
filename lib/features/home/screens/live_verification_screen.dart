@@ -1,9 +1,10 @@
 import 'dart:io';
-import 'dart:ui' as ui;
 
 import 'package:camera/camera.dart';
-import 'package:flutter/foundation.dart' show kDebugMode, kIsWeb;
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/models/live_session_model.dart';
@@ -12,75 +13,28 @@ import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 
-// ── Demo assets ──────────────────────────────────────────────────────────────
+// ── Mac fallback gate ────────────────────────────────────────────────────────
 
-/// Generates and caches three distinct coloured-circle PNG demo selfies in the
-/// system temp directory using [dart:ui] canvas — no extra packages or bundled
-/// image assets required. Each 200×200 PNG has a unique radial gradient so
-/// they're visually distinguishable in the 36 px profile icon.
+/// The single account permitted to use the photo-library fallback in place of
+/// a live camera capture.  This is intentionally narrow: the Mac on which this
+/// account is signed in has no camera, so the library path is the only way to
+/// complete live verification on that machine.  Every other account on every
+/// other platform — including other accounts on this same Mac — must use the
+/// real camera flow.
+const _kMacLibraryFallbackEmail = 'icebreaker.support@gmail.com';
+
+/// Returns true only when:
+///   • the host platform is macOS (not iOS, not Android, not web), AND
+///   • the signed-in user's email matches [_kMacLibraryFallbackEmail].
 ///
-/// Used exclusively by [_DemoModePanel] to let developers test the full
-/// verification → profile icon → expanded selfie → redo flow without a camera.
-class _DemoAssets {
-  _DemoAssets._();
-
-  static const _configs = [
-    (Color(0xFFFF6B9D), Color(0xFFFF8E53), 'Demo 1'),
-    (Color(0xFF00D4FF), Color(0xFF0055FF), 'Demo 2'),
-    (Color(0xFF8B5CF6), Color(0xFFD946EF), 'Demo 3'),
-  ];
-
-  static final Map<int, String> _cache = {};
-
-  static int get count => _configs.length;
-  static String label(int i) => _configs[i].$3;
-  static Color accent(int i) => _configs[i].$1;
-
-  /// Returns the local file path for demo selfie [index], generating it on
-  /// first call. Subsequent calls return the cached path immediately.
-  static Future<String> filePath(int index) async {
-    assert(index >= 0 && index < count);
-    if (_cache.containsKey(index)) return _cache[index]!;
-
-    const sz = 200.0;
-    final (c1, c2, _) = _configs[index];
-
-    final recorder = ui.PictureRecorder();
-    final canvas = Canvas(recorder, const Rect.fromLTWH(0, 0, sz, sz));
-
-    // Radial gradient fill
-    canvas.drawCircle(
-      const Offset(sz / 2, sz / 2),
-      sz / 2,
-      Paint()
-        ..shader = ui.Gradient.radial(
-          const Offset(sz * 0.38, sz * 0.35),
-          sz * 0.80,
-          [c1, c2],
-        ),
-    );
-
-    // Soft inner highlight to give depth
-    canvas.drawCircle(
-      const Offset(sz * 0.38, sz * 0.35),
-      sz * 0.22,
-      Paint()..color = const Color(0x20FFFFFF),
-    );
-
-    final picture = recorder.endRecording();
-    final image = await picture.toImage(200, 200);
-    final byteData =
-        await image.toByteData(format: ui.ImageByteFormat.png);
-    image.dispose();
-
-    final path =
-        '${Directory.systemTemp.path}/icebreaker_demo_$index.png';
-    await File(path)
-        .writeAsBytes(byteData!.buffer.asUint8List(), flush: true);
-
-    _cache[index] = path;
-    return path;
-  }
+/// Build mode is not part of the gate — the camera is missing on hardware,
+/// not in software, so the fallback must work in every build mode.  The email
+/// match is the privacy boundary.
+bool _macLibraryFallbackForThisAccount() {
+  if (kIsWeb) return false;
+  if (!Platform.isMacOS) return false;
+  final email = FirebaseAuth.instance.currentUser?.email?.trim().toLowerCase();
+  return email == _kMacLibraryFallbackEmail;
 }
 
 // ── Step enum ────────────────────────────────────────────────────────────────
@@ -90,36 +44,25 @@ enum _Step {
   cameraReady,
   cameraError,
   cameraPermissionDenied,
+  libraryReady,
   verifying,
   verified,
-  // ─── DEV-ONLY ──────────────────────────────────────────────────────────────
-  // Non-mobile debug fallback used when the host device has no usable camera
-  // (e.g. Mac mini without a built-in webcam).  Only reachable when
-  // [_LiveVerificationScreenState._testModeAllowed] is true — i.e. debug build
-  // AND non-mobile platform.  Never reachable on iOS/Android in any build.
-  // Removing it after launch: delete this enum value, the `testMode` cases
-  // below, [_TestModePanel], and the `_testModeAllowed` branches in
-  // [_LiveVerificationScreenState].
-  testMode,
 }
 
-/// Immersive live-selfie capture + mock verification screen.
-///
-/// Layout (matches reference mockup):
-///   • Minimal dark header: back icon / "icebreaker •" / close icon
-///   • Large square selfie frame with neon border glow (camera live or captured photo)
-///   • Status area below:
-///       idle     — "Position your face in the frame"
-///       verifying — green ✓  "Verifying…"  neon gradient progress bar
-///       verified  — "Verified!"
-///   • Circular shutter capture button (visible in camera-ready state only)
+/// Live-selfie capture + verification screen.
 ///
 /// Flow:
-///   camera ready → tap shutter → auto-verifying (1.5 s) → verified (0.6 s)
-///   → [LiveSession.goLive] → pop.
+///   camera ready → tap shutter → verifying (1.5 s) → verified (0.6 s)
+///   → [LiveSession.goLive] (or [LiveSession.updateSelfie] on redo) → pop.
 ///
-/// Camera: uses front-facing camera via [camera] package (camera_avfoundation
-/// on macOS). No gallery fallback — fresh live selfie required.
+/// Capture source:
+///   • iPhone / Android  → front camera, always.  No library fallback.
+///   • macOS, but only when the signed-in user matches
+///     [_kMacLibraryFallbackEmail] → photo library, because that machine has
+///     no camera.  The verifying / verified stages run identically after the
+///     image is chosen.
+///   • Everything else (other Mac accounts, web, Linux, Windows) → camera
+///     unavailable error.  No silent bypass.
 class LiveVerificationScreen extends StatefulWidget {
   const LiveVerificationScreen({super.key, this.isRedo = false});
 
@@ -134,6 +77,7 @@ class LiveVerificationScreen extends StatefulWidget {
 class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   _Step _step = _Step.preparing;
   CameraController? _camController;
+  final ImagePicker _picker = ImagePicker();
   String? _capturedPath;
   String? _errorMessage;
 
@@ -142,6 +86,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   @override
   void initState() {
     super.initState();
+    _useMacLibraryFallback = _macLibraryFallbackForThisAccount();
     _initCamera();
   }
 
@@ -155,29 +100,21 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
   bool _cameraPermPermanentlyDenied = false;
 
-  /// True on web, macOS, Windows, Linux — platforms where the real live-selfie
-  /// requirement is relaxed for development.  iOS and Android always return
-  /// false, preserving the production camera flow on mobile.
-  bool get _isNonMobile {
-    if (kIsWeb) return true;
-    return Platform.isMacOS || Platform.isWindows || Platform.isLinux;
-  }
+  /// Cached at `initState` so the gate can't change mid-session if the user
+  /// signs out from another tab, etc.  Read-only after init.
+  late final bool _useMacLibraryFallback;
 
-  /// DEV-ONLY gate for the Test Mode fallback.  True only when the app is a
-  /// debug build (`kDebugMode`) AND running on a non-mobile platform.  Any
-  /// release build (including release macOS) gets the normal camera-error UX.
-  bool get _testModeAllowed => kDebugMode && _isNonMobile;
-
-  /// Called from every camera-unavailable code path.  On mobile (and on
-  /// non-mobile release builds) this enters the normal `cameraError` state so
-  /// the user is not silently given a production bypass.  On non-mobile debug
-  /// builds it enters the Test Mode fallback instead.
+  /// Called from every camera-unavailable code path.  On mobile (and on every
+  /// non-eligible Mac account) this enters the normal `cameraError` state so
+  /// the user is not silently given a bypass.  Only the eligible Mac account
+  /// is routed to the photo-library fallback.
   void _handleCameraUnavailable(String message) {
     if (!mounted) return;
-    if (_testModeAllowed) {
-      debugPrint('[liveVerify] camera unavailable on non-mobile debug — '
-          'entering Test Mode: $message');
-      setState(() => _step = _Step.testMode);
+    if (_useMacLibraryFallback) {
+      setState(() {
+        _errorMessage = null;
+        _step = _Step.libraryReady;
+      });
     } else {
       setState(() {
         _step = _Step.cameraError;
@@ -187,6 +124,16 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   }
 
   Future<void> _initCamera() async {
+    if (_useMacLibraryFallback) {
+      if (mounted) {
+        setState(() {
+          _errorMessage = null;
+          _step = _Step.libraryReady;
+        });
+      }
+      return;
+    }
+
     // ── 1. Check / request camera permission ──────────────────────────────
     // Skip on non-mobile platforms where permission_handler is a no-op.
     if (Platform.isIOS || Platform.isAndroid) {
@@ -261,6 +208,34 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     }
   }
 
+  Future<void> _pickFromPhotoLibrary() async {
+    if (_step == _Step.verifying || _step == _Step.verified) return;
+    try {
+      final picked = await _picker.pickImage(
+        source: ImageSource.gallery,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        imageQuality: 92,
+      );
+      if (picked == null || !mounted) return;
+      await _verifySelectedPhoto(
+        picked.path,
+        verificationMethod: LiveVerificationMethod.testModeProfilePhoto,
+      );
+    } catch (_) {
+      // Stay in libraryReady so the user can retry — flipping to cameraError
+      // would be misleading on a machine that has no camera in the first
+      // place.  Surface the failure inline so it isn't silent.
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          behavior: SnackBarBehavior.floating,
+          content: Text('Could not open your photo library. Please try again.'),
+        ),
+      );
+    }
+  }
+
   void _setError(String message) {
     if (mounted) {
       setState(() {
@@ -280,60 +255,28 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       final xFile = await ctrl.takePicture();
       if (!mounted) return;
 
-      setState(() {
-        _capturedPath = xFile.path;
-        _step = _Step.verifying;
-      });
-
       // Stop the camera feed — we have the captured image.
       await ctrl.dispose();
       _camController = null;
-
-      // Mock verification — 1.5 s
-      await Future.delayed(const Duration(milliseconds: 1500));
-      if (!mounted) return;
-      setState(() => _step = _Step.verified);
-
-      // Brief "Verified!" moment — 0.6 s
-      await Future.delayed(const Duration(milliseconds: 600));
-      if (!mounted) return;
-
-      final session = LiveSessionScope.of(context);
-      if (widget.isRedo) {
-        session.updateSelfie(_capturedPath!);
-      } else {
-        session.goLive(
-          selfieFilePath: _capturedPath,
-          verificationMethod: LiveVerificationMethod.liveSelfie,
-        );
-      }
-      Navigator.of(context).pop();
+      await _verifySelectedPhoto(
+        xFile.path,
+        verificationMethod: LiveVerificationMethod.liveSelfie,
+      );
     } catch (e) {
       _setError('Capture failed: ${e.runtimeType}');
     }
   }
 
-  // ── Demo selfie selection ─────────────────────────────────────────────────
-
-  /// Selects a pre-generated demo selfie and runs it through the exact same
-  /// mock-verification sequence as a real camera capture.
-  Future<void> _useDemoSelfie(int index) async {
-    if (_step == _Step.verifying || _step == _Step.verified) return;
-
-    // Dispose any live camera stream before showing the static demo image.
-    await _camController?.dispose();
-    _camController = null;
-
-    // Generate (or retrieve from cache) the coloured-circle PNG.
-    final path = await _DemoAssets.filePath(index);
+  Future<void> _verifySelectedPhoto(
+    String path, {
+    required LiveVerificationMethod verificationMethod,
+  }) async {
     if (!mounted) return;
-
     setState(() {
       _capturedPath = path;
       _step = _Step.verifying;
     });
 
-    // Same timing as the real flow.
     await Future.delayed(const Duration(milliseconds: 1500));
     if (!mounted) return;
     setState(() => _step = _Step.verified);
@@ -347,94 +290,27 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     } else {
       session.goLive(
         selfieFilePath: path,
-        verificationMethod: LiveVerificationMethod.testModeDemo,
+        verificationMethod: verificationMethod,
       );
     }
     Navigator.of(context).pop();
   }
 
-  // ── DEV-ONLY: Test Mode "use my profile photo" ────────────────────────────
+  // ── Mac fallback: reuse in-memory profile photo ───────────────────────────
 
-  /// Non-mobile debug fallback: runs the go-live flow using the user's primary
-  /// profile photo instead of a camera capture.  Falls back to demo selfie 0 if
-  /// the profile has no photo (so a fresh second account can still go live).
-  ///
-  /// Only callable from the Test Mode UI, which is only reachable when
-  /// [_testModeAllowed] is true.  Remove when removing Test Mode.
+  /// Convenience for the Mac account: if the user has already picked a main
+  /// profile photo this session, reuse that local file instead of opening the
+  /// library a second time.  Strictly local — reads `DemoProfile.mainPhoto`
+  /// (an [XFile] on disk).  When no local photo exists this method is not
+  /// reachable — the panel hides the button entirely.
   Future<void> _useProfilePhoto() async {
     if (_step == _Step.verifying || _step == _Step.verified) return;
-    final profile = DemoProfileScope.of(context);
-
-    // Prefer a locally-picked XFile (in-session pick) — its path is a real
-    // file on disk and goes straight to LiveSession.goLive.
-    final localPath = profile.mainPhoto?.path;
-    String? path = localPath;
-
-    // If no local pick, try to download the persisted URL to a temp file.
-    if (path == null && profile.mainPhotoUrl.isNotEmpty) {
-      path = await _downloadToTemp(profile.mainPhotoUrl);
-    }
-
-    // Last-resort fallback so a brand-new account without photos can still
-    // test the go-live flow — uses demo selfie 0.
-    if (path == null) {
-      debugPrint('[liveVerify] test-mode: no profile photo — '
-          'falling back to demo selfie 0');
-      await _useDemoSelfie(0);
-      return;
-    }
-
-    if (!mounted) return;
-    setState(() {
-      _capturedPath = path;
-      _step = _Step.verifying;
-    });
-
-    await Future<void>.delayed(const Duration(milliseconds: 1500));
-    if (!mounted) return;
-    setState(() => _step = _Step.verified);
-
-    await Future<void>.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-
-    final session = LiveSessionScope.of(context);
-    if (widget.isRedo) {
-      session.updateSelfie(path);
-    } else {
-      session.goLive(
-        selfieFilePath: path,
-        verificationMethod: LiveVerificationMethod.testModeProfilePhoto,
-      );
-    }
-    Navigator.of(context).pop();
-  }
-
-  /// Downloads [url] to a temporary file and returns the local path, or null
-  /// on failure.  Used only by [_useProfilePhoto] in Test Mode.
-  Future<String?> _downloadToTemp(String url) async {
-    HttpClient? client;
-    try {
-      client = HttpClient();
-      final req = await client.getUrl(Uri.parse(url));
-      final resp = await req.close();
-      if (resp.statusCode != 200) {
-        debugPrint('[liveVerify] test-mode download non-200: ${resp.statusCode}');
-        return null;
-      }
-      final bytes = <int>[];
-      await for (final chunk in resp) {
-        bytes.addAll(chunk);
-      }
-      final path = '${Directory.systemTemp.path}'
-          '/icebreaker_testmode_${DateTime.now().millisecondsSinceEpoch}.jpg';
-      await File(path).writeAsBytes(bytes, flush: true);
-      return path;
-    } catch (e) {
-      debugPrint('[liveVerify] test-mode download failed: $e');
-      return null;
-    } finally {
-      client?.close();
-    }
+    final localPath = DemoProfileScope.of(context).mainPhoto?.path;
+    if (localPath == null) return;
+    await _verifySelectedPhoto(
+      localPath,
+      verificationMethod: LiveVerificationMethod.testModeProfilePhoto,
+    );
   }
 
   // ── Build ─────────────────────────────────────────────────────────────────
@@ -471,23 +347,36 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
 
           // Brand wordmark + live dot
           Expanded(
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  'icebreaker',
-                  style: AppTextStyles.h3.copyWith(
-                    letterSpacing: 0.5,
-                    fontWeight: FontWeight.w700,
-                  ),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Text(
+                      'icebreaker',
+                      style: AppTextStyles.h3.copyWith(
+                        letterSpacing: 0.5,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: const BoxDecoration(
+                        color: AppColors.success,
+                        shape: BoxShape.circle,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 6),
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: const BoxDecoration(
-                    color: AppColors.success,
-                    shape: BoxShape.circle,
+                const SizedBox(height: 4),
+                Text(
+                  widget.isRedo ? 'Update live photo' : 'Live verification',
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textMuted,
+                    letterSpacing: 0.35,
                   ),
                 ),
               ],
@@ -514,12 +403,11 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       child: Column(
         children: [
           const SizedBox(height: 8),
+          _buildIntroCopy(),
+          const SizedBox(height: 20),
 
           // ── Selfie frame ────────────────────────────────────────────────
-          _SelfieFrame(
-            size: frameSize,
-            child: _buildFrameContent(frameSize),
-          ),
+          _SelfieFrame(size: frameSize, child: _buildFrameContent(frameSize)),
 
           const SizedBox(height: 28),
 
@@ -540,6 +428,46 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     );
   }
 
+  Widget _buildIntroCopy() {
+    final title = switch (_step) {
+      _Step.libraryReady => 'Pick a clear face photo',
+      _Step.verifying => 'Scanning your photo',
+      _Step.verified => 'Identity confirmed',
+      _ => 'Show us it’s really you',
+    };
+    final subtitle = switch (_step) {
+      _Step.libraryReady =>
+        'Choose a recent photo from your library. We’ll run the same scan before you go live.',
+      _Step.verifying =>
+        'Hold on a second while Icebreaker checks the image.',
+      _Step.verified =>
+        widget.isRedo
+            ? 'Your live photo is ready.'
+            : 'You’re about to enter Nearby.',
+      _ =>
+        'Your live photo stays tied to this session and helps people trust who they’re meeting.',
+    };
+    return Column(
+      children: [
+        Text(
+          title,
+          style: AppTextStyles.h1.copyWith(
+            fontSize: 30,
+            fontWeight: FontWeight.w800,
+            letterSpacing: -0.7,
+          ),
+          textAlign: TextAlign.center,
+        ),
+        const SizedBox(height: 10),
+        Text(
+          subtitle,
+          style: AppTextStyles.bodyS.copyWith(color: AppColors.textSecondary),
+          textAlign: TextAlign.center,
+        ),
+      ],
+    );
+  }
+
   // ── Frame content ─────────────────────────────────────────────────────────
 
   Widget _buildFrameContent(double frameSize) {
@@ -548,8 +476,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         return const Center(
           child: CircularProgressIndicator(
             strokeWidth: 2,
-            valueColor:
-                AlwaysStoppedAnimation<Color>(AppColors.brandCyan),
+            valueColor: AlwaysStoppedAnimation<Color>(AppColors.brandCyan),
           ),
         );
 
@@ -560,8 +487,11 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.camera_alt_outlined,
-                    color: AppColors.textMuted, size: 40),
+                const Icon(
+                  Icons.camera_alt_outlined,
+                  color: AppColors.textMuted,
+                  size: 40,
+                ),
                 const SizedBox(height: 12),
                 Text(
                   _errorMessage ?? 'Camera unavailable',
@@ -580,8 +510,11 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(Icons.no_photography_rounded,
-                    color: AppColors.textMuted, size: 40),
+                const Icon(
+                  Icons.no_photography_rounded,
+                  color: AppColors.textMuted,
+                  size: 40,
+                ),
                 const SizedBox(height: 12),
                 Text(
                   _cameraPermPermanentlyDenied
@@ -595,24 +528,24 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           ),
         );
 
-      // DEV-ONLY Test Mode: show the user's primary profile photo (or a
-      // placeholder) inside the selfie frame so the flow looks real.
-      case _Step.testMode:
+      case _Step.libraryReady:
         final profile = DemoProfileScope.of(context);
         final localPath = profile.mainPhoto?.path;
-        final url = profile.mainPhotoUrl;
-        if (localPath != null) {
-          return Image.file(File(localPath),
-              width: frameSize, height: frameSize, fit: BoxFit.cover);
-        }
-        if (url.isNotEmpty) {
-          return Image.network(url,
-              width: frameSize,
-              height: frameSize,
-              fit: BoxFit.cover,
-              errorBuilder: (_, _, _) => const _TestModePlaceholder());
-        }
-        return const _TestModePlaceholder();
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            if (localPath != null)
+              Image.file(
+                File(localPath),
+                width: frameSize,
+                height: frameSize,
+                fit: BoxFit.cover,
+              )
+            else
+              const _LibraryPlaceholder(),
+            const _VerificationGuideOverlay(showScan: false),
+          ],
+        );
 
       case _Step.cameraReady:
         final ctrl = _camController;
@@ -629,7 +562,13 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
               maxHeight: double.infinity,
               child: Transform.scale(
                 scaleX: -1, // mirror horizontally for selfie feel
-                child: CameraPreview(ctrl),
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    CameraPreview(ctrl),
+                    const _VerificationGuideOverlay(showScan: false),
+                  ],
+                ),
               ),
             ),
           ),
@@ -639,14 +578,20 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       case _Step.verified:
         final path = _capturedPath;
         if (path == null) return const SizedBox.shrink();
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: Image.file(
-            File(path),
-            width: frameSize,
-            height: frameSize,
-            fit: BoxFit.cover,
-          ),
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            ClipRRect(
+              borderRadius: BorderRadius.circular(14),
+              child: Image.file(
+                File(path),
+                width: frameSize,
+                height: frameSize,
+                fit: BoxFit.cover,
+              ),
+            ),
+            _VerificationGuideOverlay(showScan: _step == _Step.verifying),
+          ],
         );
     }
   }
@@ -674,20 +619,17 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       case _Step.cameraPermissionDenied:
         return const SizedBox(key: ValueKey('perm-denied'), height: 80);
 
-      // DEV-ONLY Test Mode status copy.
-      case _Step.testMode:
+      case _Step.libraryReady:
         return SizedBox(
-          key: const ValueKey('test-mode'),
-          height: 96,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Center(
-              child: Text(
-                'Camera-based live verification is only required on mobile. '
-                'Test Mode is enabled on this device.',
-                style: AppTextStyles.caption,
-                textAlign: TextAlign.center,
+          key: const ValueKey('library-ready'),
+          height: 88,
+          child: Center(
+            child: Text(
+              'Pick the photo you want tied to this live session.',
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textSecondary,
               ),
+              textAlign: TextAlign.center,
             ),
           ),
         );
@@ -695,10 +637,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       case _Step.cameraReady:
         return SizedBox(
           key: const ValueKey('ready'),
-          height: 80,
+          height: 88,
           child: Center(
             child: Text(
-              'Position your face in the frame',
+              'Center your face, keep it sharp, and snap when ready.',
               style: AppTextStyles.bodyS.copyWith(
                 color: AppColors.textSecondary,
               ),
@@ -726,20 +668,29 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   Widget _buildActionArea() {
     switch (_step) {
       case _Step.cameraReady:
-        // Real flow: shutter button. Demo panel shown below as dev shortcut.
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             _ShutterButton(onTap: _captureAndVerify),
-            const SizedBox(height: 24),
-            _DemoModePanel(onSelect: _useDemoSelfie),
+            const SizedBox(height: 14),
+            Text(
+              'Front camera only',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            ),
           ],
         );
 
       case _Step.preparing:
       case _Step.cameraError:
-        // Camera hardware unavailable — demo panel becomes the primary action.
-        return _DemoModePanel(onSelect: _useDemoSelfie, asPrimary: true);
+        return _PermissionActionButton(
+          label: 'Try Again',
+          icon: Icons.refresh_rounded,
+          onTap: () {
+            setState(() => _step = _Step.preparing);
+            _initCamera();
+          },
+          outlined: true,
+        );
 
       case _Step.cameraPermissionDenied:
         // Permission denied — show Settings path (and retry if not permanent).
@@ -770,13 +721,12 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       case _Step.verified:
         return const SizedBox(height: 72);
 
-      // DEV-ONLY Test Mode: primary action uses profile photo; demo selfies
-      // remain as secondary options so a fresh account without photos can
-      // still test the flow.
-      case _Step.testMode:
-        return _TestModePanel(
-          onUseProfilePhoto: _useProfilePhoto,
-          onPickDemo: _useDemoSelfie,
+      case _Step.libraryReady:
+        final hasLocalProfilePhoto =
+            DemoProfileScope.of(context).mainPhoto != null;
+        return _MacLibraryPanel(
+          onChooseFromLibrary: _pickFromPhotoLibrary,
+          onUseProfilePhoto: hasLocalProfilePhoto ? _useProfilePhoto : null,
         );
     }
   }
@@ -836,11 +786,187 @@ class _SelfieFrame extends StatelessWidget {
           ),
         ),
         padding: const EdgeInsets.all(2),
-        child: ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: child,
-        ),
+        child: ClipRRect(borderRadius: BorderRadius.circular(14), child: child),
       ),
+    );
+  }
+}
+
+class _VerificationGuideOverlay extends StatelessWidget {
+  const _VerificationGuideOverlay({required this.showScan});
+
+  final bool showScan;
+
+  @override
+  Widget build(BuildContext context) {
+    return IgnorePointer(
+      child: Stack(
+        fit: StackFit.expand,
+        children: [
+          Container(
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+                colors: [
+                  Colors.black.withValues(alpha: 0.12),
+                  Colors.transparent,
+                  Colors.black.withValues(alpha: 0.18),
+                ],
+              ),
+            ),
+          ),
+          Center(
+            child: Container(
+              width: 190,
+              height: 230,
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(120),
+                border: Border.all(
+                  color: Colors.white.withValues(alpha: 0.72),
+                  width: 1.5,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.brandCyan.withValues(alpha: 0.18),
+                    blurRadius: 18,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          const Positioned(
+            left: 18,
+            top: 18,
+            child: _FrameCorner(alignment: Alignment.topLeft),
+          ),
+          const Positioned(
+            right: 18,
+            top: 18,
+            child: _FrameCorner(alignment: Alignment.topRight),
+          ),
+          const Positioned(
+            left: 18,
+            bottom: 18,
+            child: _FrameCorner(alignment: Alignment.bottomLeft),
+          ),
+          const Positioned(
+            right: 18,
+            bottom: 18,
+            child: _FrameCorner(alignment: Alignment.bottomRight),
+          ),
+          if (showScan) const _ScanSweep(),
+        ],
+      ),
+    );
+  }
+}
+
+class _FrameCorner extends StatelessWidget {
+  const _FrameCorner({required this.alignment});
+
+  final Alignment alignment;
+
+  @override
+  Widget build(BuildContext context) {
+    final top = alignment.y < 0;
+    final left = alignment.x < 0;
+    return SizedBox(
+      width: 26,
+      height: 26,
+      child: CustomPaint(
+        painter: _CornerPainter(top: top, left: left),
+      ),
+    );
+  }
+}
+
+class _CornerPainter extends CustomPainter {
+  const _CornerPainter({required this.top, required this.left});
+
+  final bool top;
+  final bool left;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = Colors.white.withValues(alpha: 0.88)
+      ..strokeWidth = 2.4
+      ..style = PaintingStyle.stroke
+      ..strokeCap = StrokeCap.round;
+    final path = Path();
+    final x0 = left ? size.width : 0.0;
+    final x1 = left ? 0.0 : size.width;
+    final y0 = top ? size.height : 0.0;
+    final y1 = top ? 0.0 : size.height;
+    path.moveTo(x0, y1);
+    path.lineTo(x1, y1);
+    path.lineTo(x1, y0);
+    canvas.drawPath(path, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant _CornerPainter oldDelegate) =>
+      oldDelegate.top != top || oldDelegate.left != left;
+}
+
+class _ScanSweep extends StatefulWidget {
+  const _ScanSweep();
+
+  @override
+  State<_ScanSweep> createState() => _ScanSweepState();
+}
+
+class _ScanSweepState extends State<_ScanSweep>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _controller,
+      builder: (context, _) {
+        return Align(
+          alignment: Alignment(0, -0.82 + (_controller.value * 1.64)),
+          child: Container(
+            margin: const EdgeInsets.symmetric(horizontal: 34),
+            height: 3,
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              gradient: const LinearGradient(
+                colors: [
+                  Colors.transparent,
+                  AppColors.brandCyan,
+                  AppColors.brandPink,
+                  Colors.transparent,
+                ],
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: AppColors.brandCyan.withValues(alpha: 0.55),
+                  blurRadius: 16,
+                  spreadRadius: 1,
+                ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -856,11 +982,7 @@ class _VerifyingStatus extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const Icon(
-          Icons.check_rounded,
-          color: AppColors.success,
-          size: 36,
-        ),
+        const Icon(Icons.check_rounded, color: AppColors.success, size: 36),
         const SizedBox(height: 10),
         Text(
           'Verifying…',
@@ -1028,122 +1150,88 @@ class _ShutterButton extends StatelessWidget {
   }
 }
 
-// ── Demo mode panel ───────────────────────────────────────────────────────────
+// ── Library fallback panel ───────────────────────────────────────────────────
 
-/// Developer-only panel shown in the Live Verification screen.
-///
-/// When [asPrimary] is false (camera is working): renders as a subtle row
-/// below the shutter button, clearly labelled DEV · DEMO MODE.
-///
-/// When [asPrimary] is true (no camera available): renders prominently as
-/// the only available action so the dev can still test the full flow.
-class _DemoModePanel extends StatelessWidget {
-  const _DemoModePanel({required this.onSelect, this.asPrimary = false});
+/// Action area shown only on the Mac fallback path.  Keeps the same
+/// visual language as the mobile shutter area — a primary brand-gradient
+/// CTA, an optional outlined secondary, and a single fine-print line —
+/// so the screen still reads as a real verification step, not a debug menu.
+class _MacLibraryPanel extends StatelessWidget {
+  const _MacLibraryPanel({
+    required this.onChooseFromLibrary,
+    required this.onUseProfilePhoto,
+  });
 
-  final void Function(int index) onSelect;
-  final bool asPrimary;
+  final Future<void> Function() onChooseFromLibrary;
+  final Future<void> Function()? onUseProfilePhoto;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        // ── DEV label ────────────────────────────────────────────────────
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1530),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: const Color(0xFF3A3060)),
-          ),
-          child: Text(
-            'DEV · DEMO MODE',
-            style: AppTextStyles.overline.copyWith(
-              color: const Color(0xFF7A6EA8),
-              letterSpacing: 1.6,
-            ),
-          ),
+        _PermissionActionButton(
+          label: 'Choose from Photo Library',
+          icon: Icons.photo_library_rounded,
+          onTap: onChooseFromLibrary,
         ),
-
-        const SizedBox(height: 10),
-
+        if (onUseProfilePhoto != null) ...[
+          const SizedBox(height: 12),
+          _PermissionActionButton(
+            label: 'Use my profile photo',
+            icon: Icons.person_rounded,
+            onTap: onUseProfilePhoto!,
+            outlined: true,
+          ),
+        ],
+        const SizedBox(height: 14),
         Text(
-          asPrimary
-              ? 'Camera unavailable — select a demo selfie to test the flow'
-              : 'or pick a demo selfie to test without a camera',
-          style: AppTextStyles.caption.copyWith(
-            color: AppColors.textMuted,
-          ),
-          textAlign: TextAlign.center,
-        ),
-
-        const SizedBox(height: 16),
-
-        // ── Demo selfie buttons ───────────────────────────────────────────
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            for (int i = 0; i < _DemoAssets.count; i++) ...[
-              if (i > 0) const SizedBox(width: 20),
-              _DemoAvatarButton(
-                index: i,
-                onTap: () => onSelect(i),
-              ),
-            ],
-          ],
+          'Photo library on this Mac',
+          style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
         ),
       ],
     );
   }
 }
 
-/// Tappable coloured-circle avatar button for one demo selfie option.
-class _DemoAvatarButton extends StatelessWidget {
-  const _DemoAvatarButton({required this.index, required this.onTap});
-  final int index;
-  final VoidCallback onTap;
+class _LibraryPlaceholder extends StatelessWidget {
+  const _LibraryPlaceholder();
 
   @override
   Widget build(BuildContext context) {
-    final color = _DemoAssets.accent(index);
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Container(
-            width: 60,
-            height: 60,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              // Preview circle matches the generated PNG colour
-              gradient: RadialGradient(
-                center: const Alignment(-0.3, -0.3),
-                radius: 0.9,
-                colors: [color, color.withValues(alpha: 0.55)],
+    return Container(
+      color: const Color(0xFF0A0818),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 76,
+              height: 76,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withValues(alpha: 0.08),
+                border: Border.all(color: Colors.white.withValues(alpha: 0.10)),
               ),
-              border: Border.all(
-                color: color.withValues(alpha: 0.55),
-                width: 1.5,
+              child: const Icon(
+                Icons.photo_library_outlined,
+                size: 34,
+                color: AppColors.textMuted,
               ),
-              boxShadow: [
-                BoxShadow(
-                  color: color.withValues(alpha: 0.35),
-                  blurRadius: 14,
-                  spreadRadius: 0,
-                ),
-              ],
             ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            _DemoAssets.label(index),
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.textMuted,
-              fontSize: 10,
+            const SizedBox(height: 14),
+            Text(
+              'Photo library ready',
+              style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w600),
             ),
-          ),
-        ],
+            const SizedBox(height: 6),
+            Text(
+              'Choose a face photo to verify on this Mac.',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1174,10 +1262,7 @@ class _PermissionActionButton extends StatelessWidget {
           gradient: outlined ? null : AppColors.brandGradient,
           borderRadius: BorderRadius.circular(25),
           border: outlined
-              ? Border.all(
-                  color: AppColors.divider,
-                  width: 1.5,
-                )
+              ? Border.all(color: AppColors.divider, width: 1.5)
               : null,
         ),
         alignment: Alignment.center,
@@ -1224,127 +1309,6 @@ class _HeaderIconButton extends StatelessWidget {
           child: Icon(icon, color: AppColors.textSecondary, size: 18),
         ),
       ),
-    );
-  }
-}
-
-// ── DEV-ONLY: Test Mode fallback ─────────────────────────────────────────────
-//
-// Everything below is reachable ONLY from [_Step.testMode], which is itself
-// only reachable in debug builds on non-mobile platforms (see
-// [_LiveVerificationScreenState._testModeAllowed]).  iOS and Android keep the
-// real live-selfie requirement in every build mode.
-//
-// Removing for launch: delete [_TestModePanel], [_TestModePlaceholder], the
-// [_Step.testMode] enum value, the `testMode` cases in the three builder
-// switches, the `_testModeAllowed` / `_isNonMobile` / `_handleCameraUnavailable`
-// / `_useProfilePhoto` / `_downloadToTemp` methods, and the
-// `flutter/foundation.dart` + `demo_profile.dart` imports at the top.
-
-/// Placeholder shown inside the selfie frame when Test Mode is active but the
-/// user has no primary profile photo yet.
-class _TestModePlaceholder extends StatelessWidget {
-  const _TestModePlaceholder();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      color: const Color(0xFF0B0720),
-      child: const Center(
-        child: Icon(
-          Icons.person_rounded,
-          size: 56,
-          color: AppColors.textMuted,
-        ),
-      ),
-    );
-  }
-}
-
-/// Action area shown in Test Mode.  Primary CTA uses the user's profile photo
-/// (downloading it from Firebase Storage if needed).  Demo selfies remain as
-/// secondary options so a brand-new account with no photos can still test the
-/// go-live flow.
-class _TestModePanel extends StatelessWidget {
-  const _TestModePanel({
-    required this.onUseProfilePhoto,
-    required this.onPickDemo,
-  });
-
-  final Future<void> Function() onUseProfilePhoto;
-  final void Function(int index) onPickDemo;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        // DEV badge — matches the existing demo panel styling.
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-          decoration: BoxDecoration(
-            color: const Color(0xFF1A1530),
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(color: const Color(0xFF3A3060)),
-          ),
-          child: Text(
-            'DEV · TEST MODE',
-            style: AppTextStyles.overline.copyWith(
-              color: const Color(0xFF7A6EA8),
-              letterSpacing: 1.6,
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        // Primary: go live with profile photo.
-        GestureDetector(
-          onTap: onUseProfilePhoto,
-          child: Container(
-            height: 50,
-            padding: const EdgeInsets.symmetric(horizontal: 22),
-            decoration: BoxDecoration(
-              gradient: AppColors.brandGradient,
-              borderRadius: BorderRadius.circular(25),
-            ),
-            alignment: Alignment.center,
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const Icon(Icons.bolt_rounded,
-                    color: Colors.white, size: 18),
-                const SizedBox(width: 8),
-                Text(
-                  'Go Live with my profile photo',
-                  style: AppTextStyles.body.copyWith(
-                    color: Colors.white,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-
-        const SizedBox(height: 14),
-
-        Text(
-          'or pick a demo selfie',
-          style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
-        ),
-        const SizedBox(height: 10),
-
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            for (int i = 0; i < _DemoAssets.count; i++) ...[
-              if (i > 0) const SizedBox(width: 20),
-              _DemoAvatarButton(index: i, onTap: () => onPickDemo(i)),
-            ],
-          ],
-        ),
-      ],
     );
   }
 }
