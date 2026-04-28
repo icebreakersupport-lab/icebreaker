@@ -1,4 +1,5 @@
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import '../../features/shell/main_shell.dart';
@@ -54,7 +55,7 @@ import '../constants/app_constants.dart';
 // Routes that unauthenticated users may visit, AND that signed-in users who
 // are still setting up their profile may also visit without being bounced home.
 const _authRoutes = {
-  AppRoutes.splash,            // '/' — welcome screen
+  AppRoutes.splash, // '/' — welcome screen
   AppRoutes.signIn,
   AppRoutes.signUp,
   AppRoutes.verifyPhone,
@@ -79,7 +80,11 @@ final GoRouter appRouter = GoRouter(
     // Signed-in user on the welcome screen or pure-auth screens → send to home.
     // Onboarding screens are intentionally reachable by signed-in users who
     // haven't completed their profile yet.
-    const signInOnlyRoutes = {AppRoutes.splash, AppRoutes.signIn, AppRoutes.signUp};
+    const signInOnlyRoutes = {
+      AppRoutes.splash,
+      AppRoutes.signIn,
+      AppRoutes.signUp,
+    };
     if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.home;
 
     // Unauthenticated user on a protected screen → send to sign-in.
@@ -94,27 +99,23 @@ final GoRouter appRouter = GoRouter(
       routes: [
         GoRoute(
           path: AppRoutes.home,
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: HomeScreen(),
-          ),
+          pageBuilder: (context, state) =>
+              const NoTransitionPage(child: HomeScreen()),
         ),
         GoRoute(
           path: AppRoutes.nearby,
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: NearbyScreen(),
-          ),
+          pageBuilder: (context, state) =>
+              const NoTransitionPage(child: NearbyScreen()),
         ),
         GoRoute(
           path: AppRoutes.messages,
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: MessagesScreen(),
-          ),
+          pageBuilder: (context, state) =>
+              const NoTransitionPage(child: MessagesScreen()),
         ),
         GoRoute(
           path: AppRoutes.profile,
-          pageBuilder: (context, state) => const NoTransitionPage(
-            child: ProfileScreen(),
-          ),
+          pageBuilder: (context, state) =>
+              const NoTransitionPage(child: ProfileScreen()),
         ),
       ],
     ),
@@ -141,8 +142,8 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return IcebreakerReceivedScreen(
           icebreakerId: extra['icebreakerId'] as String,
-          senderId: (extra['senderId'] as String?) ?? '',
           senderFirstName: extra['senderFirstName'] as String,
+          senderAge: extra['senderAge'] as int,
           senderPhotoUrl: extra['senderPhotoUrl'] as String,
           myPhotoUrl: (extra['myPhotoUrl'] as String?) ?? '',
           myFirstName: (extra['myFirstName'] as String?) ?? '',
@@ -159,7 +160,6 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return MatchedScreen(
           meetupId: extra['meetupId'] as String,
-          otherUserId: (extra['otherUserId'] as String?) ?? '',
           matchColor: extra['matchColor'] as Color,
           otherFirstName: extra['otherFirstName'] as String,
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
@@ -177,7 +177,6 @@ final GoRouter appRouter = GoRouter(
         final extra = state.extra as Map<String, dynamic>;
         return ColorMatchScreen(
           meetupId: extra['meetupId'] as String,
-          otherUserId: (extra['otherUserId'] as String?) ?? '',
           matchColor: extra['matchColor'] as Color,
           otherFirstName: extra['otherFirstName'] as String,
           otherPhotoUrl: extra['otherPhotoUrl'] as String,
@@ -284,10 +283,13 @@ final GoRouter appRouter = GoRouter(
     ),
 
     // ── Design preview (dev only) ─────────────────────────────────────────
-    GoRoute(
-      path: '/preview',
-      builder: (context, state) => const DesignPreviewScreen(),
-    ),
+    // Registered only in debug builds so the route cannot be reached in
+    // production via deep-link or typo'd navigation.
+    if (kDebugMode)
+      GoRoute(
+        path: '/preview',
+        builder: (context, state) => const DesignPreviewScreen(),
+      ),
 
     // ── Meetup: Chat Unlocked ─────────────────────────────────────────────
     GoRoute(
@@ -304,7 +306,6 @@ final GoRouter appRouter = GoRouter(
     ),
 
     // ── Sub-screens (pushed over shell; no persistent bottom nav) ─────────
-
     GoRoute(
       path: AppRoutes.shop,
       builder: (context, state) => const ShopScreen(),

@@ -1,41 +1,16 @@
 import 'dart:io';
 
 import 'package:camera/camera.dart';
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../../core/dev/dev_account_gate.dart';
 import '../../../core/models/live_session_model.dart';
 import '../../../core/state/demo_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
-
-// ── Mac fallback gate ────────────────────────────────────────────────────────
-
-/// The single account permitted to use the photo-library fallback in place of
-/// a live camera capture.  This is intentionally narrow: the Mac on which this
-/// account is signed in has no camera, so the library path is the only way to
-/// complete live verification on that machine.  Every other account on every
-/// other platform — including other accounts on this same Mac — must use the
-/// real camera flow.
-const _kMacLibraryFallbackEmail = 'icebreaker.support@gmail.com';
-
-/// Returns true only when:
-///   • the host platform is macOS (not iOS, not Android, not web), AND
-///   • the signed-in user's email matches [_kMacLibraryFallbackEmail].
-///
-/// Build mode is not part of the gate — the camera is missing on hardware,
-/// not in software, so the fallback must work in every build mode.  The email
-/// match is the privacy boundary.
-bool _macLibraryFallbackForThisAccount() {
-  if (kIsWeb) return false;
-  if (!Platform.isMacOS) return false;
-  final email = FirebaseAuth.instance.currentUser?.email?.trim().toLowerCase();
-  return email == _kMacLibraryFallbackEmail;
-}
 
 // ── Step enum ────────────────────────────────────────────────────────────────
 
@@ -57,10 +32,9 @@ enum _Step {
 ///
 /// Capture source:
 ///   • iPhone / Android  → front camera, always.  No library fallback.
-///   • macOS, but only when the signed-in user matches
-///     [_kMacLibraryFallbackEmail] → photo library, because that machine has
-///     no camera.  The verifying / verified stages run identically after the
-///     image is chosen.
+///   • macOS, but only when [macLibraryFallbackForThisAccount] returns true →
+///     photo library, because that machine has no camera.  The verifying /
+///     verified stages run identically after the image is chosen.
 ///   • Everything else (other Mac accounts, web, Linux, Windows) → camera
 ///     unavailable error.  No silent bypass.
 class LiveVerificationScreen extends StatefulWidget {
@@ -86,7 +60,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   @override
   void initState() {
     super.initState();
-    _useMacLibraryFallback = _macLibraryFallbackForThisAccount();
+    _useMacLibraryFallback = macLibraryFallbackForThisAccount();
     _initCamera();
   }
 

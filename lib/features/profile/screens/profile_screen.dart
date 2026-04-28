@@ -2,7 +2,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/state/demo_profile.dart';
@@ -61,7 +60,10 @@ class ProfileScreen extends StatelessWidget {
 
               // ── Hero profile circle ─────────────────────────────────────
               // Priority: main gallery photo → live selfie → placeholder
-              _HeroAvatar(session: session, mainPhoto: profile.mainPhoto),
+              _HeroAvatar(
+                session: session,
+                galleryImage: profile.photoAt(0).imageProvider,
+              ),
 
               const SizedBox(height: 18),
 
@@ -164,8 +166,7 @@ class ProfileScreen extends StatelessWidget {
 
               // ── Photos & Media ──────────────────────────────────────────
               _MediaSection(
-                photos: profile.photos,
-                video: profile.video,
+                profile: profile,
                 onManage: () => context.push(AppRoutes.gallery),
               ),
 
@@ -187,9 +188,12 @@ class ProfileScreen extends StatelessWidget {
 ///
 /// A "LIVE" pill badge overlays the bottom of the circle when live.
 class _HeroAvatar extends StatelessWidget {
-  const _HeroAvatar({required this.session, this.mainPhoto});
+  const _HeroAvatar({required this.session, this.galleryImage});
   final LiveSession session;
-  final XFile? mainPhoto;
+
+  /// ImageProvider for slot 0 — covers both local pick and persisted URL via
+  /// [ProfilePhotoSlot.imageProvider].  Null when slot 0 is empty.
+  final ImageProvider? galleryImage;
 
   static const double _size = 200;
   static const double _border = 3.0;
@@ -198,7 +202,6 @@ class _HeroAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isLive = session.isLive;
     final selfiePath = session.selfieFilePath;
-    final galleryPath = mainPhoto?.path;
     // When live: always show the verification selfie (trust signal).
     // When not live: prefer the gallery main photo, fall back to selfie.
 
@@ -242,7 +245,7 @@ class _HeroAvatar extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(_border),
             child: ClipOval(
-              child: _resolveImage(isLive, selfiePath, galleryPath),
+              child: _resolveImage(isLive, selfiePath, galleryImage),
             ),
           ),
         ),
@@ -297,13 +300,19 @@ class _HeroAvatar extends StatelessWidget {
   ///
   /// Live session → verification selfie always (trust/authenticity signal).
   /// Not live     → gallery main photo if present, then selfie, then placeholder.
-  Widget _resolveImage(bool isLive, String? selfiePath, String? galleryPath) {
+  Widget _resolveImage(
+    bool isLive,
+    String? selfiePath,
+    ImageProvider? galleryImage,
+  ) {
     if (isLive && selfiePath != null) {
       return Image.file(File(selfiePath), fit: BoxFit.cover);
     }
-    final notLivePath = galleryPath ?? selfiePath;
-    if (notLivePath != null) {
-      return Image.file(File(notLivePath), fit: BoxFit.cover);
+    if (galleryImage != null) {
+      return Image(image: galleryImage, fit: BoxFit.cover);
+    }
+    if (selfiePath != null) {
+      return Image.file(File(selfiePath), fit: BoxFit.cover);
     }
     return _AvatarPlaceholder();
   }
@@ -540,21 +549,28 @@ class _BulletRow extends StatelessWidget {
 /// Only renders when at least one photo or the video is saved.
 class _MediaSection extends StatelessWidget {
   const _MediaSection({
-    required this.photos,
-    required this.video,
+    required this.profile,
     required this.onManage,
   });
 
-  final List<XFile?> photos;
-  final XFile? video;
+  final DemoProfile profile;
   final VoidCallback onManage;
 
   @override
   Widget build(BuildContext context) {
-    final filled = photos.where((p) => p != null).toList();
+    // Walk slots in display order so slot 0 stays the MAIN, regardless of
+    // whether it's backed by a local pick or a persisted URL.
+    final filled = <_FilledThumbSlot>[];
+    for (var i = 0; i < profile.photoSlotCount; i++) {
+      final slot = profile.photoAt(i);
+      if (slot.isNotEmpty) {
+        filled.add(_FilledThumbSlot(index: i, image: slot.imageProvider!));
+      }
+    }
+    final video = profile.video;
     final hasPhotos = filled.isNotEmpty;
     final hasMedia = hasPhotos || video != null;
-    final photoCount = filled.length;
+    final photoCount = profile.photoCount;
 
     return Container(
       width: double.infinity,
@@ -676,8 +692,11 @@ class _MediaSection extends StatelessWidget {
                   itemCount: filled.length,
                   separatorBuilder: (context, _) => const SizedBox(width: 8),
                   itemBuilder: (_, i) {
-                    final isMain = photos.indexOf(filled[i]) == 0;
-                    return _PhotoThumb(xFile: filled[i]!, isMain: isMain);
+                    final entry = filled[i];
+                    return _PhotoThumb(
+                      image: entry.image,
+                      isMain: entry.index == 0,
+                    );
                   },
                 ),
               ),
@@ -686,7 +705,7 @@ class _MediaSection extends StatelessWidget {
 
           if (video != null) ...[
             const SizedBox(height: 10),
-            _VideoIndicator(fileName: video!.name),
+            _VideoIndicator(fileName: video.name),
           ],
         ],
       ),
@@ -694,9 +713,17 @@ class _MediaSection extends StatelessWidget {
   }
 }
 
+/// Lightweight value carrying a non-empty slot's index + resolved image, so
+/// the media-strip can render in display order without re-walking the slots.
+class _FilledThumbSlot {
+  const _FilledThumbSlot({required this.index, required this.image});
+  final int index;
+  final ImageProvider image;
+}
+
 class _PhotoThumb extends StatelessWidget {
-  const _PhotoThumb({required this.xFile, required this.isMain});
-  final XFile xFile;
+  const _PhotoThumb({required this.image, required this.isMain});
+  final ImageProvider image;
   final bool isMain;
 
   @override
@@ -705,8 +732,8 @@ class _PhotoThumb extends StatelessWidget {
       children: [
         ClipRRect(
           borderRadius: BorderRadius.circular(10),
-          child: Image.file(
-            File(xFile.path),
+          child: Image(
+            image: image,
             width: 68,
             height: 90,
             fit: BoxFit.cover,

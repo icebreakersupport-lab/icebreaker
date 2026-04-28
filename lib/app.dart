@@ -62,7 +62,7 @@ class _IcebreakerAppState extends State<IcebreakerApp>
       if (user == null) {
         debugPrint('[App] auth cleared — wiping DemoProfile + LiveSession');
         _hydratedForUid = null;
-        _profile.clearPhotos();
+        _profile.clearMedia();
         _session.clearForSignOut();
         return;
       }

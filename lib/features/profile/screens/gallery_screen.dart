@@ -37,7 +37,6 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final _picker = ImagePicker();
 
   DemoProfile get _profile => DemoProfileScope.of(context);
-  List<XFile?> get _photos => _profile.photos;
   XFile? get _video => _profile.video;
   int get _photoCount => _profile.photoCount;
 
@@ -83,7 +82,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   // ── Photo slot handler ─────────────────────────────────────────────────────
 
   void _onPhotoSlotTap(int index) {
-    final isEmpty = _photos[index] == null;
+    final isEmpty = _profile.photoAt(index).isEmpty;
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.bgSurface,
@@ -114,7 +113,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
             ? null
             : () {
                 Navigator.of(sheetCtx).pop();
-                _profile.setPhoto(index, null);
+                _profile.removePhotoSlot(index);
               },
       ),
     );
@@ -178,7 +177,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
   }
 
   Widget _buildPhotoCell(int index, double slotW, double slotH) {
-    final hasPhoto = _photos[index] != null;
+    final slot = _profile.photoAt(index);
+    final hasPhoto = slot.isNotEmpty;
 
     // DragTarget is outermost so every cell can receive a drop regardless of
     // whether it's a drag source. onWillAccept returning false moves the data
@@ -194,7 +194,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
 
         final photoSlot = _PhotoSlot(
           index: index,
-          xFile: _photos[index],
+          image: slot.imageProvider,
           onTap: () => _onPhotoSlotTap(index),
           isDropTarget: isDropHover,
         );
@@ -219,8 +219,8 @@ class _GalleryScreenState extends State<GalleryScreen> {
                 opacity: 0.92,
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(14),
-                  child: Image.file(
-                    File(_photos[index]!.path),
+                  child: Image(
+                    image: slot.imageProvider!,
                     fit: BoxFit.cover,
                   ),
                 ),
@@ -342,13 +342,16 @@ class _GalleryScreenState extends State<GalleryScreen> {
 class _PhotoSlot extends StatelessWidget {
   const _PhotoSlot({
     required this.index,
-    required this.xFile,
+    required this.image,
     required this.onTap,
     this.isDropTarget = false,
   });
 
   final int index;
-  final XFile? xFile;
+
+  /// Resolved image for this slot — null when the slot is empty across both
+  /// the local-pick and persisted-URL layers.
+  final ImageProvider? image;
   final VoidCallback onTap;
 
   /// Highlight this slot as a valid drop target while a drag hovers over it.
@@ -357,7 +360,7 @@ class _PhotoSlot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isMain = index == 0;
-    final hasPhoto = xFile != null;
+    final hasPhoto = image != null;
 
     final borderColor = isDropTarget
         ? AppColors.brandCyan.withValues(alpha: 0.85)
@@ -393,7 +396,7 @@ class _PhotoSlot extends StatelessWidget {
         child: ClipRRect(
           borderRadius: BorderRadius.circular(13),
           child: hasPhoto
-              ? _FilledSlot(xFile: xFile!, isMain: isMain)
+              ? _FilledSlot(image: image!, isMain: isMain)
               : _EmptySlot(index: index),
         ),
       ),
@@ -404,8 +407,8 @@ class _PhotoSlot extends StatelessWidget {
 // ── Filled slot ───────────────────────────────────────────────────────────────
 
 class _FilledSlot extends StatelessWidget {
-  const _FilledSlot({required this.xFile, required this.isMain});
-  final XFile xFile;
+  const _FilledSlot({required this.image, required this.isMain});
+  final ImageProvider image;
   final bool isMain;
 
   @override
@@ -414,7 +417,7 @@ class _FilledSlot extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         // Full-bleed thumbnail
-        Image.file(File(xFile.path), fit: BoxFit.cover),
+        Image(image: image, fit: BoxFit.cover),
 
         // Bottom scrim so badges are readable
         Positioned(
