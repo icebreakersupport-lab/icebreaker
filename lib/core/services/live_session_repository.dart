@@ -72,6 +72,14 @@ class LiveSessionRepository {
     final now = DateTime.now();
     final expires = now.add(const Duration(hours: 1));
 
+    // visibilityState IS the discovery/read gate: only 'discoverable' permits
+    // cross-user reads at the security-rules layer.  When the owner opts out
+    // of discovery we write 'discovery_disabled' so the session is structurally
+    // unreachable through Nearby — it never relies on client-side filtering.
+    final initialVisibility = discoverableSnapshot
+        ? LiveSessionVisibility.discoverable
+        : LiveSessionVisibility.discoveryDisabled;
+
     final batch = _db.batch();
     batch.set(_liveDoc(uid), {
       'uid': uid,
@@ -83,8 +91,7 @@ class LiveSessionRepository {
       'verificationMethod': liveVerificationMethodName(verificationMethod),
       'verificationCompletedAt': FieldValue.serverTimestamp(),
       'currentMeetupId': null,
-      'visibilityState':
-          liveSessionVisibilityName(LiveSessionVisibility.discoverable),
+      'visibilityState': liveSessionVisibilityName(initialVisibility),
       // Position is nulled at start; populated by [writePosition] once GPS
       // returns a fix (usually <2 s with a warm cache).
       'lat': null,
@@ -209,17 +216,26 @@ class LiveSessionRepository {
   /// batched mirror because the users mirror for this field is already being
   /// written by the Cloud Function.  Phase 2 replaces this with a direct
   /// Cloud Function write to `live_sessions/{uid}`.
+  ///
+  /// [discoverableSnapshot] is the value frozen onto the session at Go Live.
+  /// When the user is *leaving* a meetup (currentMeetupId becomes null) we
+  /// must restore the right visibility for them — `discoverable` only when
+  /// they originally opted in, `discovery_disabled` otherwise.  Without this
+  /// the previous implementation would have re-opened a non-discoverable
+  /// session to cross-user reads on every meetup exit.
   Future<void> writeMeetupVisibility({
     required String uid,
     required String? currentMeetupId,
+    required bool discoverableSnapshot,
   }) {
+    final visibility = currentMeetupId != null
+        ? LiveSessionVisibility.hiddenInMeetup
+        : (discoverableSnapshot
+            ? LiveSessionVisibility.discoverable
+            : LiveSessionVisibility.discoveryDisabled);
     return _liveDoc(uid).update({
       'currentMeetupId': currentMeetupId,
-      'visibilityState': liveSessionVisibilityName(
-        currentMeetupId == null
-            ? LiveSessionVisibility.discoverable
-            : LiveSessionVisibility.hiddenInMeetup,
-      ),
+      'visibilityState': liveSessionVisibilityName(visibility),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }

@@ -131,12 +131,58 @@ class LiveSession extends ChangeNotifier {
     final prevExpiresAt = _expiresAt;
     final prevSelfiePath = _selfieFilePath;
     final prevCredits = _liveCredits;
+    final prevCurrentSession = _currentSession;
+
+    final now = DateTime.now();
+    final expires = now.add(const Duration(hours: 1));
+    final initialVisibility = snap.discoverable
+        ? LiveSessionVisibility.discoverable
+        : LiveSessionVisibility.discoveryDisabled;
 
     _isLive = true;
-    _expiresAt = DateTime.now().add(const Duration(hours: 1));
+    _expiresAt = expires;
     if (selfieFilePath != null) _selfieFilePath = selfieFilePath;
     final creditsToPersist = _liveCredits;
     if (_liveCredits > 0) _liveCredits--;
+
+    // Optimistic synthesis: seed `_currentSession` from the values we are
+    // about to commit so any listener that reads the session between the
+    // optimistic flip and the first server-stream tick (notably Nearby's
+    // `_applySessionSnapshots`) sees the real snapshots — not nulls or
+    // defaults.  The stream replaces this with the canonical server-side
+    // model within ~1 s; until then the in-memory model carries the values
+    // we KNOW we are persisting in the same async frame.  Server-stamped
+    // timestamps are pre-filled with `now` and reconciled on that tick.
+    _currentSession = LiveSessionModel(
+      uid: uid,
+      status: LiveSessionStatus.active,
+      endedReason: null,
+      startedAt: now,
+      expiresAt: expires,
+      endedAt: null,
+      verificationMethod: verificationMethod,
+      verificationCompletedAt: now,
+      currentMeetupId: null,
+      visibilityState: initialVisibility,
+      lat: null,
+      lng: null,
+      geohash: null,
+      locationUpdatedAt: null,
+      maxDistanceMetersSnapshot: snap.maxDistanceMeters,
+      discoverableSnapshot: snap.discoverable,
+      showMeSnapshot: snap.showMe,
+      ageRangeMinSnapshot: snap.ageRangeMin,
+      ageRangeMaxSnapshot: snap.ageRangeMax,
+      liveCreditsAtStart: creditsToPersist,
+      // platform is the only field we don't know locally; the canonical
+      // value lands on the first stream tick.  It does not feed any
+      // client-side filtering — safe to leave as 'unknown' until reconciled.
+      platform: 'unknown',
+      schemaVersion: kLiveSessionSchemaVersion,
+      createdAt: now,
+      updatedAt: now,
+    );
+
     _scheduleExpiry();
     notifyListeners();
 
@@ -162,6 +208,7 @@ class LiveSession extends ChangeNotifier {
       _expiresAt = prevExpiresAt;
       _selfieFilePath = prevSelfiePath;
       _liveCredits = prevCredits;
+      _currentSession = prevCurrentSession;
       notifyListeners();
       rethrow;
     }
@@ -353,12 +400,28 @@ class LiveSession extends ChangeNotifier {
       if (!snap.exists) return;
       final newMeetupId = snap.data()?['currentMeetupId'] as String?;
       if (newMeetupId == _lastMirroredCurrentMeetupId) return;
+
+      // We need the discoverableSnapshot to decide what visibilityState to
+      // restore when the meetup clears.  If the session model hasn't loaded
+      // yet, defer the mirror write — biasing toward strict (do nothing) is
+      // safer than guessing.  The next snapshot tick will retry once the
+      // model is in memory.
+      final session = _currentSession;
+      if (session == null) {
+        debugPrint('[LiveSession] meetup mirror deferred — currentSession not '
+            'loaded yet');
+        return;
+      }
       _lastMirroredCurrentMeetupId = newMeetupId;
       _repo
-          .writeMeetupVisibility(uid: uid, currentMeetupId: newMeetupId)
+          .writeMeetupVisibility(
+            uid: uid,
+            currentMeetupId: newMeetupId,
+            discoverableSnapshot: session.discoverableSnapshot,
+          )
           .catchError((Object e) {
-        // Non-fatal — Nearby falls back to status==active filter at the
-        // very worst.
+        // Non-fatal — the visibility transition will be retried on the next
+        // users-doc snapshot tick if it failed transiently.
         debugPrint('[LiveSession] meetup visibility mirror failed: $e');
       });
     }, onError: (Object e) {

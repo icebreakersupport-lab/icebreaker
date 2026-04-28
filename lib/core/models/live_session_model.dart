@@ -12,15 +12,30 @@ enum LiveSessionEndedReason { manual, blocked, crashRecovered, other }
 
 /// Who can currently see this session in Nearby.
 ///
-/// `discoverable`      — appears in Nearby cell queries.
-/// `hidden_in_meetup`  — the owner is currently in a meetup; hidden from Nearby
-///                       but the session is still technically active.
-/// `continued_private` — the meetup concluded with we_got_this; the owner stays
-///                       hidden from Nearby because they are now chatting with
-///                       that match.  Written by a Cloud Function in Phase 2;
-///                       in Phase 1 the client uses `hidden_in_meetup` for both
-///                       of these states (both hide from Nearby identically).
-enum LiveSessionVisibility { discoverable, hiddenInMeetup, continuedPrivate }
+/// `discoverable`        — appears in Nearby cell queries.  This is the ONLY
+///                         value that grants cross-user read access at the
+///                         security-rules layer; all other values keep the
+///                         session readable by the owner alone.
+/// `hidden_in_meetup`    — the owner is currently in a meetup; hidden from
+///                         Nearby but the session is still technically active.
+/// `continued_private`   — the meetup concluded with we_got_this; the owner
+///                         stays hidden from Nearby because they are now
+///                         chatting with that match.  Written by a Cloud
+///                         Function in Phase 2; in Phase 1 the client uses
+///                         `hidden_in_meetup` for both of these states (both
+///                         hide from Nearby identically).
+/// `discovery_disabled`  — the owner opted out of discovery
+///                         (`discoverableSnapshot == false` at Go Live).  The
+///                         session exists for state-machine purposes but is
+///                         never queryable by other clients.  Kept distinct
+///                         from `hidden_in_meetup` so the *reason* a session
+///                         is hidden remains legible in logs and metrics.
+enum LiveSessionVisibility {
+  discoverable,
+  hiddenInMeetup,
+  continuedPrivate,
+  discoveryDisabled,
+}
 
 /// Which verification path produced this session.
 ///
@@ -184,6 +199,8 @@ class LiveSessionModel {
         return LiveSessionVisibility.hiddenInMeetup;
       case 'continued_private':
         return LiveSessionVisibility.continuedPrivate;
+      case 'discovery_disabled':
+        return LiveSessionVisibility.discoveryDisabled;
       case 'discoverable':
       default:
         return LiveSessionVisibility.discoverable;
@@ -227,4 +244,5 @@ String liveSessionVisibilityName(LiveSessionVisibility v) => switch (v) {
       LiveSessionVisibility.discoverable => 'discoverable',
       LiveSessionVisibility.hiddenInMeetup => 'hidden_in_meetup',
       LiveSessionVisibility.continuedPrivate => 'continued_private',
+      LiveSessionVisibility.discoveryDisabled => 'discovery_disabled',
     };

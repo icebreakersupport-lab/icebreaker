@@ -317,7 +317,15 @@ service cloud.firestore {
     //   verificationMethod         : 'live_selfie' | 'test_mode_profile_photo' | 'test_mode_demo'
     //   verificationCompletedAt    : Timestamp
     //   currentMeetupId            : string?   (mirrored from users.currentMeetupId in Phase 1)
-    //   visibilityState            : 'discoverable' | 'hidden_in_meetup' | 'continued_private'
+    //   visibilityState            : 'discoverable' | 'hidden_in_meetup'
+    //                              |  'continued_private' | 'discovery_disabled'
+    //                              Only 'discoverable' grants cross-user read
+    //                              access — see the read rule below.  All
+    //                              other values keep the session readable by
+    //                              the owner alone, including the session of
+    //                              a user who opted out of discovery
+    //                              (discoverableSnapshot=false), which the
+    //                              client now writes as 'discovery_disabled'.
     //   lat, lng                   : number?
     //   geohash                    : string? (7-char; used by Nearby cell query)
     //   locationUpdatedAt          : Timestamp?
@@ -336,8 +344,8 @@ service cloud.firestore {
     //          visibility transitions in Phase 2).
     // Read   — owner, plus any authenticated user when visibilityState is
     //          'discoverable' (for Nearby discovery).  Non-discoverable
-    //          sessions (hidden_in_meetup, continued_private, terminal) are
-    //          readable only by the owner.
+    //          sessions (hidden_in_meetup, continued_private,
+    //          discovery_disabled, terminal) are readable only by the owner.
     match /live_sessions/{userId} {
       allow write: if request.auth != null
                    && request.auth.uid == userId;
