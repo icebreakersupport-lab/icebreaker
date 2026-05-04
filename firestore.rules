@@ -20,7 +20,7 @@ service cloud.firestore {
       //
       // Permitted fields (read by the Nearby discovery query):
       //   firstName, age, bio, photoUrl, isLive, geohash, latitude, longitude,
-      //   locationUpdatedAt, showMe, ageRangeMin, ageRangeMax, plan,
+      //   locationUpdatedAt, interestedIn, ageRangeMin, ageRangeMax, plan,
       //   hometown, occupation, height, lookingFor, opener
       //
       // Private fields (email, phone, doNotDisturb, credits, etc.) are not
@@ -50,6 +50,39 @@ service cloud.firestore {
         allow read:   if request.auth != null
                       && (request.auth.uid == userId
                        || request.auth.uid == blockedUserId);
+      }
+
+      // ── Verification attempts audit ────────────────────────────────────────
+      // Schema: users/{userId}/verificationAttempts/{attemptId}
+      //   uid           : String — the owning user (== userId)
+      //   kind          : 'live_selfie'   (Phase 1; future: 'phone' | 'id')
+      //   method        : 'live_selfie' | 'test_mode_profile_photo'
+      //                 |  'test_mode_demo'   (LiveVerificationMethod codec)
+      //   outcome       : 'verified'      (Phase 1 only writes successes)
+      //   eventType     : 'go_live' | 'redo'
+      //   liveSessionId : String          (uid of the associated session)
+      //   createdAt     : Timestamp (serverTimestamp)
+      //
+      // Append-only. Owner-only read/write — verification history is private
+      // and must not leak to other users.  Validation pins the kind/outcome/
+      // eventType domains so a future free-form misuse is rejected at the
+      // rule layer rather than discovered at the analytics layer.
+      match /verificationAttempts/{attemptId} {
+        allow create: if request.auth != null
+                      && request.auth.uid == userId
+                      && request.resource.data.uid == userId
+                      && request.resource.data.keys().hasAll(
+                           ['uid', 'kind', 'method', 'outcome',
+                            'eventType', 'liveSessionId', 'createdAt'])
+                      && request.resource.data.kind in ['live_selfie']
+                      && request.resource.data.outcome in ['verified']
+                      && request.resource.data.eventType in
+                           ['go_live', 'redo'];
+
+        allow read:   if request.auth != null
+                      && request.auth.uid == userId;
+
+        allow update, delete: if false;
       }
 
       // ── Report dedup index ─────────────────────────────────────────────────
@@ -87,11 +120,19 @@ service cloud.firestore {
     //          read rule above — each check reads a doc where auth.uid is
     //          either the owner (a) or the blocked person (b).
     // read   : sender or recipient (covers both get and list/query).
-    // update : sender or recipient (accept / decline / expire flows).
+    // update : FORBIDDEN for clients.  All status transitions are owned by
+    //          Cloud Functions (admin SDK), which means:
+    //            sent → accepted    (respondToIcebreaker callable; atomic with
+    //                                meetup creation + recipient credit debit)
+    //            sent → declined    (respondToIcebreaker callable)
+    //            sent → expired     (onIcebreakerExpired scheduled CF, TTL)
+    //          Clients can never write 'accepted'/'declined' themselves, so no
+    //          credit-spending state is forgeable from a malicious client.
     // delete : not permitted.
     match /icebreakers/{icebreakerId} {
       allow create: if request.auth != null
                     && request.resource.data.senderId == request.auth.uid
+                    && request.resource.data.status == 'sent'
                     // Recipient has not blocked the sender.
                     && !exists(/databases/$(database)/documents/users/$(request.resource.data.recipientId)/blockedUsers/$(request.auth.uid))
                     // Sender has not blocked the recipient.
@@ -101,9 +142,7 @@ service cloud.firestore {
                     && (resource.data.senderId    == request.auth.uid
                      || resource.data.recipientId == request.auth.uid);
 
-      allow update: if request.auth != null
-                    && (resource.data.senderId    == request.auth.uid
-                     || resource.data.recipientId == request.auth.uid);
+      allow update, delete: if false;
     }
 
     // ── Meetups ───────────────────────────────────────────────────────────────
@@ -236,6 +275,44 @@ service cloud.firestore {
 
         allow update, delete: if false;
       }
+
+      // ── Cancel requests (finding-phase only) ───────────────────────────────
+      // Either participant may cancel the meetup while it is still in the
+      // 'finding' phase (they tapped "back" on the MatchedScreen and confirmed
+      // exit).  The onFindingCancelRequestCreated Cloud Function picks up the
+      // first write and flips the meetup to 'cancelled_finding', which then
+      // cascades through onMeetupTerminal to clear currentMeetupId on both
+      // users and release them back to Nearby.
+      //
+      // Schema: meetups/{meetupId}/cancelRequests/{uid}
+      //   uid         : String — the requester's own UID (= doc ID)
+      //   requestedAt : Timestamp (serverTimestamp)
+      //
+      // Constraints:
+      //   - Doc ID must equal caller UID (prevents impersonation).
+      //   - Caller must be a participant.
+      //   - Meetup must currently be in 'finding' — once both users tap "I
+      //     found them" the meetup advances to 'talking', after which exit
+      //     paths are decisions/end-requests, not cancel.
+      //   - Immutable once written.
+      match /cancelRequests/{uid} {
+
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/meetups/$(meetupId))
+                       .data.participants;
+
+        allow create: if request.auth != null
+                      && request.auth.uid == uid
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.participants
+                      && get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.status == 'finding'
+                      && request.resource.data.uid == request.auth.uid;
+
+        allow update, delete: if false;
+      }
     }
 
     // ── Conversations ─────────────────────────────────────────────────────────
@@ -318,20 +395,21 @@ service cloud.firestore {
     //   verificationCompletedAt    : Timestamp
     //   currentMeetupId            : string?   (mirrored from users.currentMeetupId in Phase 1)
     //   visibilityState            : 'discoverable' | 'hidden_in_meetup'
-    //                              |  'continued_private' | 'discovery_disabled'
+    //                              |  'continued_private'
     //                              Only 'discoverable' grants cross-user read
-    //                              access — see the read rule below.  All
-    //                              other values keep the session readable by
-    //                              the owner alone, including the session of
-    //                              a user who opted out of discovery
-    //                              (discoverableSnapshot=false), which the
-    //                              client now writes as 'discovery_disabled'.
+    //                              access — see the get/list rules below.
+    //                              All other values keep the session readable
+    //                              by the owner alone.  visibilityState is
+    //                              system-controlled: there is no user-facing
+    //                              "ghost mode" / discoverable opt-out, so
+    //                              Going Live always begins discoverable and
+    //                              only flips to a hidden state via the
+    //                              meetup state machine.
     //   lat, lng                   : number?
     //   geohash                    : string? (7-char; used by Nearby cell query)
     //   locationUpdatedAt          : Timestamp?
     //   maxDistanceMetersSnapshot  : number
-    //   discoverableSnapshot       : bool
-    //   showMeSnapshot             : string
+    //   interestedInSnapshot       : string  (canonical lowercase preference)
     //   ageRangeMinSnapshot        : number
     //   ageRangeMaxSnapshot        : number
     //   liveCreditsAtStart         : number
@@ -342,21 +420,30 @@ service cloud.firestore {
     // Write  — only the session owner (uid == doc ID == auth.uid).
     //          Cloud Functions bypass rules and may also write (for meetup
     //          visibility transitions in Phase 2).
-    // Read   — owner, plus any authenticated user when visibilityState is
-    //          'discoverable' (for Nearby discovery).  Non-discoverable
-    //          sessions (hidden_in_meetup, continued_private,
-    //          discovery_disabled, terminal) are readable only by the owner.
+    // get    — owner always; OR any authenticated non-owner when the doc is
+    //          live + discoverable.  Rules engine evaluates `resource.data`
+    //          per single doc, so this matches Firestore's `get` semantics.
+    // list   — any authenticated user, but only for documents where
+    //          visibilityState=='discoverable' AND status=='active'.  These
+    //          two equality predicates MUST be present on the Nearby query
+    //          (they already are).  Splitting list out from get is the fix
+    //          for Nearby's permission-denied: the previous combined `read`
+    //          rule contained `request.auth.uid == userId` as a top-level
+    //          disjunct, and Firestore could not statically prove the rule
+    //          would pass for cross-user list operations from the query
+    //          filters alone.
     match /live_sessions/{userId} {
       allow write: if request.auth != null
                    && request.auth.uid == userId;
 
-      allow read:  if request.auth != null
-                   && request.auth.uid == userId;
+      allow get: if request.auth != null
+                 && (request.auth.uid == userId
+                     || (resource.data.visibilityState == 'discoverable'
+                         && resource.data.status == 'active'));
 
-      allow read:  if request.auth != null
-                   && request.auth.uid != userId
-                   && resource.data.visibilityState == 'discoverable'
-                   && resource.data.status == 'active';
+      allow list: if request.auth != null
+                  && resource.data.visibilityState == 'discoverable'
+                  && resource.data.status == 'active';
     }
 
     // ── Reverse block index ───────────────────────────────────────────────────
@@ -389,24 +476,108 @@ service cloud.firestore {
 
     // ── Reports ───────────────────────────────────────────────────────────────
     // Written by the reporting user.  Readable only by admins (server SDK).
+    //
     // Schema: reports/{auto-id}
-    //   reporterId   : String  — auth.uid of the reporter
-    //   reportedId   : String  — uid of the reported user
-    //   reason       : String  — selected category
-    //   note         : String  — optional free-text
-    //   context      : String  — 'nearby' | 'chat' | 'profile'
-    //   createdAt    : Timestamp
+    //   Intake fields (client-writable on create):
+    //     reporterId      : String  — must equal auth.uid (anti-impersonation)
+    //     reportedId      : String  — uid of the reported user
+    //     reason          : String  — one of the allowlist values
+    //     note            : String  — optional free-text (may be empty)
+    //     source          : String  — 'nearby' | 'chat' | 'profile'
+    //     conversationId  : String? — present when source=='chat'
+    //     createdAt       : Timestamp (serverTimestamp)
+    //     status          : 'open' on create — the only legal initial value
+    //
+    //   Moderation fields (server-only — must be exactly null on create):
+    //     reviewedAt   : Timestamp?
+    //     reviewedBy   : String?    — admin uid
+    //     adminNotes   : String?
+    //
+    // Forcing the four moderation fields to null at create time means the
+    // doc lands in a known, well-formed shape that admin tooling can update
+    // with a simple set(merge) without first having to pad missing fields.
     match /reports/{reportId} {
       allow create: if request.auth != null
                     && request.resource.data.reporterId == request.auth.uid
                     && request.resource.data.keys().hasAll(
-                         ['reporterId', 'reportedId', 'reason', 'createdAt'])
+                         ['reporterId', 'reportedId', 'reason', 'createdAt',
+                          'status', 'reviewedAt', 'reviewedBy', 'adminNotes'])
                     && request.resource.data.reason in
                          ['spam', 'harassment', 'inappropriate_content',
-                          'fake_profile', 'other'];
+                          'fake_profile', 'other']
+                    && request.resource.data.status == 'open'
+                    && request.resource.data.reviewedAt == null
+                    && request.resource.data.reviewedBy == null
+                    && request.resource.data.adminNotes == null;
 
       // Reports are write-once and read by admins only (server SDK bypasses rules).
       allow read, update, delete: if false;
+    }
+
+    // ── Public profiles ───────────────────────────────────────────────────────
+    // Canonical public profile surface.  Mirrors a curated subset of the
+    // fields on users/{uid} (firstName, age, bio, opener, hometown,
+    // occupation, height, lookingFor, gender, orientation, interestedIn,
+    // ageRangeMin, ageRangeMax, interests,
+    // hobbies, photoUrls, primaryPhotoUrl, profileComplete, updatedAt).
+    //
+    // Read   — any authenticated user.  Discovery is gated separately via
+    //          live_sessions; profiles/{uid} is the display source for cards
+    //          and about-me sheets.  No sensitive fields live here.
+    // Write  — owner only (uid == auth.uid).  Onboarding and edit-profile
+    //          dual-write here alongside their existing users/{uid} writes.
+    match /profiles/{uid} {
+      allow read:  if request.auth != null;
+      allow write: if request.auth != null
+                   && request.auth.uid == uid;
+    }
+
+    // ── Canonical blocks ──────────────────────────────────────────────────────
+    // Schema: blocks/{blockerId}_{blockedId}
+    //   blockerId         : String  — auth.uid of the user who issued the block
+    //   blockedId         : String  — uid of the user who was blocked
+    //   status            : 'active' | 'released'
+    //   source            : 'chat' | 'nearby' | 'profile'
+    //   conversationId    : String?
+    //   createdAt         : Timestamp (serverTimestamp)
+    //   updatedAt         : Timestamp (serverTimestamp)
+    //   releasedAt        : Timestamp? (set when status flips to 'released')
+    //   blockedDisplayName: String?  (low-risk denormalised snapshot)
+    //   blockedPhotoUrl   : String?
+    //
+    // The two runtime indexes (users/{uid}/blockedUsers/* and
+    // blockedBy/{uid}/blockers/*) remain authoritative for runtime
+    // enforcement (Nearby filter, security rules' exists() checks on
+    // icebreakers/messages).  This collection is the canonical audit /
+    // moderation surface — soft-released rows stay here forever even after
+    // the runtime indexes are deleted.
+    //
+    // Read  — only the blocker.  We intentionally do not let the blocked
+    //         party read their own block records; the blocked-by relationship
+    //         is communicated to them via the reverse runtime index, which
+    //         carries no provenance.
+    // Write — only the blocker may create or update.  No deletes — soft-
+    //         release via status='released' is the only retraction path.
+    match /blocks/{blockId} {
+      allow read:   if request.auth != null
+                    && resource.data.blockerId == request.auth.uid;
+
+      allow create: if request.auth != null
+                    && request.resource.data.blockerId == request.auth.uid
+                    && request.resource.data.keys().hasAll(
+                         ['blockerId', 'blockedId', 'status', 'source',
+                          'createdAt', 'updatedAt'])
+                    && request.resource.data.status == 'active'
+                    && request.resource.data.source in
+                         ['chat', 'nearby', 'profile'];
+
+      allow update: if request.auth != null
+                    && resource.data.blockerId == request.auth.uid
+                    && request.resource.data.blockerId == resource.data.blockerId
+                    && request.resource.data.blockedId == resource.data.blockedId
+                    && request.resource.data.status in ['active', 'released'];
+
+      allow delete: if false;
     }
   }
 }

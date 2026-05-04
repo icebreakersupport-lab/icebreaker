@@ -1,6 +1,8 @@
 import { onDocumentWritten, onDocumentCreated } from 'firebase-functions/v2/firestore';
+import { onCall, HttpsError } from 'firebase-functions/v2/https';
+import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { initializeApp } from 'firebase-admin/app';
-import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 
 initializeApp();
@@ -361,3 +363,367 @@ export const onNewChatMessage = onDocumentCreated(
     }
   },
 );
+
+// ── Meetup / Icebreaker state-machine constants ────────────────────────────────
+
+const FIND_TIMER_SECONDS = 300; // 5 min — mirrors AppConstants.findTimerSeconds
+const FREE_ICEBREAKER_CREDITS = 3; // mirrors AppConstants.freeIcebreakerCreditsPerSignup
+
+/**
+ * Statuses that release a meetup's participants from the "in-meetup" lock.
+ * When a meetup transitions INTO any of these, [onMeetupTerminal] clears
+ * users.{uid}.currentMeetupId on both participants so they become eligible
+ * for Nearby discovery again.
+ *
+ *   matched           — both swiped we_got_this; conversation now exists.
+ *   ended             — explicit end via endRequests (continued_private exit).
+ *   no_match          — at least one swiped nice_meeting_you.
+ *   expired_finding   — find-timer elapsed without both confirming.
+ *   cancelled_finding — a participant tapped back during finding and confirmed.
+ */
+const TERMINAL_MEETUP_STATUSES: ReadonlySet<string> = new Set([
+  'matched',
+  'ended',
+  'no_match',
+  'expired_finding',
+  'cancelled_finding',
+]);
+
+/**
+ * respondToIcebreaker — the only legal path for an icebreaker to advance from
+ * 'sent' to 'accepted' or 'declined'.
+ *
+ * Why a callable, not a client-side update:
+ *   firestore.rules forbids icebreaker updates entirely (allow update,delete:
+ *   if false) precisely because acceptance has credit + meetup-creation side
+ *   effects.  A forgeable client write of {status: 'accepted'} would let any
+ *   recipient mint a meetup without paying the icebreaker credit.  Routing the
+ *   transition through a callable lets the admin SDK do the whole thing
+ *   atomically, with the rule layer guaranteeing no other path exists.
+ *
+ * Atomic transaction (accept):
+ *   1. Read icebreakers/{id}; assert recipientId == auth.uid AND status == 'sent'
+ *      AND now < expiresAt.
+ *   2. Read recipient users/{uid}; apply 24-h credit reset window if expired,
+ *      then assert credits > 0.  Throws 'no-credits' otherwise.
+ *   3. Read sender + recipient profiles/{uid} for participantPhotos snapshot.
+ *   4. Decrement recipient.icebreakerCredits.
+ *   5. Create meetups/{auto-id} with status='finding', foundConfirmedBy=[],
+ *      participants=[senderId, recipientId], participantNames/Photos
+ *      denormalised.  findExpiresAt is stamped by [onMeetupCreated], not
+ *      here, so the timer starts on the trigger-fired write rather than the
+ *      transaction commit.
+ *   6. Flip icebreaker to status='accepted' with meetupId.
+ *
+ * Decline path is the same shape minus the meetup + credit work — just a
+ * status flip.
+ *
+ * Returns { meetupId } on accept so the client knows where to navigate.
+ */
+export const respondToIcebreaker = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+  const uid = request.auth.uid;
+  const data = (request.data ?? {}) as { icebreakerId?: unknown; action?: unknown };
+  const icebreakerId = data.icebreakerId;
+  const action = data.action;
+
+  if (typeof icebreakerId !== 'string' || icebreakerId.length === 0) {
+    throw new HttpsError('invalid-argument', 'icebreakerId required');
+  }
+  if (action !== 'accept' && action !== 'decline') {
+    throw new HttpsError('invalid-argument', "action must be 'accept' or 'decline'");
+  }
+
+  const icebreakerRef = db.collection('icebreakers').doc(icebreakerId);
+
+  if (action === 'decline') {
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(icebreakerRef);
+      if (!snap.exists) throw new HttpsError('not-found', 'Icebreaker not found');
+      const ib = snap.data()!;
+      if (ib.recipientId !== uid) {
+        throw new HttpsError('permission-denied', 'Not the recipient');
+      }
+      if (ib.status !== 'sent') {
+        throw new HttpsError('failed-precondition', `Icebreaker is ${ib.status}, not sent`);
+      }
+      tx.update(icebreakerRef, {
+        status: 'declined',
+        declinedAt: FieldValue.serverTimestamp(),
+      });
+    });
+    console.log(`[icebreaker-respond] ${icebreakerId} declined by ${uid}`);
+    return { ok: true, action: 'declined' };
+  }
+
+  // Accept path — pre-allocate the meetup id so we can return it from the
+  // transaction.  Firestore auto-ids are valid before the doc is written.
+  const meetupRef = db.collection('meetups').doc();
+  const meetupId = meetupRef.id;
+
+  await db.runTransaction(async (tx) => {
+    // ── 1. Icebreaker assertions ──────────────────────────────────────────────
+    const ibSnap = await tx.get(icebreakerRef);
+    if (!ibSnap.exists) throw new HttpsError('not-found', 'Icebreaker not found');
+    const ib = ibSnap.data()!;
+    if (ib.recipientId !== uid) {
+      throw new HttpsError('permission-denied', 'Not the recipient');
+    }
+    if (ib.status !== 'sent') {
+      throw new HttpsError('failed-precondition', `Icebreaker is ${ib.status}, not sent`);
+    }
+    const expiresAt = ib.expiresAt as Timestamp | undefined;
+    if (expiresAt && expiresAt.toMillis() <= Date.now()) {
+      throw new HttpsError('failed-precondition', 'Icebreaker has expired');
+    }
+    const senderId = ib.senderId as string;
+    const senderFirstName = (ib.senderFirstName as string | undefined) ?? '';
+    const recipientFirstName = (ib.recipientFirstName as string | undefined) ?? '';
+
+    // ── 2. Recipient credits + 24h reset ──────────────────────────────────────
+    const recipientRef = db.collection('users').doc(uid);
+    const recipientSnap = await tx.get(recipientRef);
+    let credits =
+      (recipientSnap.data()?.icebreakerCredits as number | undefined) ??
+      FREE_ICEBREAKER_CREDITS;
+    const storedResetAt = recipientSnap.data()?.icebreakerCreditsResetAt as
+      | Timestamp
+      | undefined;
+    const nowMs = Date.now();
+    const windowExpired = !!storedResetAt && nowMs > storedResetAt.toMillis();
+    if (windowExpired) credits = FREE_ICEBREAKER_CREDITS;
+    if (credits <= 0) {
+      throw new HttpsError('failed-precondition', 'No icebreakers left');
+    }
+    const newCredits = credits - 1;
+    const newResetAt =
+      windowExpired || !storedResetAt
+        ? Timestamp.fromMillis(nowMs + 24 * 3600 * 1000)
+        : storedResetAt;
+
+    // ── 3. Profile photos for both participants ───────────────────────────────
+    const [senderProfileSnap, recipientProfileSnap] = await Promise.all([
+      tx.get(db.collection('profiles').doc(senderId)),
+      tx.get(db.collection('profiles').doc(uid)),
+    ]);
+    const senderPhotoUrl =
+      (senderProfileSnap.data()?.primaryPhotoUrl as string | undefined) ?? '';
+    const recipientPhotoUrl =
+      (recipientProfileSnap.data()?.primaryPhotoUrl as string | undefined) ?? '';
+
+    // ── 4. Writes ─────────────────────────────────────────────────────────────
+    tx.update(recipientRef, {
+      icebreakerCredits: newCredits,
+      icebreakerCreditsResetAt: newResetAt,
+    });
+
+    tx.set(meetupRef, {
+      participants: [senderId, uid],
+      participantNames: {
+        [senderId]: senderFirstName,
+        [uid]: recipientFirstName,
+      },
+      participantPhotos: {
+        [senderId]: senderPhotoUrl,
+        [uid]: recipientPhotoUrl,
+      },
+      foundConfirmedBy: [],
+      status: 'finding',
+      icebreakerId: icebreakerId,
+      createdAt: FieldValue.serverTimestamp(),
+      // findExpiresAt is stamped by [onMeetupCreated] so the timer starts on
+      // the trigger-fired write rather than at transaction-commit time.
+    });
+
+    tx.update(icebreakerRef, {
+      status: 'accepted',
+      meetupId: meetupId,
+      acceptedAt: FieldValue.serverTimestamp(),
+    });
+  });
+
+  console.log(`[icebreaker-respond] ${icebreakerId} accepted by ${uid} → meetup ${meetupId}`);
+  return { ok: true, action: 'accepted', meetupId };
+});
+
+/**
+ * onIcebreakerExpired — flips status='sent' to 'expired' once expiresAt has
+ * passed.  Authoritative TTL writer; clients never write 'expired'.
+ *
+ * Runs every minute.  At icebreaker volume an upper bound of 100/run keeps the
+ * function fast and bounded; if a backlog accumulates, subsequent runs drain
+ * it.  No backfill state required — the where(status='sent', expiresAt<=now)
+ * query is naturally idempotent.
+ */
+export const onIcebreakerExpired = onSchedule('every 1 minutes', async () => {
+  const now = Timestamp.now();
+  const snap = await db
+    .collection('icebreakers')
+    .where('status', '==', 'sent')
+    .where('expiresAt', '<=', now)
+    .limit(100)
+    .get();
+  if (snap.empty) return;
+  const writer = db.bulkWriter();
+  for (const doc of snap.docs) {
+    writer.update(doc.ref, {
+      status: 'expired',
+      expiredAt: FieldValue.serverTimestamp(),
+    });
+  }
+  await writer.close();
+  console.log(`[icebreaker-expire] expired ${snap.size} icebreaker(s)`);
+});
+
+/**
+ * onMeetupCreated — fires on the freshly-written meetup doc and:
+ *   1. Stamps findExpiresAt = now + FIND_TIMER_SECONDS.  Clients never write
+ *      this field; the rule layer (allow update only on foundConfirmedBy)
+ *      already prevents that.  Stamping here makes the find timer's start
+ *      point the trigger-fired write rather than the originating transaction
+ *      commit, which keeps both clients' countdowns identical to the second.
+ *   2. Writes users.{uid}.currentMeetupId = meetupId on both participants.
+ *      LiveSession's existing _subscribeToMeetupMirror picks the field up and
+ *      flips live_sessions.{uid}.visibilityState to 'hidden_in_meetup', which
+ *      removes both users from Nearby discovery while the meetup is active.
+ */
+export const onMeetupCreated = onDocumentCreated(
+  'meetups/{meetupId}',
+  async (event) => {
+    const snap = event.data;
+    if (!snap) return;
+    const data = snap.data();
+    const participants = (data.participants as string[] | undefined) ?? [];
+    if (participants.length !== 2) {
+      console.warn(
+        `[meetup-created] ${snap.id} has ${participants.length} participants — skipping`,
+      );
+      return;
+    }
+    const findExpiresAt = Timestamp.fromMillis(Date.now() + FIND_TIMER_SECONDS * 1000);
+    await Promise.all([
+      snap.ref.update({ findExpiresAt }),
+      db.collection('users').doc(participants[0]).update({ currentMeetupId: snap.id }),
+      db.collection('users').doc(participants[1]).update({ currentMeetupId: snap.id }),
+    ]);
+    console.log(
+      `[meetup-created] ${snap.id} stamped findExpiresAt + currentMeetupId on [${participants.join(', ')}]`,
+    );
+  },
+);
+
+/**
+ * onMeetupTerminal — clears users.{uid}.currentMeetupId on both participants
+ * when a meetup enters any [TERMINAL_MEETUP_STATUSES] state.
+ *
+ * Triggers on every meetup write but only acts when status changes INTO a
+ * terminal value.  The before/after status comparison makes the function
+ * idempotent — re-firing on the same terminal state is a no-op.
+ *
+ * Why guard on currentMeetupId equality before deleting: if the user has
+ * already started a fresh meetup (rare race — rapid accept after cancel), we
+ * don't want this CF clobbering the new meetupId.  Only clear when the field
+ * still points at the meetup that just terminated.
+ */
+export const onMeetupTerminal = onDocumentWritten(
+  'meetups/{meetupId}',
+  async (event) => {
+    const before = event.data?.before.data();
+    const after = event.data?.after.data();
+    if (!after) return; // delete — not used; rules forbid it anyway
+
+    const beforeStatus = (before?.status as string | undefined) ?? '';
+    const afterStatus = (after.status as string | undefined) ?? '';
+    if (beforeStatus === afterStatus) return;
+    if (!TERMINAL_MEETUP_STATUSES.has(afterStatus)) return;
+
+    const participants = (after.participants as string[] | undefined) ?? [];
+    if (participants.length !== 2) return;
+    const meetupId = event.params.meetupId;
+
+    await Promise.all(
+      participants.map(async (uid) => {
+        const userRef = db.collection('users').doc(uid);
+        const userSnap = await userRef.get();
+        const current = userSnap.data()?.currentMeetupId as string | undefined;
+        if (current === meetupId) {
+          await userRef.update({ currentMeetupId: FieldValue.delete() });
+        }
+      }),
+    );
+    console.log(
+      `[meetup-terminal] ${meetupId}: ${beforeStatus} → ${afterStatus}; ` +
+        `cleared currentMeetupId on [${participants.join(', ')}]`,
+    );
+  },
+);
+
+/**
+ * onFindingCancelRequestCreated — flips a 'finding' meetup to
+ * 'cancelled_finding' on the first cancelRequests subdoc.  Mirrors the
+ * existing onEndRequestCreated pattern but for an earlier phase.
+ *
+ * The status==='finding' guard is required because the cancelRequests rule
+ * only permits creation when status=='finding', but races (a second user
+ * tapping cancel just after the schedule has flipped to expired_finding) can
+ * still slip an extra subdoc through if the rule's get() reads stale state.
+ * Idempotency falls out of the guard.
+ */
+export const onFindingCancelRequestCreated = onDocumentCreated(
+  'meetups/{meetupId}/cancelRequests/{uid}',
+  async (event) => {
+    const meetupId = event.params.meetupId;
+    const uid = event.params.uid;
+    const meetupRef = db.collection('meetups').doc(meetupId);
+    const snap = await meetupRef.get();
+    if (!snap.exists) return;
+    const status = snap.data()?.status as string | undefined;
+    if (status !== 'finding') {
+      console.log(
+        `[meetup-cancel] ${meetupId}: already ${status} — ignoring cancel from ${uid}`,
+      );
+      return;
+    }
+    await meetupRef.update({
+      status: 'cancelled_finding',
+      concludedAt: FieldValue.serverTimestamp(),
+      cancelledBy: uid,
+    });
+    console.log(`[meetup-cancel] ${meetupId} → cancelled_finding by ${uid}`);
+  },
+);
+
+/**
+ * onMeetupFindingExpired — flips finding meetups to 'expired_finding' once
+ * findExpiresAt has passed.  Authoritative timer expiry, by design:
+ *
+ *   The earlier plan considered an opportunistic client-side flip on
+ *   countdown completion, but a sleeping or crashed peer would strand the
+ *   other user in 'finding' indefinitely.  Server-owned expiry with a 1-min
+ *   tick is bounded-latency and resilient to client outages.
+ *
+ * The downstream cascade (onMeetupTerminal → currentMeetupId clear → live
+ * session visibilityState flip back to 'discoverable') is identical to every
+ * other terminal status — no special-casing for expiry.
+ */
+export const onMeetupFindingExpired = onSchedule('every 1 minutes', async () => {
+  const now = Timestamp.now();
+  const snap = await db
+    .collection('meetups')
+    .where('status', '==', 'finding')
+    .where('findExpiresAt', '<=', now)
+    .limit(100)
+    .get();
+  if (snap.empty) return;
+  const writer = db.bulkWriter();
+  for (const doc of snap.docs) {
+    writer.update(doc.ref, {
+      status: 'expired_finding',
+      concludedAt: FieldValue.serverTimestamp(),
+    });
+  }
+  await writer.close();
+  console.log(`[meetup-expire] expired ${snap.size} finding meetup(s)`);
+});
