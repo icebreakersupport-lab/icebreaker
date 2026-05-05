@@ -224,6 +224,11 @@ class _MatchedScreenState extends State<MatchedScreen> {
         'foundConfirmedBy': FieldValue.arrayUnion([uid]),
       });
     } catch (e) {
+      // Log the actual cause so future "could not confirm" reports come with
+      // a concrete error string in the device console rather than a silent
+      // snackbar (the matched-screen rule has subtle CEL gotchas that are
+      // very hard to diagnose without the underlying PERMISSION_DENIED text).
+      debugPrint('[MatchedScreen] foundConfirmedBy update failed: $e');
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not confirm — try again.')),

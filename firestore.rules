@@ -187,6 +187,13 @@ service cloud.firestore {
       // the meetup to 'talking' (which onMeetupFoundConfirmed would then pick
       // up).  Combined with hasOnly(participants), the only permitted delta
       // is adding the caller's own UID.
+      //
+      // The outer parens around each `(... in foundConfirmedBy)` are
+      // load-bearing — Firebase rules treat `in` and `==` at the same
+      // precedence level with left-to-right associativity, so without them
+      // the chain `X in OLD == X in NEW` parses as `((X in OLD) == X) in NEW`,
+      // which evaluates to false for every legitimate write and silently
+      // denies every "I found them" swipe.
       allow update: if request.auth != null
                     && request.auth.uid in resource.data.participants
                     && request.resource.data.diff(resource.data).affectedKeys()
@@ -194,13 +201,13 @@ service cloud.firestore {
                     && request.resource.data.foundConfirmedBy
                         .hasOnly(resource.data.participants)
                     && (
-                      (resource.data.participants[0] == request.auth.uid
+                      ((resource.data.participants[0] == request.auth.uid
                         ? resource.data.participants[1]
-                        : resource.data.participants[0]) in resource.data.foundConfirmedBy
+                        : resource.data.participants[0]) in resource.data.foundConfirmedBy)
                       ==
-                      (resource.data.participants[0] == request.auth.uid
+                      ((resource.data.participants[0] == request.auth.uid
                         ? resource.data.participants[1]
-                        : resource.data.participants[0]) in request.resource.data.foundConfirmedBy
+                        : resource.data.participants[0]) in request.resource.data.foundConfirmedBy)
                     );
 
       allow delete: if false;
@@ -272,6 +279,46 @@ service cloud.firestore {
                       && get(/databases/$(database)/documents/meetups/$(meetupId))
                          .data.status == 'continued_private'
                       && request.resource.data.uid == request.auth.uid;
+
+        allow update, delete: if false;
+      }
+
+      // ── Finding-phase chat messages ────────────────────────────────────────
+      // Lightweight chat scoped to the 'finding' phase so the two participants
+      // can coordinate meeting up in person.  The subcollection lives under
+      // the meetup, so it is automatically participant-gated and dies with
+      // the meetup (no separate cleanup required).
+      //
+      // Schema: meetups/{meetupId}/findingMessages/{messageId}
+      //   senderId  : String  — must equal the caller's UID
+      //   text      : String  (1..500 chars)
+      //   createdAt : Timestamp (serverTimestamp)
+      //
+      // Constraints:
+      //   - Caller must be a participant of the parent meetup.
+      //   - Read is allowed in any meetup phase (so the cancellee/timed-out
+      //     panels can still show context) but writes require status=='finding'
+      //     so chat naturally closes when the phase advances/terminates.
+      //   - Messages are immutable once written.
+      match /findingMessages/{messageId} {
+
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/meetups/$(meetupId))
+                       .data.participants;
+
+        allow create: if request.auth != null
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.participants
+                      && get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.status == 'finding'
+                      && request.resource.data.senderId == request.auth.uid
+                      && request.resource.data.keys().hasAll(
+                           ['senderId', 'text', 'createdAt'])
+                      && request.resource.data.text is string
+                      && request.resource.data.text.size() > 0
+                      && request.resource.data.text.size() <= 500;
 
         allow update, delete: if false;
       }
