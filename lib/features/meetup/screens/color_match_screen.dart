@@ -681,7 +681,6 @@ class _DecisionOverlay extends StatelessWidget {
                             otherFirstName: otherFirstName,
                           )
                         : _DecisionPrompt(
-                            otherFirstName: otherFirstName,
                             isSubmitting: isSubmitting,
                             onPass: onPass,
                             onStayInTouch: onStayInTouch,
@@ -699,13 +698,11 @@ class _DecisionOverlay extends StatelessWidget {
 
 class _DecisionPrompt extends StatelessWidget {
   const _DecisionPrompt({
-    required this.otherFirstName,
     required this.isSubmitting,
     required this.onPass,
     required this.onStayInTouch,
   });
 
-  final String otherFirstName;
   final bool isSubmitting;
   final VoidCallback onPass;
   final VoidCallback onStayInTouch;
@@ -716,13 +713,13 @@ class _DecisionPrompt extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Text(
-          'Did the ice break?',
+          'How did it go?',
           style: AppTextStyles.h2,
           textAlign: TextAlign.center,
         ),
         const SizedBox(height: 8),
         Text(
-          'Your answer is private — $otherFirstName will never see it.',
+          "Stay in touch only sticks if you're both in.",
           style: AppTextStyles.bodyS.copyWith(
             color: Colors.white.withValues(alpha: 0.78),
           ),
