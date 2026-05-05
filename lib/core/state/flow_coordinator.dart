@@ -113,7 +113,10 @@ class FlowCoordinator extends ChangeNotifier {
   ///
   ///   finding                     → /meetup/matched/{id}      (find each other)
   ///   talking                     → /meetup/color-match/{id}  (in conversation)
-  ///   awaiting_post_talk_decision → /meetup/post-meet/{id}    (yes/no decision)
+  ///   awaiting_post_talk_decision → /meetup/color-match/{id}  (frosted-glass
+  ///                                                            decision overlay
+  ///                                                            on top of the
+  ///                                                            talk screen)
   ///
   /// Terminal statuses (matched / no_match / ended / expired_finding /
   /// cancelled_finding) cause the [onMeetupTerminal] CF to clear
@@ -145,9 +148,12 @@ class FlowCoordinator extends ChangeNotifier {
         case 'finding':
           return '${AppRoutes.matched}/$meetupId';
         case 'talking':
-          return '${AppRoutes.colorMatch}/$meetupId';
         case 'awaiting_post_talk_decision':
-          return '${AppRoutes.postMeet}/$meetupId';
+          // The talk screen owns the decision phase too — it renders the
+          // frosted-glass "Pass / Stay in touch" overlay over the (still-
+          // visible) photo pair so the moment of choosing stays visually
+          // anchored to the person you just talked to.
+          return '${AppRoutes.colorMatch}/$meetupId';
       }
       // Status null (initial snapshot) or any other value (terminal that the
       // CF hasn't yet cleared, or an unknown transition state) — fall through
