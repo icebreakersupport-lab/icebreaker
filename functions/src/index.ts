@@ -9,6 +9,35 @@ initializeApp();
 
 const db = getFirestore();
 
+const MEETUP_MATCH_COLOR_HEXES = [
+  '#FF073A', // neon red
+  '#1F51FF', // neon blue
+  '#FF6E00', // neon orange
+  '#FFEE00', // neon yellow
+  '#BF00FF', // neon purple
+  '#39FF14', // neon green
+] as const;
+
+function chooseMeetupMatchColorHex(seed: string): string {
+  let hash = 0;
+  for (let i = 0; i < seed.length; i += 1) {
+    hash = (hash * 31 + seed.charCodeAt(i)) >>> 0;
+  }
+  return MEETUP_MATCH_COLOR_HEXES[hash % MEETUP_MATCH_COLOR_HEXES.length];
+}
+
+function pickMeetupRenderPhoto(
+  liveSessionData: FirebaseFirestore.DocumentData | undefined,
+  profileData: FirebaseFirestore.DocumentData | undefined,
+): string {
+  const liveSelfieUrl = liveSessionData?.liveSelfieUrl;
+  if (typeof liveSelfieUrl === 'string' && liveSelfieUrl.trim().length > 0) {
+    return liveSelfieUrl;
+  }
+  const profilePhotoUrl = profileData?.primaryPhotoUrl;
+  return typeof profilePhotoUrl === 'string' ? profilePhotoUrl : '';
+}
+
 /**
  * Mutual unlock: create the conversation when both meetup participants
  * submit a "we_got_this" post-meet decision.
@@ -367,6 +396,8 @@ export const onNewChatMessage = onDocumentCreated(
 // ── Meetup / Icebreaker state-machine constants ────────────────────────────────
 
 const FIND_TIMER_SECONDS = 300; // 5 min — mirrors AppConstants.findTimerSeconds
+const TALK_TIMER_SECONDS = 600; // 10 min — mirrors AppConstants.conversationTimerSeconds
+const DECISION_WINDOW_SECONDS = 300; // 5 min grace for both users to submit a post-meet decision
 const FREE_ICEBREAKER_CREDITS = 3; // mirrors AppConstants.freeIcebreakerCreditsPerSignup
 
 /**
@@ -375,11 +406,13 @@ const FREE_ICEBREAKER_CREDITS = 3; // mirrors AppConstants.freeIcebreakerCredits
  * users.{uid}.currentMeetupId on both participants so they become eligible
  * for Nearby discovery again.
  *
- *   matched           — both swiped we_got_this; conversation now exists.
- *   ended             — explicit end via endRequests (continued_private exit).
- *   no_match          — at least one swiped nice_meeting_you.
- *   expired_finding   — find-timer elapsed without both confirming.
- *   cancelled_finding — a participant tapped back during finding and confirmed.
+ *   matched            — both swiped we_got_this; conversation now exists.
+ *   ended              — explicit end via endRequests (continued_private exit).
+ *   no_match           — at least one swiped nice_meeting_you, OR the
+ *                        decision window elapsed without both deciding.
+ *   expired_finding    — find-timer elapsed without both confirming.
+ *   cancelled_finding  — a participant tapped exit during finding and confirmed.
+ *   cancelled_talking  — a participant tapped exit during talking and confirmed.
  */
 const TERMINAL_MEETUP_STATUSES: ReadonlySet<string> = new Set([
   'matched',
@@ -387,6 +420,7 @@ const TERMINAL_MEETUP_STATUSES: ReadonlySet<string> = new Set([
   'no_match',
   'expired_finding',
   'cancelled_finding',
+  'cancelled_talking',
 ]);
 
 /**
@@ -406,13 +440,16 @@ const TERMINAL_MEETUP_STATUSES: ReadonlySet<string> = new Set([
  *      AND now < expiresAt.
  *   2. Read recipient users/{uid}; apply 24-h credit reset window if expired,
  *      then assert credits > 0.  Throws 'no-credits' otherwise.
- *   3. Read sender + recipient profiles/{uid} for participantPhotos snapshot.
+ *   3. Read sender + recipient live_sessions/{uid} + profiles/{uid} and
+ *      snapshot the meetup-render photo for each participant. Prefer the
+ *      active GO LIVE verification selfie; fall back to primary profile
+ *      photo if the session selfie is missing.
  *   4. Decrement recipient.icebreakerCredits.
  *   5. Create meetups/{auto-id} with status='finding', foundConfirmedBy=[],
  *      participants=[senderId, recipientId], participantNames/Photos
- *      denormalised.  findExpiresAt is stamped by [onMeetupCreated], not
- *      here, so the timer starts on the trigger-fired write rather than the
- *      transaction commit.
+ *      denormalised, and a shared meetup matchColorHex. findExpiresAt is
+ *      stamped by [onMeetupCreated], not here, so the timer starts on the
+ *      trigger-fired write rather than the transaction commit.
  *   6. Flip icebreaker to status='accepted' with meetupId.
  *
  * Decline path is the same shape minus the meetup + credit work — just a
@@ -463,6 +500,12 @@ export const respondToIcebreaker = onCall(async (request) => {
   const meetupRef = db.collection('meetups').doc();
   const meetupId = meetupRef.id;
 
+  // Captured inside the transaction and returned to the client so the
+  // recipient's in-memory LiveSession can mirror the new balance + reset
+  // window without a second Firestore read.
+  let returnedCredits = 0;
+  let returnedResetAtMs: number | null = null;
+
   await db.runTransaction(async (tx) => {
     // ── 1. Icebreaker assertions ──────────────────────────────────────────────
     const ibSnap = await tx.get(icebreakerRef);
@@ -503,21 +546,35 @@ export const respondToIcebreaker = onCall(async (request) => {
         ? Timestamp.fromMillis(nowMs + 24 * 3600 * 1000)
         : storedResetAt;
 
-    // ── 3. Profile photos for both participants ───────────────────────────────
-    const [senderProfileSnap, recipientProfileSnap] = await Promise.all([
+    // ── 3. Meetup-render photos + shared color ────────────────────────────────
+    const [
+      senderProfileSnap,
+      recipientProfileSnap,
+      senderLiveSessionSnap,
+      recipientLiveSessionSnap,
+    ] = await Promise.all([
       tx.get(db.collection('profiles').doc(senderId)),
       tx.get(db.collection('profiles').doc(uid)),
+      tx.get(db.collection('live_sessions').doc(senderId)),
+      tx.get(db.collection('live_sessions').doc(uid)),
     ]);
-    const senderPhotoUrl =
-      (senderProfileSnap.data()?.primaryPhotoUrl as string | undefined) ?? '';
-    const recipientPhotoUrl =
-      (recipientProfileSnap.data()?.primaryPhotoUrl as string | undefined) ?? '';
+    const senderPhotoUrl = pickMeetupRenderPhoto(
+      senderLiveSessionSnap.data(),
+      senderProfileSnap.data(),
+    );
+    const recipientPhotoUrl = pickMeetupRenderPhoto(
+      recipientLiveSessionSnap.data(),
+      recipientProfileSnap.data(),
+    );
+    const matchColorHex = chooseMeetupMatchColorHex(meetupId);
 
     // ── 4. Writes ─────────────────────────────────────────────────────────────
     tx.update(recipientRef, {
       icebreakerCredits: newCredits,
       icebreakerCreditsResetAt: newResetAt,
     });
+    returnedCredits = newCredits;
+    returnedResetAtMs = newResetAt.toMillis();
 
     tx.set(meetupRef, {
       participants: [senderId, uid],
@@ -529,6 +586,7 @@ export const respondToIcebreaker = onCall(async (request) => {
         [senderId]: senderPhotoUrl,
         [uid]: recipientPhotoUrl,
       },
+      matchColorHex,
       foundConfirmedBy: [],
       status: 'finding',
       icebreakerId: icebreakerId,
@@ -545,7 +603,15 @@ export const respondToIcebreaker = onCall(async (request) => {
   });
 
   console.log(`[icebreaker-respond] ${icebreakerId} accepted by ${uid} → meetup ${meetupId}`);
-  return { ok: true, action: 'accepted', meetupId };
+  return {
+    ok: true,
+    action: 'accepted',
+    meetupId,
+    // Authoritative post-decrement balance + window so the client mirror
+    // (LiveSession.icebreakerCredits) stays in sync with Firestore.
+    icebreakerCredits: returnedCredits,
+    icebreakerCreditsResetAtMs: returnedResetAtMs,
+  };
 });
 
 /**
@@ -661,15 +727,18 @@ export const onMeetupTerminal = onDocumentWritten(
 );
 
 /**
- * onFindingCancelRequestCreated — flips a 'finding' meetup to
- * 'cancelled_finding' on the first cancelRequests subdoc.  Mirrors the
- * existing onEndRequestCreated pattern but for an earlier phase.
+ * onMeetupCancelRequestCreated — flips an active meetup to a phase-specific
+ * cancelled_* terminal on the first cancelRequests subdoc.  Mirrors the
+ * existing onEndRequestCreated pattern but covers both pre-talk phases:
  *
- * The status==='finding' guard is required because the cancelRequests rule
- * only permits creation when status=='finding', but races (a second user
- * tapping cancel just after the schedule has flipped to expired_finding) can
- * still slip an extra subdoc through if the rule's get() reads stale state.
- * Idempotency falls out of the guard.
+ *   finding → cancelled_finding   (exit before either user confirmed)
+ *   talking → cancelled_talking   (exit during the 10-min talk timer)
+ *
+ * The phase guard is required because the cancelRequests rule only permits
+ * creation while status is in ['finding', 'talking'], but races (a second
+ * user tapping exit just after the schedule has flipped the meetup forward)
+ * can still slip an extra subdoc through if the rule's get() reads stale
+ * state.  Idempotency falls out of the guard.
  */
 export const onFindingCancelRequestCreated = onDocumentCreated(
   'meetups/{meetupId}/cancelRequests/{uid}',
@@ -680,18 +749,20 @@ export const onFindingCancelRequestCreated = onDocumentCreated(
     const snap = await meetupRef.get();
     if (!snap.exists) return;
     const status = snap.data()?.status as string | undefined;
-    if (status !== 'finding') {
+    if (status !== 'finding' && status !== 'talking') {
       console.log(
         `[meetup-cancel] ${meetupId}: already ${status} — ignoring cancel from ${uid}`,
       );
       return;
     }
+    const newStatus =
+      status === 'finding' ? 'cancelled_finding' : 'cancelled_talking';
     await meetupRef.update({
-      status: 'cancelled_finding',
+      status: newStatus,
       concludedAt: FieldValue.serverTimestamp(),
       cancelledBy: uid,
     });
-    console.log(`[meetup-cancel] ${meetupId} → cancelled_finding by ${uid}`);
+    console.log(`[meetup-cancel] ${meetupId} → ${newStatus} by ${uid}`);
   },
 );
 
@@ -727,3 +798,162 @@ export const onMeetupFindingExpired = onSchedule('every 1 minutes', async () => 
   await writer.close();
   console.log(`[meetup-expire] expired ${snap.size} finding meetup(s)`);
 });
+
+/**
+ * onMeetupFoundConfirmed — flips a 'finding' meetup to 'talking' once both
+ * participants have appeared in foundConfirmedBy.  This is the missing
+ * server-owned transition that the firestore.rules state-machine documentation
+ * (finding → talking → awaiting_post_talk_decision) already assumes exists;
+ * without it the meetup stays in 'finding' forever, currentMeetupId never
+ * clears, and both users remain hidden from Nearby for the lifetime of the
+ * find timer.
+ *
+ * Trigger semantics:
+ *   • onDocumentWritten on `meetups/{id}` so we react to the foundConfirmedBy
+ *     arrayUnion writes from each participant — there is no parent-doc trigger
+ *     scoped to "field changed", so we filter inside the body.
+ *   • Acts only when after.status === 'finding' AND both participants are in
+ *     foundConfirmedBy.  Re-fires on any subsequent write are filtered by the
+ *     status guard (after the first flip the status is 'talking', so we early
+ *     return without doing further work).
+ *
+ * Race safety:
+ *   • The actual flip runs inside a transaction that re-reads status and
+ *     re-checks both UIDs.  Two concurrent invocations (one per
+ *     foundConfirmedBy write, fired in lock-step on the same write) both read
+ *     status==='finding' and try to commit; Firestore optimistic locking lets
+ *     exactly one win.  The loser sees status==='talking' on retry and
+ *     returns without writing.
+ *
+ * talkExpiresAt is stamped here so the conversation timer starts at the
+ * trigger-fired write rather than at the originating arrayUnion — keeps both
+ * clients' countdowns identical.
+ */
+export const onMeetupFoundConfirmed = onDocumentWritten(
+  'meetups/{meetupId}',
+  async (event) => {
+    const after = event.data?.after.data();
+    if (!after) return;
+    if (after.status !== 'finding') return;
+
+    const participants = (after.participants as string[] | undefined) ?? [];
+    if (participants.length !== 2) return;
+
+    const confirmed = (after.foundConfirmedBy as string[] | undefined) ?? [];
+    const bothConfirmed = participants.every((p) => confirmed.includes(p));
+    if (!bothConfirmed) return;
+
+    const meetupId = event.params.meetupId;
+    const meetupRef = db.collection('meetups').doc(meetupId);
+
+    await db.runTransaction(async (tx) => {
+      const snap = await tx.get(meetupRef);
+      if (!snap.exists) return;
+      const data = snap.data()!;
+      // Re-check inside the transaction so two concurrent invocations that
+      // both saw status==='finding' do not both flip — the loser reads
+      // 'talking' here and exits.
+      if (data.status !== 'finding') return;
+      const cBy = (data.foundConfirmedBy as string[] | undefined) ?? [];
+      if (!participants.every((p) => cBy.includes(p))) return;
+
+      const talkExpiresAt = Timestamp.fromMillis(
+        Date.now() + TALK_TIMER_SECONDS * 1000,
+      );
+      tx.update(meetupRef, {
+        status: 'talking',
+        talkExpiresAt,
+        talkingStartedAt: FieldValue.serverTimestamp(),
+      });
+    });
+
+    console.log(`[meetup-found] ${meetupId} → talking`);
+  },
+);
+
+/**
+ * onMeetupTalkExpired — flips 'talking' meetups to 'awaiting_post_talk_decision'
+ * once talkExpiresAt has passed, stamping decisionExpiresAt so the decision
+ * window is itself bounded.
+ *
+ * This is the only path that lets clients submit decisions: firestore.rules
+ * gates `meetups/{id}/decisions/{uid}` create on
+ * status === 'awaiting_post_talk_decision', so any flip earlier or later is
+ * an attempt that the rule would reject.  By owning the transition here we
+ * keep the client's PostMeetScreen purely reactive (stream meetup status,
+ * submit when status flips into the decision window).
+ *
+ * Latency: scheduled on a 1-min tick so a single user closing their app
+ * doesn't strand the other in 'talking'.  Bounded above by `limit(100)` per
+ * run to keep the function fast; subsequent runs drain any backlog.
+ */
+export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
+  const now = Timestamp.now();
+  const snap = await db
+    .collection('meetups')
+    .where('status', '==', 'talking')
+    .where('talkExpiresAt', '<=', now)
+    .limit(100)
+    .get();
+  if (snap.empty) return;
+  const writer = db.bulkWriter();
+  const decisionExpiresAt = Timestamp.fromMillis(
+    Date.now() + DECISION_WINDOW_SECONDS * 1000,
+  );
+  for (const doc of snap.docs) {
+    writer.update(doc.ref, {
+      status: 'awaiting_post_talk_decision',
+      decisionExpiresAt,
+      talkEndedAt: FieldValue.serverTimestamp(),
+    });
+  }
+  await writer.close();
+  console.log(
+    `[meetup-talk-expired] flipped ${snap.size} meetup(s) → awaiting_post_talk_decision`,
+  );
+});
+
+/**
+ * onMeetupDecisionExpired — guarantees a meetup never stalls in
+ * 'awaiting_post_talk_decision' if one or both users never submit.
+ *
+ * Without this, a user who never opens the post-meet screen would leave the
+ * other in a permanently-hidden state (currentMeetupId never clears, and
+ * therefore live_sessions.visibilityState stays 'hidden_in_meetup'). This
+ * was the literal failure mode the original "both phones live but Nearby is
+ * empty" report described, just one phase further along the state machine
+ * than the foundConfirmed gap was.
+ *
+ * Treats decision-window expiry as no_match: the user who DID submit
+ * 'we_got_this' would have wanted a chat to open, but only opens with
+ * mutual yes — and the ghosting peer didn't deliver one.  Folding into
+ * no_match keeps TERMINAL_MEETUP_STATUSES tight and reuses the existing
+ * onMeetupTerminal cascade (currentMeetupId clear → discoverable).
+ *
+ * `expiredReason` is left as a breadcrumb for telemetry; clients ignore it.
+ */
+export const onMeetupDecisionExpired = onSchedule(
+  'every 1 minutes',
+  async () => {
+    const now = Timestamp.now();
+    const snap = await db
+      .collection('meetups')
+      .where('status', '==', 'awaiting_post_talk_decision')
+      .where('decisionExpiresAt', '<=', now)
+      .limit(100)
+      .get();
+    if (snap.empty) return;
+    const writer = db.bulkWriter();
+    for (const doc of snap.docs) {
+      writer.update(doc.ref, {
+        status: 'no_match',
+        concludedAt: FieldValue.serverTimestamp(),
+        expiredReason: 'decision_window_elapsed',
+      });
+    }
+    await writer.close();
+    console.log(
+      `[meetup-decision-expired] flipped ${snap.size} meetup(s) → no_match`,
+    );
+  },
+);

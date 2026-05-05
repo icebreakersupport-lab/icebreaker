@@ -323,13 +323,14 @@ service cloud.firestore {
         allow update, delete: if false;
       }
 
-      // ── Cancel requests (finding-phase only) ───────────────────────────────
+      // ── Cancel requests (finding & talking phases) ─────────────────────────
       // Either participant may cancel the meetup while it is still in the
-      // 'finding' phase (they tapped "back" on the MatchedScreen and confirmed
-      // exit).  The onFindingCancelRequestCreated Cloud Function picks up the
-      // first write and flips the meetup to 'cancelled_finding', which then
-      // cascades through onMeetupTerminal to clear currentMeetupId on both
-      // users and release them back to Nearby.
+      // 'finding' or 'talking' phase (they tapped the X on MatchedScreen or
+      // ColorMatchScreen and confirmed exit).  The onMeetupCancelRequestCreated
+      // Cloud Function picks up the first write and flips the meetup to
+      // 'cancelled_finding' or 'cancelled_talking' depending on the source
+      // status, which then cascades through onMeetupTerminal to clear
+      // currentMeetupId on both users and release them back to Nearby.
       //
       // Schema: meetups/{meetupId}/cancelRequests/{uid}
       //   uid         : String — the requester's own UID (= doc ID)
@@ -338,9 +339,8 @@ service cloud.firestore {
       // Constraints:
       //   - Doc ID must equal caller UID (prevents impersonation).
       //   - Caller must be a participant.
-      //   - Meetup must currently be in 'finding' — once both users tap "I
-      //     found them" the meetup advances to 'talking', after which exit
-      //     paths are decisions/end-requests, not cancel.
+      //   - Meetup must currently be in 'finding' OR 'talking' — once the
+      //     decision phase opens, exit paths are decisions/end-requests.
       //   - Immutable once written.
       match /cancelRequests/{uid} {
 
@@ -355,7 +355,7 @@ service cloud.firestore {
                          get(/databases/$(database)/documents/meetups/$(meetupId))
                          .data.participants
                       && get(/databases/$(database)/documents/meetups/$(meetupId))
-                         .data.status == 'finding'
+                         .data.status in ['finding', 'talking']
                       && request.resource.data.uid == request.auth.uid;
 
         allow update, delete: if false;
