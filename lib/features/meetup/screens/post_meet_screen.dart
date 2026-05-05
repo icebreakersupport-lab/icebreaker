@@ -1,6 +1,9 @@
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
-import '../../../core/constants/app_constants.dart';
+
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -8,147 +11,275 @@ import '../../../shared/widgets/pill_button.dart';
 
 /// Post-meet decision screen — the connection check.
 ///
-/// Layout (from slide 11):
-///   - "Did you feel a connection?" header
-///   - Large profile photo of the other user
-///   - YES / NO decision buttons (large, side-by-side)
-///   - If already submitted: waiting state shown
+/// Server-driven lifecycle:
+///   • Entered when [onMeetupTalkExpired] flips the meetup status from
+///     'talking' to 'awaiting_post_talk_decision' and stamps
+///     `decisionExpiresAt`.  FlowCoordinator routes both participants here.
+///   • Submitting a decision creates `meetups/{id}/decisions/{uid}` with
+///     `{ uid, decision, createdAt }`.  Firestore rules gate the write on
+///     status === 'awaiting_post_talk_decision' so submissions can only
+///     land in this phase.
+///   • [onMeetupDecisionWritten] picks up the second decision and either
+///     creates the conversation + flips status to 'matched' (mutual
+///     'we_got_this') or flips to 'no_match' (any 'nice_meeting_you').
+///   • [onMeetupDecisionExpired] flips abandoned meetups to 'no_match'
+///     after `decisionExpiresAt` so neither user is stranded waiting on
+///     a peer who never opened this screen.
+///   • All terminal statuses cascade through [onMeetupTerminal] which
+///     clears `currentMeetupId`; FlowCoordinator's redirect then releases
+///     us to Nearby.
+///
+/// Path-parameterised on `meetupId` so a cold-launch redirect can route
+/// into this screen using nothing more than `users/{uid}.currentMeetupId`.
 class PostMeetScreen extends StatefulWidget {
   const PostMeetScreen({
     super.key,
     required this.meetupId,
-    required this.matchColor,
-    required this.otherFirstName,
-    required this.otherPhotoUrl,
   });
 
   final String meetupId;
-  final Color matchColor;
-  final String otherFirstName;
-  final String otherPhotoUrl;
 
   @override
   State<PostMeetScreen> createState() => _PostMeetScreenState();
 }
 
 class _PostMeetScreenState extends State<PostMeetScreen> {
-  String? _myDecision; // 'we_got_this' | 'nice_meeting_you'
-  bool _isSubmitting = false;
-  bool _isWaiting = false;
+  /// Hard-coded match accent — same as MatchedScreen / ColorMatchScreen.
+  /// Will live on the meetup doc once match-color lands.
+  static const Color _matchColor = Color(0xFFFF6B9D);
 
-  Future<void> _submit(String decision) async {
-    setState(() => _isSubmitting = true);
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-    setState(() {
-      _isSubmitting = false;
-      _myDecision = decision;
-      _isWaiting = true;
-    });
-    if (decision == 'we_got_this') {
-      // Demo: simulate the other person also saying yes, then unlock chat.
-      await Future.delayed(const Duration(seconds: 2));
-      if (!mounted) return;
-      context.push(AppRoutes.matchConfirmed, extra: {
-        'conversationId': 'demo_conv_${widget.meetupId}',
-        'otherFirstName': widget.otherFirstName,
-        'otherPhotoUrl': widget.otherPhotoUrl,
-        'matchColor': widget.matchColor,
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _meetupSub;
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _myDecisionSub;
+
+  Map<String, dynamic>? _meetupData;
+
+  /// My submitted decision, or null if I haven't submitted yet.  Sourced
+  /// from `meetups/{id}/decisions/{myUid}` so the screen survives a cold
+  /// restart mid-decision-window without losing my choice.
+  String? _myDecision;
+
+  bool _loading = true;
+  bool _isSubmitting = false;
+  String? _error;
+
+  String? get _myUid => FirebaseAuth.instance.currentUser?.uid;
+
+  @override
+  void initState() {
+    super.initState();
+    final ref = FirebaseFirestore.instance
+        .collection('meetups')
+        .doc(widget.meetupId);
+
+    _meetupSub = ref.snapshots().listen(
+      (snap) {
+        if (!mounted) return;
+        setState(() {
+          _meetupData = snap.data();
+          _loading = false;
+          _error = snap.exists ? null : 'Meetup not found.';
+        });
+      },
+      onError: (Object e) {
+        if (!mounted) return;
+        setState(() {
+          _loading = false;
+          _error = 'Could not load meetup.';
+        });
+      },
+    );
+
+    final uid = _myUid;
+    if (uid != null) {
+      _myDecisionSub =
+          ref.collection('decisions').doc(uid).snapshots().listen((snap) {
+        if (!mounted) return;
+        setState(() {
+          _myDecision = snap.data()?['decision'] as String?;
+        });
       });
     }
   }
 
   @override
+  void dispose() {
+    _meetupSub?.cancel();
+    _myDecisionSub?.cancel();
+    super.dispose();
+  }
+
+  // ── Derived state ─────────────────────────────────────────────────────────
+
+  String? get _otherUid {
+    final ps = List<String>.from(
+        (_meetupData?['participants'] as List<dynamic>?) ?? const []);
+    return ps.firstWhere((p) => p != _myUid, orElse: () => '');
+  }
+
+  String get _otherFirstName {
+    final names =
+        (_meetupData?['participantNames'] as Map<String, dynamic>?) ?? {};
+    return (names[_otherUid] as String?) ?? 'Them';
+  }
+
+  String get _otherPhotoUrl {
+    final photos =
+        (_meetupData?['participantPhotos'] as Map<String, dynamic>?) ?? {};
+    return (photos[_otherUid] as String?) ?? '';
+  }
+
+  // ── Actions ────────────────────────────────────────────────────────────────
+
+  /// Writes `meetups/{id}/decisions/{myUid}`.  Firestore rules enforce that
+  /// status === 'awaiting_post_talk_decision' and the doc id matches the
+  /// caller's uid, so this is the entire client side of the decision
+  /// pipeline; everything downstream is server-owned.
+  Future<void> _submit(String decision) async {
+    final uid = _myUid;
+    if (uid == null || _isSubmitting || _myDecision != null) return;
+    setState(() => _isSubmitting = true);
+    try {
+      await FirebaseFirestore.instance
+          .collection('meetups')
+          .doc(widget.meetupId)
+          .collection('decisions')
+          .doc(uid)
+          .set({
+        'uid': uid,
+        'decision': decision,
+        'createdAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not submit — try again.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+    // No client-side navigation.  When both decisions land or the decision
+    // window expires, the meetup hits a terminal status, currentMeetupId
+    // clears, and FlowCoordinator's redirect releases us to Nearby.
+  }
+
+  // ── Build ──────────────────────────────────────────────────────────────────
+
+  @override
   Widget build(BuildContext context) {
     final h = MediaQuery.of(context).size.height;
-    // Avatar scales with screen height; clamped so it stays usable on all sizes.
     final avatarRadius = (h * 0.11).clamp(56.0, 80.0);
 
-    // Back navigation is blocked while the user still needs to make their
-    // decision (_isWaiting == false).  Once submitted (_isWaiting == true)
-    // back is allowed — in a real build the screen auto-advances on the
-    // server response; in the demo this prevents a dead-end.
+    // Back navigation blocked: the decision phase is owned by the server.
+    // Once the user submits, they must wait for the other participant or
+    // for the decision-window expiry — both terminal paths release them
+    // automatically via FlowCoordinator.
     return PopScope(
-      canPop: _isWaiting,
+      canPop: false,
       child: GradientScaffold(
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 32),
-          child: Column(
-            children: [
-              const SizedBox(height: 32),
-
-              Text(
-                'Did you feel a connection?',
-                style: AppTextStyles.h2,
-                textAlign: TextAlign.center,
-              ),
-
-              const SizedBox(height: 8),
-
-              Text(
-                'Your answer is private.\n${widget.otherFirstName} will never see your choice.',
-                style: AppTextStyles.bodyS,
-                textAlign: TextAlign.center,
-              ),
-
-              const SizedBox(height: 40),
-
-              // Profile photo (large, centred)
-              Container(
-                padding: const EdgeInsets.all(4),
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: LinearGradient(
-                    colors: [
-                      widget.matchColor,
-                      widget.matchColor.withValues(alpha: 0.6),
-                    ],
-                  ),
-                ),
-                child: CircleAvatar(
-                  radius: avatarRadius,
-                  backgroundColor: AppColors.bgElevated,
-                  backgroundImage: widget.otherPhotoUrl.isNotEmpty
-                      ? NetworkImage(widget.otherPhotoUrl)
-                      : null,
-                  child: widget.otherPhotoUrl.isEmpty
-                      ? Text(
-                          widget.otherFirstName.isNotEmpty
-                              ? widget.otherFirstName[0].toUpperCase()
-                              : '?',
-                          style: AppTextStyles.display
-                              .copyWith(color: AppColors.textSecondary),
-                        )
-                      : null,
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              Text(widget.otherFirstName, style: AppTextStyles.h2),
-
-              const Spacer(),
-
-              if (_isWaiting)
-                _WaitingState(
-                  decision: _myDecision!,
-                  otherFirstName: widget.otherFirstName,
-                  onDone: () => context.go(AppRoutes.messages),
-                )
-              else
-                _DecisionButtons(
-                  isSubmitting: _isSubmitting,
-                  onYes: () => _submit('we_got_this'),
-                  onNo: () => _submit('nice_meeting_you'),
-                ),
-
-              const SizedBox(height: 40),
-            ],
-          ),
+        body: SafeArea(
+          child: _loading
+              ? const Center(child: CircularProgressIndicator())
+              : _error != null
+                  ? Center(
+                      child: Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Text(
+                          _error!,
+                          style: AppTextStyles.bodyS,
+                          textAlign: TextAlign.center,
+                        ),
+                      ),
+                    )
+                  : _buildContent(avatarRadius),
         ),
       ),
-    ));
+    );
+  }
+
+  Widget _buildContent(double avatarRadius) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 32),
+      child: Column(
+        children: [
+          const SizedBox(height: 32),
+          Text(
+            'Did you feel a connection?',
+            style: AppTextStyles.h2,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Your answer is private.\n$_otherFirstName will never see your choice.',
+            style: AppTextStyles.bodyS,
+            textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 40),
+          _Avatar(
+            url: _otherPhotoUrl,
+            firstName: _otherFirstName,
+            radius: avatarRadius,
+            matchColor: _matchColor,
+          ),
+          const SizedBox(height: 16),
+          Text(_otherFirstName, style: AppTextStyles.h2),
+          const Spacer(),
+          if (_myDecision != null)
+            _WaitingState(
+              decision: _myDecision!,
+              otherFirstName: _otherFirstName,
+            )
+          else
+            _DecisionButtons(
+              isSubmitting: _isSubmitting,
+              onYes: () => _submit('we_got_this'),
+              onNo: () => _submit('nice_meeting_you'),
+            ),
+          const SizedBox(height: 40),
+        ],
+      ),
+    );
+  }
+}
+
+class _Avatar extends StatelessWidget {
+  const _Avatar({
+    required this.url,
+    required this.firstName,
+    required this.radius,
+    required this.matchColor,
+  });
+
+  final String url;
+  final String firstName;
+  final double radius;
+  final Color matchColor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: LinearGradient(
+          colors: [
+            matchColor,
+            matchColor.withValues(alpha: 0.6),
+          ],
+        ),
+      ),
+      child: CircleAvatar(
+        radius: radius,
+        backgroundColor: AppColors.bgElevated,
+        backgroundImage: url.isNotEmpty ? NetworkImage(url) : null,
+        child: url.isEmpty
+            ? Text(
+                firstName.isNotEmpty ? firstName[0].toUpperCase() : '?',
+                style: AppTextStyles.display
+                    .copyWith(color: AppColors.textSecondary),
+              )
+            : null,
+      ),
+    );
   }
 }
 
@@ -177,7 +308,7 @@ class _DecisionButtons extends StatelessWidget {
           children: [
             Expanded(
               child: PillButton.danger(
-                label: 'Nice meeting you 👋',
+                label: 'Pass',
                 onTap: isSubmitting ? null : onNo,
                 height: 64,
               ),
@@ -185,7 +316,7 @@ class _DecisionButtons extends StatelessWidget {
             const SizedBox(width: 16),
             Expanded(
               child: PillButton.success(
-                label: 'We got this! 🔥',
+                label: 'Stay in touch',
                 onTap: isSubmitting ? null : onYes,
                 isLoading: isSubmitting,
                 height: 64,
@@ -202,12 +333,10 @@ class _WaitingState extends StatelessWidget {
   const _WaitingState({
     required this.decision,
     required this.otherFirstName,
-    this.onDone,
   });
 
   final String decision;
   final String otherFirstName;
-  final VoidCallback? onDone;
 
   @override
   Widget build(BuildContext context) {
@@ -215,9 +344,7 @@ class _WaitingState extends StatelessWidget {
     return Column(
       children: [
         Icon(
-          choseYes
-              ? Icons.favorite_rounded
-              : Icons.waving_hand_rounded,
+          choseYes ? Icons.favorite_rounded : Icons.waving_hand_rounded,
           size: 48,
           color: choseYes ? AppColors.success : AppColors.textSecondary,
         ),
@@ -232,19 +359,11 @@ class _WaitingState extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           choseYes
-              ? 'If they feel the same, chat opens up!'
-              : 'Sometimes it\'s just not the moment.',
+              ? "If they're in too, you'll stay in touch."
+              : "We'll wrap things up here in a moment.",
           style: AppTextStyles.bodyS,
           textAlign: TextAlign.center,
         ),
-        if (!choseYes && onDone != null) ...[
-          const SizedBox(height: 24),
-          PillButton.outlined(
-            label: 'Back to Messages',
-            onTap: onDone,
-            width: double.infinity,
-          ),
-        ],
       ],
     );
   }
