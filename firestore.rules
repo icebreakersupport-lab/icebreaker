@@ -360,6 +360,39 @@ service cloud.firestore {
 
         allow update, delete: if false;
       }
+
+      // ── Talk-expired requests ─────────────────────────────────────────────
+      // Either client writes its own subdoc the moment its local talk timer
+      // hits 0.  onTalkExpiredRequestCreated picks up the first one and flips
+      // the meetup to 'awaiting_post_talk_decision' immediately, eliminating
+      // the up-to-60s lag that the scheduled onMeetupTalkExpired would
+      // otherwise impose between local 0:00 and the user being able to
+      // submit a decision.  Status guard keeps the request inert during any
+      // other phase (the scheduler still runs as a backstop).
+      //
+      // Constraints:
+      //   - Doc ID must equal caller UID (prevents impersonation).
+      //   - Caller must be a participant.
+      //   - Meetup must currently be in 'talking'.
+      //   - Immutable once written.
+      match /talkExpiredRequests/{uid} {
+
+        allow read: if request.auth != null
+                    && request.auth.uid in
+                       get(/databases/$(database)/documents/meetups/$(meetupId))
+                       .data.participants;
+
+        allow create: if request.auth != null
+                      && request.auth.uid == uid
+                      && request.auth.uid in
+                         get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.participants
+                      && get(/databases/$(database)/documents/meetups/$(meetupId))
+                         .data.status == 'talking'
+                      && request.resource.data.uid == request.auth.uid;
+
+        allow update, delete: if false;
+      }
     }
 
     // ── Conversations ─────────────────────────────────────────────────────────

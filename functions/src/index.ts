@@ -914,6 +914,68 @@ export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
 });
 
 /**
+ * onTalkExpiredRequestCreated — client-driven counterpart to the every-1-min
+ * onMeetupTalkExpired scheduler.  Either client writes a subdoc the moment
+ * its local talk timer hits 0; this trigger flips the meetup forward
+ * immediately so the user can submit a decision without waiting up to ~60 s
+ * for the next scheduler tick.
+ *
+ * Why both:
+ *   • The scheduler stays as the authoritative backstop — if both apps are
+ *     closed when the timer expires, we still flip the meetup forward and
+ *     onMeetupDecisionExpired can collapse it into 'no_match'.
+ *   • The trigger removes the dead-air spinner the user reported when they
+ *     tap a decision button at 0:00 and the rule denies the write because
+ *     status hasn't flipped yet.
+ *
+ * Idempotency: re-checks status === 'talking' inside the handler, so a
+ * second client's request after the first flip is a no-op.  Re-uses the
+ * same DECISION_WINDOW_SECONDS to stamp decisionExpiresAt so the decision
+ * window length is identical regardless of which path flipped the status.
+ *
+ * Defence in depth: also re-checks talkExpiresAt is in the past — guards
+ * against a client whose clock is far ahead of server time triggering an
+ * early flip.  A clock-drifted client will simply see its request go
+ * through ~no-op, and the scheduler will fire when the real moment lands.
+ */
+export const onTalkExpiredRequestCreated = onDocumentCreated(
+  'meetups/{meetupId}/talkExpiredRequests/{uid}',
+  async (event) => {
+    const meetupId = event.params.meetupId;
+    const uid = event.params.uid;
+    const meetupRef = db.collection('meetups').doc(meetupId);
+    const snap = await meetupRef.get();
+    if (!snap.exists) return;
+    const data = snap.data()!;
+    const status = data.status as string | undefined;
+    if (status !== 'talking') {
+      console.log(
+        `[meetup-talk-expired-req] ${meetupId}: already ${status} — ignoring from ${uid}`,
+      );
+      return;
+    }
+    const talkExpiresAt = data.talkExpiresAt as Timestamp | undefined;
+    if (talkExpiresAt && talkExpiresAt.toMillis() > Date.now()) {
+      console.log(
+        `[meetup-talk-expired-req] ${meetupId}: talkExpiresAt still in future — ignoring from ${uid}`,
+      );
+      return;
+    }
+    const decisionExpiresAt = Timestamp.fromMillis(
+      Date.now() + DECISION_WINDOW_SECONDS * 1000,
+    );
+    await meetupRef.update({
+      status: 'awaiting_post_talk_decision',
+      decisionExpiresAt,
+      talkEndedAt: FieldValue.serverTimestamp(),
+    });
+    console.log(
+      `[meetup-talk-expired-req] ${meetupId} → awaiting_post_talk_decision via ${uid}`,
+    );
+  },
+);
+
+/**
  * onMeetupDecisionExpired — guarantees a meetup never stalls in
  * 'awaiting_post_talk_decision' if one or both users never submit.
  *

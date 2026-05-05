@@ -321,6 +321,35 @@ class _ColorMatchScreenState extends State<ColorMatchScreen> {
     }
   }
 
+  /// Fired the moment our local talk timer ticks past 0 — writes
+  /// `talkExpiredRequests/{uid}` so onTalkExpiredRequestCreated can flip
+  /// status to 'awaiting_post_talk_decision' immediately rather than waiting
+  /// up to ~60 s for the next onMeetupTalkExpired scheduler tick.  The
+  /// scheduler is still authoritative if both clients are closed — this is
+  /// a fast-path that eliminates the dead-air window when the user taps
+  /// Pass / Stay in touch the instant the overlay appears.
+  bool _talkExpiredRequestSent = false;
+  Future<void> _bestEffortTalkExpiredRequest() async {
+    if (_talkExpiredRequestSent) return;
+    final uid = _myUid;
+    if (uid == null) return;
+    _talkExpiredRequestSent = true;
+    try {
+      await FirebaseFirestore.instance
+          .collection('meetups')
+          .doc(widget.meetupId)
+          .collection('talkExpiredRequests')
+          .doc(uid)
+          .set({
+        'uid': uid,
+        'requestedAt': FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      debugPrint(
+          '[ColorMatchScreen] talk-expired request best-effort write failed: $e');
+    }
+  }
+
   // ── Decision flow ─────────────────────────────────────────────────────────
 
   /// Writes `meetups/{id}/decisions/{myUid}`.  Firestore rules enforce that
@@ -469,6 +498,7 @@ class _ColorMatchScreenState extends State<ColorMatchScreen> {
                   onTimerExpired: () {
                     if (!mounted || _localTimerExpired) return;
                     setState(() => _localTimerExpired = true);
+                    unawaited(_bestEffortTalkExpiredRequest());
                   },
                 ),
               ),
