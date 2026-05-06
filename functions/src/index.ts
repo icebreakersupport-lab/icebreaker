@@ -146,12 +146,36 @@ export const onMeetupDecisionWritten = onDocumentWritten(
       meetupId: meetupId,
     });
 
+    // ── 6. Write the permanent match record ─────────────────────────────────
+    // `matches/{meetupId}` is an immutable snapshot of the moment of matching:
+    // participants, names, photos, and the match colour as they were when the
+    // ice broke.  Unlike `conversations` (which mutates on every chat message
+    // and can flip to status='blocked'), this doc is a permanent ledger of
+    // "these two users matched on this date."  Useful for analytics, profile
+    // showcases, and any future feature that needs match history regardless
+    // of the chat's current state.
+    //
+    // We reach this block only on the first run-through (the convSnap.exists
+    // guard above bails on subsequent fires), so a single set() is safe and
+    // idempotent in practice.
+    const matchRef = db.collection('matches').doc(meetupId);
+    await matchRef.set({
+      participants: [uid1, uid2],
+      participantNames: names,
+      participantPhotos: photos,
+      matchColorHex: (meetup.matchColorHex as string | undefined) ?? '',
+      matchedAt: FieldValue.serverTimestamp(),
+      meetupId: meetupId,
+      conversationId: meetupId,
+      sourceIcebreakerId: meetup.icebreakerId ?? '',
+    });
+
     // Mark the meetup as matched.
     await meetupRef
       .update({ status: 'matched', matchedAt: FieldValue.serverTimestamp() })
       .catch((err) => console.error('[unlock] meetup status update failed:', err));
 
-    console.log(`[unlock] conversation created for meetup ${meetupId}`);
+    console.log(`[unlock] conversation + match record created for meetup ${meetupId}`);
   },
 );
 

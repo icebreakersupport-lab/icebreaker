@@ -459,6 +459,26 @@ service cloud.firestore {
       }
     }
 
+    // ── Matches (permanent ledger) ───────────────────────────────────────────
+    // Immutable record of every meetup that ended in mutual 'we_got_this'.
+    // Written exclusively by onMeetupDecisionWritten alongside the conversation
+    // doc.  Distinct from `conversations` because conversations mutate on
+    // every chat message (and can flip to status='blocked'), whereas a match
+    // record is the frozen snapshot of "these two users matched at this
+    // moment" — useful for analytics, profile showcases, or any feature
+    // that needs match history independent of the chat's current state.
+    //
+    // No client write path of any kind.
+    match /matches/{matchId} {
+
+      // Read: only listed participants.
+      allow read: if request.auth != null
+                  && request.auth.uid in resource.data.participants;
+
+      // All writes are server-only (admin SDK bypasses these rules).
+      allow create, update, delete: if false;
+    }
+
     // ── Live sessions ─────────────────────────────────────────────────────────
     // One active-or-terminal session doc per user, keyed by uid.  Structurally
     // enforces the "one active session per user" invariant — you cannot have
