@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import '../../features/messages/screens/icebreaker_waiting_screen.dart';
 import '../../features/shell/main_shell.dart';
 import '../../features/home/screens/home_screen.dart';
 import '../../features/home/screens/live_verification_screen.dart';
@@ -31,11 +32,13 @@ import '../../features/onboarding/screens/onboarding_orientation_screen.dart';
 import '../../features/onboarding/screens/onboarding_photo_screen.dart';
 import '../../features/onboarding/screens/onboarding_slideshow_screen.dart';
 import '../../features/onboarding/screens/welcome_screen.dart';
+import '../../features/startup/screens/app_loading_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../../features/settings/screens/blocked_users_screen.dart';
 import '../../features/settings/screens/reporting_and_blocking_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../constants/app_constants.dart';
+import '../state/flow_coordinator.dart';
 
 /// Icebreaker app router using go_router.
 ///
@@ -55,7 +58,8 @@ import '../constants/app_constants.dart';
 // Routes that unauthenticated users may visit, AND that signed-in users who
 // are still setting up their profile may also visit without being bounced home.
 const _authRoutes = {
-  AppRoutes.splash, // '/' — welcome screen
+  AppRoutes.splash, // '/' — branded loading screen, resolves destination itself
+  AppRoutes.welcome,
   AppRoutes.signIn,
   AppRoutes.signUp,
   AppRoutes.verifyPhone,
@@ -69,32 +73,120 @@ const _authRoutes = {
   AppRoutes.onboardingSlideshow,
 };
 
-final GoRouter appRouter = GoRouter(
-  initialLocation: AppRoutes.splash,
+// Explicit navigator split:
+// - root navigator owns all full-screen routes that must cover the shell
+// - shell navigator owns the 4 persistent-tab destinations only
+//
+// Without this, routes like /icebreaker-waiting/:id can be
+// vulnerable to being presented within the shell stack, which leaves the
+// bottom nav visible under screens that are meant to hard-lock the user.
+final _rootNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'root');
+final _shellNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'shell');
+
+/// Builds the app router with a caller-supplied initial location.
+///
+/// Constructed once per [IcebreakerApp] instance.  Lifting initialLocation
+/// out of a top-level `final` lets [BootstrapRoot] resolve the destination
+/// (welcome / home / onboarding) up front and feed it directly into the
+/// router, so the user never sees the [AppLoadingScreen] fallback at `/`
+/// on a normal cold launch — the router opens at the resolved destination.
+///
+/// [flowCoordinator] drives the icebreaker/meetup flow lock.  Wired via
+/// `refreshListenable` + the redirect closure: when [FlowCoordinator.targetRoute]
+/// is non-null, every navigation is forced to that path until the underlying
+/// state changes.  Passing it in (rather than using a top-level singleton)
+/// keeps the router pure and testable.
+GoRouter buildAppRouter({
+  String initialLocation = AppRoutes.splash,
+  required FlowCoordinator flowCoordinator,
+  }) {
+  return GoRouter(
+  navigatorKey: _rootNavigatorKey,
+  initialLocation: initialLocation,
   debugLogDiagnostics: false,
+  refreshListenable: flowCoordinator,
   redirect: (context, state) {
     final user = FirebaseAuth.instance.currentUser;
     final loc = state.matchedLocation;
     final isOnAuthRoute = _authRoutes.contains(loc);
 
+    // Unauthenticated user on a protected screen → send to sign-in.
+    // Done before the flow-coordinator check because a signed-out user
+    // shouldn't have any FlowCoordinator state anyway, but if there's a
+    // race between sign-out and the coordinator's auth-state listener we
+    // still want auth gating to win.
+    if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
+
+    // Flow-lock redirect.  When an outgoing icebreaker is pending OR the
+    // user is in a finding-phase meetup, force them to the corresponding
+    // screen.  The check sits before the welcome→home bounce so a forced
+    // wait/match destination wins on cold start too.
+    final flowTarget = flowCoordinator.targetRoute;
+    if (flowTarget != null && loc != flowTarget) {
+      // The wait screen lives at /icebreaker-waiting/{id}; the
+      // matched screen under /meetup/matched/{id}.  Both are leaf paths,
+      // not prefixes — exact-match comparison is sufficient.
+      return flowTarget;
+    }
+    // Flow-lock RELEASE.  The redirect closure is the only authority that
+    // moves users between locked screens, so it's also responsible for
+    // moving them OFF a locked screen once the lock clears.  Without this
+    // branch, a user whose meetup terminated (matched / no_match / expired)
+    // would be stuck on the now-stale finding / talking / decision screen
+    // until they manually navigated.  All four locked routes are path-
+    // parameterised, so we match by prefix; the trailing slash guards
+    // against a hypothetical future route that shares the prefix (e.g.
+    // `/meetup/matched-something`).
+    if (flowTarget == null) {
+      final isOnWait = loc.startsWith('${AppRoutes.icebreakerWaiting}/');
+      final isOnMatched = loc.startsWith('${AppRoutes.matched}/');
+      final isOnColorMatch = loc.startsWith('${AppRoutes.colorMatch}/');
+      final isOnPostMeet = loc.startsWith('${AppRoutes.postMeet}/');
+      // Sender wait release goes Home — declined/expired icebreakers leave
+      // the sender with no in-flight match, and Home is the natural "what
+      // do I want to do next" surface. An optimistic local coordinator lock
+      // is seeded before the initial navigation to /icebreaker-waiting/{id},
+      // so this branch only handles genuine stale/terminal wait routes now.
+      if (isOnWait) {
+        return AppRoutes.home;
+      }
+      // Find-timer (matched) release goes Home: a confirmed user-cancel or
+      // a no-find timeout on the 5-minute meet-up timer is a clean exit
+      // with no in-flight match, so Home is the natural "what next" surface
+      // — same shape as the sender-wait release above.
+      if (isOnMatched) {
+        return AppRoutes.home;
+      }
+      // Color-match / post-meet releases land on Home so the user comes
+      // back to the central "what now" surface still Live (the live session
+      // isn't ended by the meetup flow).  On mutual we_got_this the
+      // conversation already exists in Messages for them to discover at
+      // their own pace.
+      if (isOnColorMatch || isOnPostMeet) {
+        return AppRoutes.home;
+      }
+    }
+
     // Signed-in user on the welcome screen or pure-auth screens → send to home.
     // Onboarding screens are intentionally reachable by signed-in users who
     // haven't completed their profile yet.
+    //
+    // AppRoutes.splash is intentionally NOT in this set — the loading screen
+    // resolves its own destination (home / welcome / onboarding-name) based on
+    // auth + profile state, so we let it render even for signed-in users.
     const signInOnlyRoutes = {
-      AppRoutes.splash,
+      AppRoutes.welcome,
       AppRoutes.signIn,
       AppRoutes.signUp,
     };
     if (user != null && signInOnlyRoutes.contains(loc)) return AppRoutes.home;
-
-    // Unauthenticated user on a protected screen → send to sign-in.
-    if (user == null && !isOnAuthRoute) return AppRoutes.signIn;
 
     return null; // no redirect needed
   },
   routes: [
     // ── Main shell with persistent bottom nav ──────────────────────────────
     ShellRoute(
+      navigatorKey: _shellNavigatorKey,
       builder: (context, state, child) => MainShell(child: child),
       routes: [
         GoRoute(
@@ -123,6 +215,7 @@ final GoRouter appRouter = GoRouter(
     // ── Send Icebreaker (pushed over nearby) ──────────────────────────────
     GoRoute(
       path: AppRoutes.sendIcebreaker,
+      parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>;
         return SendIcebreakerScreen(
@@ -138,6 +231,7 @@ final GoRouter appRouter = GoRouter(
     // ── Icebreaker received ────────────────────────────────────────────────
     GoRoute(
       path: AppRoutes.icebreakerReceived,
+      parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
         final extra = state.extra as Map<String, dynamic>;
         return IcebreakerReceivedScreen(
@@ -154,57 +248,65 @@ final GoRouter appRouter = GoRouter(
     ),
 
     // ── Meetup: Finding ───────────────────────────────────────────────────
+    // Path-parameterised on meetupId so the FlowCoordinator redirect can
+    // route into this screen with nothing more than the id from
+    // users/{uid}.currentMeetupId.  The screen self-derives all rendering
+    // data from the meetup doc via a Firestore stream — no extras.
     GoRoute(
-      path: AppRoutes.matched,
+      path: '${AppRoutes.matched}/:meetupId',
+      parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>;
-        return MatchedScreen(
-          meetupId: extra['meetupId'] as String,
-          matchColor: extra['matchColor'] as Color,
-          otherFirstName: extra['otherFirstName'] as String,
-          otherPhotoUrl: extra['otherPhotoUrl'] as String,
-          myFirstName: extra['myFirstName'] as String,
-          myPhotoUrl: extra['myPhotoUrl'] as String,
-          findSecondsRemaining: extra['findSecondsRemaining'] as int,
-        );
+        final meetupId = state.pathParameters['meetupId']!;
+        return MatchedScreen(meetupId: meetupId);
       },
     ),
 
-    // ── Meetup: In Conversation ───────────────────────────────────────────
+    // ── Sender wait screen (forced lock while icebreaker is pending) ──────
     GoRoute(
-      path: AppRoutes.colorMatch,
+      path: '${AppRoutes.icebreakerWaiting}/:icebreakerId',
+      parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>;
-        return ColorMatchScreen(
-          meetupId: extra['meetupId'] as String,
-          matchColor: extra['matchColor'] as Color,
-          otherFirstName: extra['otherFirstName'] as String,
-          otherPhotoUrl: extra['otherPhotoUrl'] as String,
-          myFirstName: extra['myFirstName'] as String,
-          myPhotoUrl: extra['myPhotoUrl'] as String,
-          conversationSecondsRemaining:
-              extra['conversationSecondsRemaining'] as int,
-        );
+        final icebreakerId = state.pathParameters['icebreakerId']!;
+        return IcebreakerWaitingScreen(icebreakerId: icebreakerId);
       },
     ),
 
-    // ── Meetup: Post Meet ─────────────────────────────────────────────────
+    // ── Meetup: In Conversation (talking phase) ───────────────────────────
+    // Path-parameterised so the FlowCoordinator redirect can route into this
+    // screen using only `users/{uid}.currentMeetupId`.  The screen self-
+    // derives all rendering data from the meetup doc via a Firestore stream.
     GoRoute(
-      path: AppRoutes.postMeet,
+      path: '${AppRoutes.colorMatch}/:meetupId',
+      parentNavigatorKey: _rootNavigatorKey,
       builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>;
-        return PostMeetScreen(
-          meetupId: extra['meetupId'] as String,
-          matchColor: extra['matchColor'] as Color,
-          otherFirstName: extra['otherFirstName'] as String,
-          otherPhotoUrl: extra['otherPhotoUrl'] as String,
-        );
+        final meetupId = state.pathParameters['meetupId']!;
+        return ColorMatchScreen(meetupId: meetupId);
       },
     ),
 
-    // ── Welcome (cold launch) ─────────────────────────────────────────────
+    // ── Meetup: Post Meet (decision phase) ────────────────────────────────
+    GoRoute(
+      path: '${AppRoutes.postMeet}/:meetupId',
+      parentNavigatorKey: _rootNavigatorKey,
+      builder: (context, state) {
+        final meetupId = state.pathParameters['meetupId']!;
+        return PostMeetScreen(meetupId: meetupId);
+      },
+    ),
+
+    // ── Splash: branded loading screen (cold launch) ──────────────────────
+    // Mounted at '/'. Resolves auth + profile state and forwards to
+    // welcome / home / onboarding. Replaces the previous WelcomeScreen-at-root
+    // behavior so cold launches show the heartbeat brand mark instead of the
+    // full welcome layout flashing in.
     GoRoute(
       path: AppRoutes.splash,
+      builder: (context, state) => const AppLoadingScreen(),
+    ),
+
+    // ── Welcome (signed-out marketing entry) ──────────────────────────────
+    GoRoute(
+      path: AppRoutes.welcome,
       builder: (context, state) => const WelcomeScreen(),
     ),
 
@@ -356,4 +458,5 @@ final GoRouter appRouter = GoRouter(
       builder: (context, state) => const ReportingAndBlockingScreen(),
     ),
   ],
-);
+  );
+}

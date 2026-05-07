@@ -359,6 +359,14 @@ class _ColorMatchScreenState extends State<ColorMatchScreen> {
   /// by the rule.  We retry up to 4 times spaced 1.5 s apart so the user
   /// never sees the rule lag — by the second attempt the server scheduler
   /// has almost always caught up.
+  ///
+  /// On success we treat the user as "done with this meetup" from their
+  /// perspective: suppress the FlowCoordinator lock for this id, clear our
+  /// own `users.currentMeetupId` so the LiveSession mirror flips visibility
+  /// back to `discoverable`, and navigate Home.  The other participant's
+  /// decision can still finalise the meetup in the background — they'll
+  /// either get a conversation in Messages (mutual we_got_this) or nothing
+  /// (any nice_meeting_you).
   Future<void> _submit(String decision) async {
     final uid = _myUid;
     if (uid == null || _isSubmitting || _myDecision != null) return;
@@ -377,6 +385,7 @@ class _ColorMatchScreenState extends State<ColorMatchScreen> {
           'createdAt': FieldValue.serverTimestamp(),
         });
         if (mounted) setState(() => _isSubmitting = false);
+        _releaseToHomeAfterDecision(uid);
         return;
       } catch (e) {
         lastError = e.toString();
@@ -393,6 +402,23 @@ class _ColorMatchScreenState extends State<ColorMatchScreen> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Could not submit — try again.')),
     );
+  }
+
+  /// Suppresses the matched-screen flow lock for this meetup, clears my
+  /// `users.currentMeetupId` so the LiveSession mirror writes
+  /// `discoverable`, and navigates Home.  Mirrors the cancel path's
+  /// `suppress + optimistic clear + go home` shape — the only difference is
+  /// no cancelRequests write, since we're exiting through a successful
+  /// decision submit, not an explicit cancel.
+  void _releaseToHomeAfterDecision(String uid) {
+    if (!mounted) return;
+    debugPrint(
+        '[ColorMatchScreen] decision submitted — suppress + clear + go home');
+    FlowCoordinatorScope.of(context)
+        .suppressMatchedLockForTimedOutExit(meetupId: widget.meetupId);
+    unawaited(_optimisticClearMyCurrentMeetupId(uid));
+    if (!mounted) return;
+    context.go(AppRoutes.home);
   }
 
   // ── Build ──────────────────────────────────────────────────────────────────

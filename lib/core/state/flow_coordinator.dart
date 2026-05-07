@@ -134,14 +134,19 @@ class FlowCoordinator extends ChangeNotifier {
 
     final meetupId = _currentMeetupId;
     if (meetupId != null) {
-      // A user-explicit exit during finding OR talking suppresses the lock for
-      // that meetup id until the cleanup CF clears currentMeetupId.  The
-      // suppress flag is phase-agnostic on purpose: the exit flow (cancel
-      // confirmation + best-effort cancelRequest write) is identical in both
-      // phases, and the user has already chosen to leave by the time it's set.
+      // A user-explicit exit during finding, talking, OR
+      // awaiting_post_talk_decision suppresses the lock for that meetup id
+      // until the cleanup CF clears currentMeetupId.  The suppress flag is
+      // phase-agnostic on purpose: the exit flow (cancel confirmation, or
+      // tapping Pass / Stay in touch on the decision overlay) ends the user's
+      // engagement with this meetup, and the user has already chosen to leave
+      // by the time it's set.  Without covering the decision phase, a Pass /
+      // Stay-in-touch tap would route the user back to /meetup/color-match/
+      // {id} until onMeetupTerminal lands, even though they're done.
       if (_suppressedMatchedMeetupId == meetupId &&
           (_currentMeetupStatus == 'finding' ||
-              _currentMeetupStatus == 'talking')) {
+              _currentMeetupStatus == 'talking' ||
+              _currentMeetupStatus == 'awaiting_post_talk_decision')) {
         return null;
       }
       switch (_currentMeetupStatus) {
@@ -465,13 +470,14 @@ class FlowCoordinator extends ChangeNotifier {
     final suppressed = _suppressedMatchedMeetupId;
     if (suppressed == null) return false;
     // Keep the suppress active while the user is still in the same meetup AND
-    // we're in a phase where they can hit exit (finding or talking).  Any
-    // other phase (awaiting_post_talk_decision, terminal, or no meetup at all)
-    // means the natural lifecycle has moved past the cancel window, so the
+    // we're in an active phase (finding, talking, or awaiting_post_talk_
+    // decision).  Once the meetup hits a terminal status the cleanup CF will
+    // clear currentMeetupId and the natural unlock takes over, so the
     // override is no longer load-bearing.
     if (_currentMeetupId == suppressed &&
         (_currentMeetupStatus == 'finding' ||
-            _currentMeetupStatus == 'talking')) {
+            _currentMeetupStatus == 'talking' ||
+            _currentMeetupStatus == 'awaiting_post_talk_decision')) {
       return false;
     }
     _suppressedMatchedMeetupId = null;
