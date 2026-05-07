@@ -1,9 +1,12 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/profile_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -15,8 +18,8 @@ import '../../../shared/widgets/pill_button.dart';
 ///   1. Identity       — name, age
 ///   2. Photos & Media — quick links to GalleryScreen
 ///   3. Bio            — 150-char text field with live counter
-///   4. Interests      — toggleable chip picker (min 3)
-///   5. Hobbies        — toggleable chip picker (min 2)
+///   4. Interests      — toggleable chip picker (min 1)
+///   5. Hobbies        — toggleable chip picker (min 1)
 ///   6. Dating Prefs   — looking for, interested in, age range slider
 ///   7. Profile Details — occupation, height
 ///
@@ -44,7 +47,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   final _prefsKey = GlobalKey();
   final _detailsKey = GlobalKey();
 
-  // Text controllers — initialised from DemoProfile in didChangeDependencies
+  // Text controllers — initialised from UserProfile in didChangeDependencies
   final TextEditingController _nameCtrl = TextEditingController();
   final TextEditingController _ageCtrl = TextEditingController();
   final TextEditingController _bioCtrl = TextEditingController();
@@ -56,9 +59,14 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
   Set<String> _selectedHobbies = {};
 
   // Dating preference state
-  String _lookingFor = 'Casual dating';
-  String _interestedIn = 'Women';
+  String _lookingFor = '';
+  // Canonical lowercase code: 'everyone' | 'men' | 'women' | 'non_binary'.
+  // UI renders via [UserProfile.interestedInLabel].
+  String _interestedIn = 'women';
   RangeValues _ageRange = const RangeValues(20, 35);
+
+  // Private discovery controls — written to users/{uid} only.
+  int _maxDistanceMeters = 30;
 
   // Fades the section highlight out after 3 s
   String? _highlightedSection;
@@ -78,15 +86,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     _initialized = true;
 
     // Seed form fields from the shared profile state (runs before first build).
-    final p = DemoProfileScope.of(context);
+    final p = UserProfileScope.of(context);
     _nameCtrl.text = p.firstName;
-    _ageCtrl.text = p.age.toString();
+    _ageCtrl.text = p.age > 0 ? p.age.toString() : '';
     _bioCtrl.text = p.bio;
     _occupationCtrl.text = p.occupation;
     _heightCtrl.text = p.height;
     _lookingFor = p.lookingFor;
     _interestedIn = p.interestedIn;
     _ageRange = p.ageRange;
+    _maxDistanceMeters = p.maxDistanceMeters;
     _selectedInterests = Set.from(p.interests);
     _selectedHobbies = Set.from(p.hobbies);
 
@@ -130,23 +139,121 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
       _isHighlighted('photo_three') ||
       _isHighlighted('video');
 
-  void _save() {
+  bool _isSaving = false;
+
+  Future<void> _save() async {
+    if (_isSaving) return;
     FocusScope.of(context).unfocus();
-    // Persist all text/chip/preference fields into the shared profile state.
+
+    // Persist all text/chip/preference fields into the shared profile state
+    // first — the in-memory write is the source of truth for the immediate
+    // UI on the way back to Profile, regardless of the Firestore outcome.
     final age = int.tryParse(_ageCtrl.text.trim()) ?? 0;
-    DemoProfileScope.of(context).saveTextFields(
-      firstName: _nameCtrl.text.trim(),
+    final firstName = _nameCtrl.text.trim();
+    final bio = _bioCtrl.text.trim();
+    final occupation = _occupationCtrl.text.trim();
+    final height = _heightCtrl.text.trim();
+
+    UserProfileScope.of(context).saveTextFields(
+      firstName: firstName,
       age: age,
-      bio: _bioCtrl.text.trim(),
-      occupation: _occupationCtrl.text.trim(),
-      height: _heightCtrl.text.trim(),
+      bio: bio,
+      occupation: occupation,
+      height: height,
       lookingFor: _lookingFor,
       interestedIn: _interestedIn,
       ageRange: _ageRange,
       interests: _selectedInterests,
       hobbies: _selectedHobbies,
+      maxDistanceMeters: _maxDistanceMeters,
     );
-    Navigator.of(context).pop();
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      // Not signed in — nothing to persist canonically.  Pop with the
+      // in-memory edits applied (the demo / signed-out path).
+      if (mounted) Navigator.of(context).pop();
+      return;
+    }
+
+    setState(() => _isSaving = true);
+    try {
+      // Dual-write to both surfaces in parallel.  `profiles/{uid}` is the
+      // canonical public surface (Profile screen, Nearby cards, future
+      // readers); `users/{uid}` is the legacy mirror that several readers
+      // still hit directly (BootstrapRoot's profileComplete gate, the
+      // discovery rule's permitted-field set, and any messages /
+      // icebreaker headers that haven't migrated yet).  Both must land
+      // for an edit to be observed everywhere.
+      //
+      // Awaited so a Firestore rejection (rules deploy missing, network
+      // drop, quota) surfaces to the user as a SnackBar instead of
+      // silently leaving one of the two surfaces out of sync.  The
+      // in-memory `UserProfile.saveTextFields` call above already
+      // landed, so the user still sees their edits even if this throws.
+      // `maxDistanceMeters` is a private discovery control — kept on
+      // users/{uid} only, never mirrored to the public profiles/{uid}
+      // surface (see ProfileRepository).
+      final usersPayload = <String, dynamic>{
+        'firstName': firstName,
+        'age': age,
+        'bio': bio,
+        'occupation': occupation,
+        'height': height,
+        'lookingFor': _lookingFor,
+        'interestedIn': _interestedIn,
+        'ageRangeMin': _ageRange.start.round(),
+        'ageRangeMax': _ageRange.end.round(),
+        'interests': _selectedInterests.toList(),
+        'hobbies': _selectedHobbies.toList(),
+        'maxDistanceMeters': _maxDistanceMeters,
+      };
+      await Future.wait([
+        FirebaseFirestore.instance
+            .collection('users')
+            .doc(uid)
+            .set(usersPayload, SetOptions(merge: true)),
+        ProfileRepository().saveEditableFields(
+          uid: uid,
+          firstName: firstName,
+          age: age,
+          bio: bio,
+          occupation: occupation,
+          height: height,
+          lookingFor: _lookingFor,
+          interestedIn: _interestedIn,
+          ageRangeMin: _ageRange.start,
+          ageRangeMax: _ageRange.end,
+          interests: _selectedInterests,
+          hobbies: _selectedHobbies,
+        ),
+      ]);
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (e) {
+      debugPrint('[EditProfile] profiles/$uid write failed: $e');
+      if (!mounted) return;
+      setState(() => _isSaving = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "Couldn't save to the server. Your edits are still on this device — try again.",
+            style: AppTextStyles.bodyS.copyWith(color: Colors.white),
+          ),
+          backgroundColor: AppColors.bgElevated,
+          behavior: SnackBarBehavior.floating,
+          shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12)),
+          margin: const EdgeInsets.all(16),
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: 'Retry',
+            textColor: AppColors.brandCyan,
+            onPressed: _save,
+          ),
+        ),
+      );
+    }
   }
 
   @override
@@ -227,7 +334,16 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               child: _MediaSection(),
             ),
 
-            const SizedBox(height: 14),
+            const SizedBox(height: 22),
+
+            // ── About You zone header ────────────────────────────────────────
+            // Visually groups the Bio + Interests + Hobbies trio that powers
+            // the public About Me card.  Uses the same two-tone heading
+            // language so users feel the connection: "what I edit here is
+            // what shows up on my About Me."
+            const _AboutYouZoneHeader(),
+
+            const SizedBox(height: 12),
 
             // ── 3. Bio ───────────────────────────────────────────────────────
             _SectionCard(
@@ -246,7 +362,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             _SectionCard(
               key: _interestsKey,
               title: 'Interests',
-              subtitle: 'Pick at least 3 — shown on your profile card',
+              subtitle: 'Pick at least 1 — shown on your profile card',
               accent: AppColors.brandCyan,
               icon: Icons.tag_rounded,
               highlight: _isHighlighted('interests'),
@@ -258,7 +374,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   'Fitness', 'Gaming', 'Nature', 'Coffee', 'Wine',
                 ],
                 accent: AppColors.brandCyan,
-                minCount: 3,
+                minCount: 1,
                 onChanged: (tag, on) => setState(() {
                   if (on) { _selectedInterests.add(tag); }
                   else { _selectedInterests.remove(tag); }
@@ -272,7 +388,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             _SectionCard(
               key: _hobbiesKey,
               title: 'Hobbies',
-              subtitle: 'Pick at least 2 — great conversation starters',
+              subtitle: 'Pick at least 1 — great conversation starter',
               accent: AppColors.brandPurple,
               icon: Icons.emoji_emotions_rounded,
               highlight: _isHighlighted('hobbies'),
@@ -284,7 +400,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                   'Climbing', 'Swimming', 'Camping', 'Pottery',
                 ],
                 accent: AppColors.brandPurple,
-                minCount: 2,
+                minCount: 1,
                 onChanged: (tag, on) => setState(() {
                   if (on) { _selectedHobbies.add(tag); }
                   else { _selectedHobbies.remove(tag); }
@@ -306,10 +422,13 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 lookingFor: _lookingFor,
                 interestedIn: _interestedIn,
                 ageRange: _ageRange,
+                maxDistanceMeters: _maxDistanceMeters,
                 onLookingForChanged: (v) => setState(() => _lookingFor = v),
                 onInterestedInChanged: (v) =>
                     setState(() => _interestedIn = v),
                 onAgeRangeChanged: (v) => setState(() => _ageRange = v),
+                onMaxDistanceChanged: (v) =>
+                    setState(() => _maxDistanceMeters = v),
               ),
             ),
 
@@ -332,8 +451,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
             const SizedBox(height: 28),
 
             PillButton.primary(
-              label: 'Save Changes',
-              onTap: _save,
+              label: _isSaving ? 'Saving…' : 'Save Changes',
+              onTap: _isSaving ? () {} : _save,
               width: double.infinity,
             ),
           ],
@@ -358,11 +477,11 @@ class _FocusBanner extends StatelessWidget {
     ),
     'interests': (
       'Add interests',
-      'Scroll to Interests and pick at least 3 that fit you.',
+      'Scroll to Interests and pick at least 1 that fits you.',
     ),
     'hobbies': (
       'Add hobbies',
-      'Scroll to Hobbies and pick at least 2 to spark conversations.',
+      'Scroll to Hobbies and pick at least 1 to spark conversations.',
     ),
     'preferences': (
       'Set your preferences',
@@ -448,6 +567,108 @@ class _FocusBanner extends StatelessWidget {
                   ),
                 ),
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── About You zone header ─────────────────────────────────────────────────────
+
+/// Premium zone separator that introduces the Bio + Interests + Hobbies trio.
+///
+/// The same two-tone "About …" heading is used on the Profile-screen About Me
+/// card and the Nearby About Me card.  Re-using it here makes Edit Profile
+/// read as the *source* surface for that card rather than as a generic
+/// settings form: the section underneath is not "form fields" but
+/// "the words that appear on your profile."
+///
+/// Visually understated on purpose — it does not wrap the section cards in a
+/// new container (which would fight the existing per-section accent
+/// language), it just leads them with a branded label and a one-line caption.
+class _AboutYouZoneHeader extends StatelessWidget {
+  const _AboutYouZoneHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              // Two-tone heading — matches the About Me cards exactly so the
+              // visual language stays consistent across surfaces.
+              Text(
+                'About ',
+                style: AppTextStyles.h3.copyWith(color: AppColors.brandPink),
+              ),
+              Text(
+                'You',
+                style: AppTextStyles.h3.copyWith(color: AppColors.brandCyan),
+              ),
+              const Spacer(),
+              // Hint chip — quietly tells the user what these three sections
+              // feed into.  Cyan accent ties to the About Me card border.
+              Container(
+                padding: const EdgeInsets.symmetric(
+                    horizontal: 9, vertical: 4),
+                decoration: BoxDecoration(
+                  color: AppColors.brandCyan.withValues(alpha: 0.10),
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(
+                    color: AppColors.brandCyan.withValues(alpha: 0.30),
+                  ),
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.auto_awesome_rounded,
+                      size: 11,
+                      color: AppColors.brandCyan.withValues(alpha: 0.85),
+                    ),
+                    const SizedBox(width: 5),
+                    Text(
+                      'Powers your About Me',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.brandCyan,
+                        fontWeight: FontWeight.w700,
+                        fontSize: 10,
+                        letterSpacing: 0.4,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Your bio, interests, and hobbies show up on the card other '
+            'people see when they tap your profile.',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textSecondary,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 14),
+          // Subtle gradient hairline marking the start of the zone.  Same
+          // pink → cyan as the brand gradient, dimmed so it reads as a
+          // structural cue rather than decoration.
+          Container(
+            height: 1,
+            decoration: BoxDecoration(
+              gradient: LinearGradient(
+                colors: [
+                  AppColors.brandPink.withValues(alpha: 0.40),
+                  AppColors.brandCyan.withValues(alpha: 0.40),
+                ],
+              ),
             ),
           ),
         ],
@@ -838,7 +1059,7 @@ class _BioFieldState extends State<_BioField> {
           cursorColor: AppColors.brandPink,
           decoration: InputDecoration(
             hintText:
-                'I\'m an adventurous soul who loves exploring new places…',
+                'Open-book kind of person. Always down for a real conversation…',
             hintStyle: AppTextStyles.bodyS.copyWith(
               color: AppColors.textMuted,
               height: 1.65,
@@ -979,17 +1200,31 @@ class _PreferencesSection extends StatelessWidget {
     required this.lookingFor,
     required this.interestedIn,
     required this.ageRange,
+    required this.maxDistanceMeters,
     required this.onLookingForChanged,
     required this.onInterestedInChanged,
     required this.onAgeRangeChanged,
+    required this.onMaxDistanceChanged,
   });
 
   final String lookingFor;
   final String interestedIn;
   final RangeValues ageRange;
+  final int maxDistanceMeters;
   final ValueChanged<String> onLookingForChanged;
   final ValueChanged<String> onInterestedInChanged;
   final ValueChanged<RangeValues> onAgeRangeChanged;
+  final ValueChanged<int> onMaxDistanceChanged;
+
+  // Canonical interested-in options.  Keys are the lowercase codes written
+  // to Firestore; labels are the Title-case display strings.  Centralised
+  // here so a future change to the option set only touches one place.
+  static const _interestedInOptions = <({String value, String label})>[
+    (value: 'men', label: 'Men'),
+    (value: 'women', label: 'Women'),
+    (value: 'non_binary', label: 'Non-binary'),
+    (value: 'everyone', label: 'Everyone'),
+  ];
 
   @override
   Widget build(BuildContext context) {
@@ -1000,11 +1235,11 @@ class _PreferencesSection extends StatelessWidget {
           label: 'Looking for',
           value: lookingFor,
           options: const [
-            'Meet someone tonight',
-            'Casual dating',
-            'Serious dating',
-            'Open to anything',
-            'Friends / social',
+            (value: 'Meet someone tonight', label: 'Meet someone tonight'),
+            (value: 'Casual dating', label: 'Casual dating'),
+            (value: 'Serious dating', label: 'Serious dating'),
+            (value: 'Open to anything', label: 'Open to anything'),
+            (value: 'Friends / social', label: 'Friends / social'),
           ],
           onChanged: onLookingForChanged,
         ),
@@ -1012,7 +1247,7 @@ class _PreferencesSection extends StatelessWidget {
         _PrefRow(
           label: 'Interested in',
           value: interestedIn,
-          options: const ['Men', 'Women', 'Everyone'],
+          options: _interestedInOptions,
           onChanged: onInterestedInChanged,
         ),
         const SizedBox(height: 18),
@@ -1064,6 +1299,55 @@ class _PreferencesSection extends StatelessWidget {
                     .copyWith(color: AppColors.textMuted)),
           ],
         ),
+        const SizedBox(height: 18),
+        // Max distance — capped at 60 m to match the geohash precision used
+        // by the Nearby discovery query.  Snapshotted into the live session
+        // doc at Go Live and used by the Haversine distance gate.
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(
+              'Max distance',
+              style: AppTextStyles.bodyS
+                  .copyWith(color: AppColors.textSecondary),
+            ),
+            Text(
+              '$maxDistanceMeters m',
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 6),
+        SliderTheme(
+          data: SliderTheme.of(context).copyWith(
+            activeTrackColor: AppColors.brandPink,
+            inactiveTrackColor: AppColors.divider,
+            thumbColor: AppColors.brandPink,
+            overlayColor: AppColors.brandPink.withValues(alpha: 0.14),
+            trackHeight: 3,
+          ),
+          child: Slider(
+            value: maxDistanceMeters.toDouble().clamp(30, 60),
+            min: 30,
+            max: 60,
+            divisions: 30,
+            onChanged: (v) => onMaxDistanceChanged(v.round()),
+          ),
+        ),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text('30 m',
+                style: AppTextStyles.caption
+                    .copyWith(color: AppColors.textMuted)),
+            Text('60 m',
+                style: AppTextStyles.caption
+                    .copyWith(color: AppColors.textMuted)),
+          ],
+        ),
       ],
     );
   }
@@ -1078,8 +1362,11 @@ class _PrefRow extends StatelessWidget {
   });
 
   final String label;
+  /// Canonical value (the field that's persisted) — e.g. `'women'`.  The
+  /// dropdown surfaces the matching `label` from [options] for the visible
+  /// row, so the on-disk lowercase code never appears in UI.
   final String value;
-  final List<String> options;
+  final List<({String value, String label})> options;
   final ValueChanged<String> onChanged;
 
   @override
@@ -1143,9 +1430,19 @@ class _PrefDropdown extends StatelessWidget {
   });
 
   final String value;
-  final List<String> options;
+  final List<({String value, String label})> options;
   final String label;
   final ValueChanged<String> onChanged;
+
+  String _displayLabel() {
+    if (value.trim().isEmpty) return 'Select an option';
+    for (final o in options) {
+      if (o.value == value) return o.label;
+    }
+    // Unknown stored value — surface the raw code so the user can spot the
+    // mismatch in QA rather than silently pretending it matched.
+    return value;
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1179,7 +1476,7 @@ class _PrefDropdown extends StatelessWidget {
           children: [
             Flexible(
               child: Text(
-                value,
+                _displayLabel(),
                 style: AppTextStyles.bodyS
                     .copyWith(color: AppColors.textPrimary),
                 overflow: TextOverflow.ellipsis,
@@ -1204,7 +1501,10 @@ class _PickerSheet extends StatelessWidget {
   });
 
   final String title;
-  final List<String> options;
+  final List<({String value, String label})> options;
+  /// The currently selected canonical value — compared against `option.value`
+  /// to mark the active row.  The sheet returns the chosen option's `value`
+  /// so callers persist the canonical code, not the display label.
   final String selected;
 
   @override
@@ -1239,12 +1539,12 @@ class _PickerSheet extends StatelessWidget {
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
                   children: options.map((opt) {
-                    final isSel = opt == selected;
+                    final isSel = opt.value == selected;
                     return ListTile(
                       contentPadding:
                           const EdgeInsets.symmetric(horizontal: 24),
                       title: Text(
-                        opt,
+                        opt.label,
                         style: AppTextStyles.body.copyWith(
                           color: isSel
                               ? AppColors.brandPink
@@ -1258,7 +1558,7 @@ class _PickerSheet extends StatelessWidget {
                           ? const Icon(Icons.check_rounded,
                               color: AppColors.brandPink)
                           : null,
-                      onTap: () => Navigator.of(context).pop(opt),
+                      onTap: () => Navigator.of(context).pop(opt.value),
                     );
                   }).toList(),
                 ),
@@ -1290,7 +1590,7 @@ class _DetailsSection extends StatelessWidget {
         _LabeledField(
           label: 'Occupation',
           ctrl: occupationCtrl,
-          hint: 'e.g. Software Engineer',
+          hint: 'e.g. Developer',
         ),
         const SizedBox(height: 14),
         _LabeledField(

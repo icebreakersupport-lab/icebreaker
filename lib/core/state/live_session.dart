@@ -11,7 +11,7 @@ import '../models/live_session_model.dart';
 import '../services/live_session_media_repository.dart';
 import '../services/live_session_repository.dart';
 import '../services/location_service.dart';
-import 'demo_profile.dart';
+import 'user_profile.dart';
 
 /// In-memory live-presence state, backed by `live_sessions/{uid}` in Firestore.
 ///
@@ -695,24 +695,22 @@ class LiveSession extends ChangeNotifier {
     // presence of an id.  `_meetupStatusSub` is null when either we just
     // (re)attached to a different meetup id or we never had one — both
     // cases need a fresh subscription.
-    if (_meetupStatusSub == null) {
-      _meetupStatusSub = FirebaseFirestore.instance
-          .collection('meetups')
-          .doc(newMeetupId)
-          .snapshots()
-          .listen((mSnap) {
-        final status = mSnap.data()?['status'] as String?;
-        _onMeetupStatusTick(
-          uid: uid,
-          meetupId: newMeetupId,
-          status: status,
-          exists: mSnap.exists,
-        );
-      }, onError: (Object e) {
-        debugPrint('[LiveSession/mirror] meetup-status stream error '
-            '(meetupId=$newMeetupId): $e');
-      });
-    }
+    _meetupStatusSub ??= FirebaseFirestore.instance
+        .collection('meetups')
+        .doc(newMeetupId)
+        .snapshots()
+        .listen((mSnap) {
+      final status = mSnap.data()?['status'] as String?;
+      _onMeetupStatusTick(
+        uid: uid,
+        meetupId: newMeetupId,
+        status: status,
+        exists: mSnap.exists,
+      );
+    }, onError: (Object e) {
+      debugPrint('[LiveSession/mirror] meetup-status stream error '
+          '(meetupId=$newMeetupId): $e');
+    });
   }
 
   void _onMeetupStatusTick({
@@ -1050,7 +1048,7 @@ class LiveSession extends ChangeNotifier {
   ///     `users/{uid}` — they are not on the public profile by design.
   ///
   /// `interestedIn` value is normalised through
-  /// [DemoProfile.interestedInToCanonical] so the snapshot is canonical
+  /// [UserProfile.interestedInToCanonical] so the snapshot is canonical
   /// lowercase regardless of which legacy field name (interestedIn / showMe /
   /// openTo) or casing the source doc carried.  A read failure on either doc
   /// produces the documented defaults rather than aborting Go Live.
@@ -1075,7 +1073,7 @@ class LiveSession extends ChangeNotifier {
           userData['openTo'],
         ]) {
           if (candidate is String && candidate.isNotEmpty) {
-            return DemoProfile.interestedInToCanonical(candidate);
+            return UserProfile.interestedInToCanonical(candidate);
           }
         }
         return 'everyone';

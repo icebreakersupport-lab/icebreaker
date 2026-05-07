@@ -1,17 +1,17 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../core/models/profile_completion.dart';
+import '../../../shared/widgets/about_tags_column.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
+import '../../../shared/widgets/live_selfie_circle_image.dart';
 
-/// Profile tab — shows live demo profile state persisted via [DemoProfileScope].
+/// Profile tab — shows live demo profile state persisted via [UserProfileScope].
 ///
 /// Layout (top → bottom):
 ///   AppBar (Profile title + settings icon)
@@ -29,11 +29,14 @@ class ProfileScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
-    final profile = DemoProfileScope.of(context);
+    final profile = UserProfileScope.of(context);
     final score = ProfileCompletionScore.fromProfile(
       profile,
       hasLiveSelfie: session.selfieFilePath != null,
     );
+    final hasName = profile.firstName.trim().isNotEmpty;
+    final hasAge = profile.age > 0;
+    final titleName = hasName ? profile.firstName : 'Your profile';
 
     return GradientScaffold(
       appBar: AppBar(
@@ -79,7 +82,7 @@ class ProfileScreen extends StatelessWidget {
                 textBaseline: TextBaseline.alphabetic,
                 children: [
                   Text(
-                    '${profile.firstName} ',
+                    '$titleName${hasAge ? ' ' : ''}',
                     style: AppTextStyles.h1.copyWith(
                       color: AppColors.brandPink,
                       fontSize: 38,
@@ -87,14 +90,15 @@ class ProfileScreen extends StatelessWidget {
                       letterSpacing: -0.5,
                     ),
                   ),
-                  Text(
-                    '(${profile.age})',
-                    style: AppTextStyles.h2.copyWith(
-                      color: AppColors.brandCyan,
-                      fontSize: 28,
-                      fontWeight: FontWeight.w700,
+                  if (hasAge)
+                    Text(
+                      '(${profile.age})',
+                      style: AppTextStyles.h2.copyWith(
+                        color: AppColors.brandCyan,
+                        fontSize: 28,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
-                  ),
                 ],
               ),
 
@@ -160,6 +164,8 @@ class ProfileScreen extends StatelessWidget {
                 occupation: profile.occupation,
                 height: profile.height,
                 lookingFor: profile.lookingFor,
+                interests: profile.interests.toList(),
+                hobbies: profile.hobbies.toList(),
               ),
 
               const SizedBox(height: 20),
@@ -202,6 +208,7 @@ class _HeroAvatar extends StatelessWidget {
   Widget build(BuildContext context) {
     final isLive = session.isLive;
     final selfiePath = session.selfieFilePath;
+    final avatarPath = session.avatarFilePath;
     // When live: always show the verification selfie (trust signal).
     // When not live: prefer the gallery main photo, fall back to selfie.
 
@@ -245,7 +252,7 @@ class _HeroAvatar extends StatelessWidget {
           child: Padding(
             padding: const EdgeInsets.all(_border),
             child: ClipOval(
-              child: _resolveImage(isLive, selfiePath, galleryImage),
+              child: _resolveImage(isLive, selfiePath, avatarPath, galleryImage),
             ),
           ),
         ),
@@ -303,16 +310,23 @@ class _HeroAvatar extends StatelessWidget {
   Widget _resolveImage(
     bool isLive,
     String? selfiePath,
+    String? avatarPath,
     ImageProvider? galleryImage,
   ) {
     if (isLive && selfiePath != null) {
-      return Image.file(File(selfiePath), fit: BoxFit.cover);
+      return LiveSelfieCircleImage(
+        selfiePath: selfiePath,
+        avatarPath: avatarPath,
+      );
     }
     if (galleryImage != null) {
       return Image(image: galleryImage, fit: BoxFit.cover);
     }
     if (selfiePath != null) {
-      return Image.file(File(selfiePath), fit: BoxFit.cover);
+      return LiveSelfieCircleImage(
+        selfiePath: selfiePath,
+        avatarPath: avatarPath,
+      );
     }
     return _AvatarPlaceholder();
   }
@@ -407,8 +421,24 @@ class _ActionTile extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(icon, color: color, size: 26),
-            const SizedBox(height: 8),
+            // Branded icon badge — same recipe as the home-screen stat
+            // tile (36×36 r10) and shop reward tile (52×52 circle): fill
+            // alpha 0.12, border alpha ~0.22-0.25, accent icon centered
+            // at a 1:2 icon-to-badge ratio.  Profile sits at 40×40 r12
+            // so it's the action-row scale of the same family.
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: color.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Icon(icon, color: color, size: 20),
+            ),
+            const SizedBox(height: 10),
             Text(
               label,
               style: AppTextStyles.buttonS.copyWith(
@@ -427,7 +457,7 @@ class _ActionTile extends StatelessWidget {
 
 // ── About Me card ─────────────────────────────────────────────────────────────
 
-/// Bio + key profile details card. Values sourced live from [DemoProfileScope].
+/// Bio + key profile details card. Values sourced live from [UserProfileScope].
 class _AboutCard extends StatelessWidget {
   const _AboutCard({
     required this.bio,
@@ -436,6 +466,8 @@ class _AboutCard extends StatelessWidget {
     required this.occupation,
     required this.height,
     required this.lookingFor,
+    required this.interests,
+    required this.hobbies,
   });
 
   final String bio;
@@ -444,6 +476,8 @@ class _AboutCard extends StatelessWidget {
   final String occupation;
   final String height;
   final String lookingFor;
+  final List<String> interests;
+  final List<String> hobbies;
 
   @override
   Widget build(BuildContext context) {
@@ -487,30 +521,124 @@ class _AboutCard extends StatelessWidget {
             const SizedBox(height: 18),
           ],
 
-          // Bullet details
-          _BulletRow(icon: Icons.cake_outlined, label: '$age years old'),
-          if (hometown.isNotEmpty) ...[
-            const SizedBox(height: 7),
-            _BulletRow(icon: Icons.location_on_outlined, label: hometown),
-          ],
-          if (occupation.isNotEmpty) ...[
-            const SizedBox(height: 7),
-            _BulletRow(icon: Icons.work_outline_rounded, label: occupation),
-          ],
-          if (height.isNotEmpty) ...[
-            const SizedBox(height: 7),
-            _BulletRow(icon: Icons.straighten_rounded, label: height),
-          ],
-          if (lookingFor.isNotEmpty) ...[
-            const SizedBox(height: 7),
-            _BulletRow(
-              icon: Icons.favorite_border_rounded,
-              label: lookingFor,
-              color: AppColors.brandPink,
-            ),
-          ],
+          // ── Body row: facts on the left, tags on the right ────────────
+          // When tags exist we lay the body out as two Expanded columns so
+          // the right-hand interests/hobbies stack visually balances the
+          // left-hand fact list, instead of pushing the chips below the
+          // facts and inflating the card.  When neither interests nor
+          // hobbies are present the facts render full-width unchanged.
+          _AboutBody(
+            age: age,
+            hometown: hometown,
+            occupation: occupation,
+            height: height,
+            lookingFor: lookingFor,
+            interests: interests,
+            hobbies: hobbies,
+          ),
         ],
       ),
+    );
+  }
+}
+
+class _AboutBody extends StatelessWidget {
+  const _AboutBody({
+    required this.age,
+    required this.hometown,
+    required this.occupation,
+    required this.height,
+    required this.lookingFor,
+    required this.interests,
+    required this.hobbies,
+  });
+
+  final int age;
+  final String hometown;
+  final String occupation;
+  final String height;
+  final String lookingFor;
+  final List<String> interests;
+  final List<String> hobbies;
+
+  @override
+  Widget build(BuildContext context) {
+    final tags = AboutTagsColumn(interests: interests, hobbies: hobbies);
+    final facts = _FactList(
+      age: age,
+      hometown: hometown,
+      occupation: occupation,
+      height: height,
+      lookingFor: lookingFor,
+    );
+
+    if (!tags.hasAnyTags) return facts;
+
+    // The right column opens with a tiny "Interests" caption (icon + 10pt
+    // label + 6pt gap) before its first chip.  Without offsetting the left
+    // column, the facts list starts noticeably above the chip row and the
+    // two halves read as out-of-balance.  Pad the facts down so the first
+    // bullet aligns with the first chip — the row's height is set by the
+    // taller (right) column, so this does not grow the card.
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.only(top: 22),
+            child: facts,
+          ),
+        ),
+        const SizedBox(width: 16),
+        Expanded(child: tags),
+      ],
+    );
+  }
+}
+
+class _FactList extends StatelessWidget {
+  const _FactList({
+    required this.age,
+    required this.hometown,
+    required this.occupation,
+    required this.height,
+    required this.lookingFor,
+  });
+
+  final int age;
+  final String hometown;
+  final String occupation;
+  final String height;
+  final String lookingFor;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (age > 0) _BulletRow(icon: Icons.cake_outlined, label: '$age years old'),
+        if (hometown.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          _BulletRow(icon: Icons.location_on_outlined, label: hometown),
+        ],
+        if (occupation.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          _BulletRow(icon: Icons.work_outline_rounded, label: occupation),
+        ],
+        if (height.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          _BulletRow(icon: Icons.straighten_rounded, label: height),
+        ],
+        if (lookingFor.isNotEmpty) ...[
+          const SizedBox(height: 7),
+          _BulletRow(
+            icon: Icons.favorite_border_rounded,
+            label: lookingFor,
+            color: AppColors.brandPink,
+          ),
+        ],
+      ],
     );
   }
 }
@@ -528,6 +656,11 @@ class _BulletRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = color ?? AppColors.brandCyan;
+    // Sized to balance against the right-hand tag chips.  Chips are 12pt
+    // w700 inside ~24pt pill padding, so a thin 12pt body row read as
+    // under-scaled.  We hold the row at bodyS (14pt) and bump weight to
+    // w500 so the fact column reads at the same visual scale as the
+    // chip column, with the chips still distinct via colored pills.
     return Row(
       children: [
         Icon(icon, size: 14, color: c.withValues(alpha: 0.75)),
@@ -535,7 +668,10 @@ class _BulletRow extends StatelessWidget {
         Expanded(
           child: Text(
             label,
-            style: AppTextStyles.bodyS.copyWith(color: AppColors.textPrimary),
+            style: AppTextStyles.bodyS.copyWith(
+              color: AppColors.textPrimary,
+              fontWeight: FontWeight.w500,
+            ),
           ),
         ),
       ],
@@ -553,7 +689,7 @@ class _MediaSection extends StatelessWidget {
     required this.onManage,
   });
 
-  final DemoProfile profile;
+  final UserProfile profile;
   final VoidCallback onManage;
 
   @override

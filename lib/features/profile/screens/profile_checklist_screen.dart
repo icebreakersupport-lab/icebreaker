@@ -3,7 +3,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/models/profile_completion.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -14,7 +14,7 @@ import '../../../shared/widgets/gradient_scaffold.dart';
 /// Shows the user exactly what is done, what is missing, and how each
 /// item contributes to their overall profile score (0–100%).
 ///
-/// Derives the score live from [DemoProfileScope] and [LiveSessionScope]
+/// Derives the score live from [UserProfileScope] and [LiveSessionScope]
 /// so checklist items auto-check whenever profile data changes — even
 /// when the user navigates here after editing in EditProfileScreen or Gallery.
 ///
@@ -30,7 +30,7 @@ class ProfileChecklistScreen extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final profile = DemoProfileScope.of(context);
+    final profile = UserProfileScope.of(context);
     final session = LiveSessionScope.of(context);
     final score = ProfileCompletionScore.fromProfile(
       profile,

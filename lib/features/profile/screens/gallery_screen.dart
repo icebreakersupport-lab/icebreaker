@@ -1,9 +1,12 @@
+import 'dart:async';
 import 'dart:io';
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
 
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/profile_media_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -35,10 +38,42 @@ class _GalleryScreenState extends State<GalleryScreen> {
   final ScrollController _scroll = ScrollController();
   final _videoKey = GlobalKey();
   final _picker = ImagePicker();
+  final ProfileMediaRepository _repo = ProfileMediaRepository();
 
-  DemoProfile get _profile => DemoProfileScope.of(context);
+  /// Serialized commit chain for `users/{uid}.photoUrls` writes.
+  ///
+  /// Every gallery write (add, replace, remove, reorder, post-upload URL
+  /// landing) goes through [_enqueueCommit] so a slow earlier write can never
+  /// overwrite a faster later one with stale state.  Callers capture the
+  /// canonical [List<String>] snapshot they want to persist BEFORE enqueueing
+  /// and pass it as plain data into the closure — queued tasks therefore
+  /// hold no reference to `_profile`, `context`, or anything that requires
+  /// the gallery widget to still be mounted.  Latest-intent-wins is preserved
+  /// by FIFO ordering: each enqueued snapshot is written in the order it was
+  /// captured, so the snapshot captured at the most recent gesture is
+  /// always the final write.  A failed task does not break the chain;
+  /// subsequent tasks still run.
+  Future<void> _persistChain = Future<void>.value();
+
+  UserProfile get _profile => UserProfileScope.of(context);
   XFile? get _video => _profile.video;
   int get _photoCount => _profile.photoCount;
+
+  String? get _uid => FirebaseAuth.instance.currentUser?.uid;
+
+  /// Appends [task] to the serialized commit chain and returns a future that
+  /// completes when [task] itself does (success or error).  Errors are
+  /// swallowed by the chain reference so the next enqueued task always runs;
+  /// the awaiting caller still sees the original error and can surface it.
+  ///
+  /// [task] must be self-contained — it must not read widget-scoped state
+  /// (e.g. via [UserProfileScope.of]) at run time, since it may execute
+  /// after this State has been disposed.
+  Future<void> _enqueueCommit(Future<void> Function() task) {
+    final next = _persistChain.then((_) => task());
+    _persistChain = next.catchError((Object _) {});
+    return next;
+  }
 
   @override
   void initState() {
@@ -96,25 +131,123 @@ class _GalleryScreenState extends State<GalleryScreen> {
         onChooseFile: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _pickImageFromFiles();
-          if (xFile != null && mounted) _profile.setPhoto(index, xFile);
+          if (xFile != null && mounted) await _commitPhotoToSlot(index, xFile);
         },
         onTakePhoto: () async {
           Navigator.of(sheetCtx).pop();
           final xFile = await _takePhotoWithCamera();
-          if (xFile != null && mounted) _profile.setPhoto(index, xFile);
+          if (xFile != null && mounted) await _commitPhotoToSlot(index, xFile);
         },
         onSetAsMain: (isEmpty || index == 0)
             ? null
-            : () {
+            : () async {
                 Navigator.of(sheetCtx).pop();
                 _profile.swapPhotos(index, 0);
+                await _commitOrder();
               },
         onRemove: isEmpty
             ? null
-            : () {
+            : () async {
                 Navigator.of(sheetCtx).pop();
                 _profile.removePhotoSlot(index);
+                await _commitOrder();
               },
+      ),
+    );
+  }
+
+  // ── Persistence helpers ────────────────────────────────────────────────────
+
+  /// Adds or replaces the photo at [initialIndex] with [xFile].
+  ///
+  /// Three things happen in order:
+  ///
+  ///   1. Local state is updated via [UserProfile.replacePhoto], which sets
+  ///      the new local pick AND clears any prior URL at that slot.  Clearing
+  ///      the URL is the honest representation of "user no longer wants the
+  ///      old photo here" — without it, a swap/remove commit that races the
+  ///      in-flight upload could re-persist the old URL as if it were still
+  ///      current.
+  ///   2. The cleared-state snapshot is captured immediately and enqueued
+  ///      onto the persistence chain.  If the upload later fails (or the app
+  ///      is killed mid-flight), restart shows the slot as empty rather than
+  ///      the obsolete content — matching the user's latest intent.  The
+  ///      snapshot is plain data, so the queued closure runs cleanly even if
+  ///      the gallery is disposed before it executes.
+  ///   3. The upload runs.  When it lands, [UserProfile.indexOfPhoto] re-
+  ///      resolves the slot by identity — covering the cases where the user
+  ///      reordered (URL goes to the new slot) or removed (skip the URL
+  ///      write entirely; the remove path already committed `''`).  This
+  ///      step is gated on [mounted] since it touches `_profile` via the
+  ///      InheritedWidget; if the user navigated away during the upload,
+  ///      the eager-clear snapshot from step 2 is the final committed state.
+  Future<void> _commitPhotoToSlot(int initialIndex, XFile xFile) async {
+    _profile.replacePhoto(initialIndex, xFile);
+
+    final uid = _uid;
+    if (uid == null) {
+      _showSyncError('Sign in to sync your photos.');
+      return;
+    }
+
+    final clearedSnapshot = _profile.allPhotoUrls.toList();
+    unawaited(_enqueueCommit(
+      () => _repo.writeOrderedUrls(uid: uid, urls: clearedSnapshot),
+    ));
+
+    String url;
+    try {
+      url = await _repo.uploadPhoto(uid: uid, file: File(xFile.path));
+    } catch (_) {
+      if (mounted) _showSyncError("Couldn't upload photo. Try again.");
+      return;
+    }
+
+    if (!mounted) return;
+
+    final currentIndex = _profile.indexOfPhoto(xFile);
+    if (currentIndex == -1) return;
+
+    _profile.setPhotoUrl(currentIndex, url);
+    final landedSnapshot = _profile.allPhotoUrls.toList();
+    try {
+      await _enqueueCommit(
+        () => _repo.writeOrderedUrls(uid: uid, urls: landedSnapshot),
+      );
+    } catch (_) {
+      if (mounted) _showSyncError("Couldn't save photo order. Try again.");
+    }
+  }
+
+  /// Persists the current slot order to `users/{uid}.photoUrls` after a swap
+  /// or remove.  Local state has already been mutated by the caller, so this
+  /// is purely the Firestore-write half — routed through [_enqueueCommit] so
+  /// it cannot race a still-pending earlier write.  The snapshot is captured
+  /// here, while the widget is alive, and the queued closure carries plain
+  /// data so it runs safely even if the screen is disposed before it lands.
+  Future<void> _commitOrder() async {
+    final uid = _uid;
+    if (uid == null) {
+      _showSyncError('Sign in to sync your photos.');
+      return;
+    }
+    final snapshot = _profile.allPhotoUrls.toList();
+    try {
+      await _enqueueCommit(
+        () => _repo.writeOrderedUrls(uid: uid, urls: snapshot),
+      );
+    } catch (_) {
+      if (mounted) _showSyncError("Couldn't save photo order. Try again.");
+    }
+  }
+
+  void _showSyncError(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message, style: AppTextStyles.bodyS),
+        backgroundColor: AppColors.bgSurface,
+        behavior: SnackBarBehavior.floating,
       ),
     );
   }
@@ -150,7 +283,7 @@ class _GalleryScreenState extends State<GalleryScreen> {
   /// Builds the 3-column (or 2-column on narrow screens) drag-reorderable grid.
   ///
   /// Each cell is wrapped in [DragTarget] (accepts drop) AND [LongPressDraggable]
-  /// (initiates drag on filled slots). Swapping is done via [DemoProfile.swapPhotos]
+  /// (initiates drag on filled slots). Swapping is done via [UserProfile.swapPhotos]
   /// which triggers [notifyListeners] so the entire tree rebuilds.
   Widget _buildPhotoGrid() {
     return LayoutBuilder(
@@ -186,8 +319,10 @@ class _GalleryScreenState extends State<GalleryScreen> {
     // — so isDropHover stays false on the cell being dragged.
     return DragTarget<int>(
       onWillAcceptWithDetails: (details) => details.data != index,
-      onAcceptWithDetails: (details) {
-        if (details.data != index) _profile.swapPhotos(details.data, index);
+      onAcceptWithDetails: (details) async {
+        if (details.data == index) return;
+        _profile.swapPhotos(details.data, index);
+        await _commitOrder();
       },
       builder: (ctx, candidateData, rejectedData) {
         final isDropHover = candidateData.isNotEmpty;

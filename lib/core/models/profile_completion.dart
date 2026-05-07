@@ -9,7 +9,7 @@
 // Adding a new item: give it a unique [id], a [points] value, and a
 // [category]. The percentage recalculates automatically from the sum.
 
-import '../state/demo_profile.dart';
+import '../state/user_profile.dart';
 
 // ── Category ──────────────────────────────────────────────────────────────────
 
@@ -89,37 +89,38 @@ class ProfileCompletionScore {
 
   // ── Live factory ───────────────────────────────────────────────────────────
 
-  /// Builds the completion score from the live [DemoProfile] state.
+  /// Builds the completion score from the live [UserProfile] state.
   ///
   /// All [isComplete] flags are derived from real profile data — no
   /// hardcoded booleans. The score therefore stays in sync with any
   /// change made in EditProfileScreen or GalleryScreen without extra wiring.
   ///
   /// Completion thresholds:
-  ///   preferences  — lookingFor is non-empty (has a default, so always true)
+  ///   name_age     — firstName is non-empty and age > 0
+  ///   preferences  — lookingFor and interestedIn are both non-empty
   ///   photo_first  — photoCount >= 1
   ///   photo_three  — photoCount >= 3
   ///   video        — video is non-null
   ///   bio          — bio.trim() is non-empty
-  ///   interests    — interests.length >= 3
-  ///   hobbies      — hobbies.length >= 2
+  ///   interests    — interests.length >= 1
+  ///   hobbies      — hobbies.length >= 1
   ///   live_selfie  — hasLiveSelfie param (from LiveSession.selfieFilePath != null)
   ///
   /// Account basics (name_age, location, email, phone) are always complete
   /// in the demo — they represent pre-filled sign-up data.
   factory ProfileCompletionScore.fromProfile(
-    DemoProfile profile, {
+    UserProfile profile, {
     required bool hasLiveSelfie,
   }) {
     return ProfileCompletionScore([
       // ── Account Basics — 30 pts ─────────────────────────────────────────
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'name_age',
         title: 'Name & Age',
         description: 'First name and age are set on your account',
         points: 10,
         category: ProfileCompletionCategory.basics,
-        isComplete: true,
+        isComplete: profile.firstName.trim().isNotEmpty && profile.age > 0,
       ),
       const ProfileCompletionItem(
         id: 'location',
@@ -144,7 +145,8 @@ class ProfileCompletionScore {
         description: 'Who you\'re looking to meet and your age range',
         points: 5,
         category: ProfileCompletionCategory.basics,
-        isComplete: profile.lookingFor.isNotEmpty,
+        isComplete:
+            profile.lookingFor.isNotEmpty && profile.interestedIn.isNotEmpty,
         hint: 'Set your preferences in Edit Profile',
       ),
 
@@ -190,19 +192,19 @@ class ProfileCompletionScore {
       ProfileCompletionItem(
         id: 'interests',
         title: 'Interests Added',
-        description: 'Add at least 3 interests (music, sport, travel…)',
+        description: 'Add at least 1 interest (music, sport, travel…)',
         points: 8,
         category: ProfileCompletionCategory.personality,
-        isComplete: profile.interests.length >= 3,
+        isComplete: profile.interests.isNotEmpty,
         hint: 'Add interests in Edit Profile',
       ),
       ProfileCompletionItem(
         id: 'hobbies',
         title: 'Hobbies Added',
-        description: 'Add at least 2 hobbies to spark conversations',
+        description: 'Add at least 1 hobby to spark conversations',
         points: 7,
         category: ProfileCompletionCategory.personality,
-        isComplete: profile.hobbies.length >= 2,
+        isComplete: profile.hobbies.isNotEmpty,
         hint: 'Add hobbies in Edit Profile',
       ),
 
@@ -246,8 +248,8 @@ class ProfileCompletionScore {
 //
 // Personality
 //   • bio              — up to 150 chars
-//   • interests[]      — tags (music, travel, sport…); min 3 recommended
-//   • hobbies[]        — tags (cooking, hiking…); min 2 recommended
+//   • interests[]      — tags (music, travel, sport…); min 1 required
+//   • hobbies[]        — tags (cooking, hiking…); min 1 required
 //
 // Preferences
 //   • lookingFor       — e.g. casual, serious, friendship

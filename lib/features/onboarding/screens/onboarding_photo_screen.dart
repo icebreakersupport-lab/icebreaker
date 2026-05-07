@@ -1,15 +1,14 @@
 import 'dart:io';
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:image_picker/image_picker.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/profile_media_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
@@ -19,11 +18,12 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 /// Lets the user pick one photo from their library or take a new one.
 /// Continue is disabled until a photo is selected.
 ///
-/// On continue:
-///   1. Uploads the image to Firebase Storage at users/{uid}/photos/0.jpg.
-///      Using a fixed slot path means re-uploads overwrite cleanly.
+/// On continue (all I/O routed through [ProfileMediaRepository] so the path
+/// convention matches gallery edits):
+///   1. Uploads the image to Firebase Storage at a content-addressed path
+///      (users/{uid}/photos/{auto_id}.jpg).
 ///   2. Writes the download URL to Firestore users/{uid}.photoUrls (array).
-///   3. Saves the XFile to in-memory DemoProfile (slot 0).
+///   3. Saves the XFile + URL to in-memory UserProfile (slot 0).
 ///   4. Advances to the onboarding slideshow.
 class OnboardingPhotoScreen extends StatefulWidget {
   const OnboardingPhotoScreen({super.key});
@@ -34,6 +34,7 @@ class OnboardingPhotoScreen extends StatefulWidget {
 
 class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
   final _picker = ImagePicker();
+  final ProfileMediaRepository _repo = ProfileMediaRepository();
 
   XFile? _photo;
   bool _isContinuing = false;
@@ -139,21 +140,13 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
       return;
     }
 
-    // ── 1. Upload to Firebase Storage ─────────────────────────────────────────
-    // Slot 0 uses a fixed path so re-uploads overwrite rather than accumulate.
+    // ── 1. Upload to Firebase Storage via the shared repo ─────────────────────
+    // Repo writes to a content-addressed path (users/{uid}/photos/{auto_id}.jpg)
+    // so this onboarding upload follows the same convention as later edits in
+    // the gallery — there's no special "slot 0" Storage path to maintain.
     String downloadUrl;
     try {
-      final file = File(_photo!.path);
-      final ref = FirebaseStorage.instance
-          .ref()
-          .child('users/$uid/photos/0.jpg');
-      // ignore: avoid_print
-      print('[Onboarding/Photo] ▶ uploading to ${ref.fullPath}');
-      await ref.putFile(
-        file,
-        SettableMetadata(contentType: 'image/jpeg'),
-      );
-      downloadUrl = await ref.getDownloadURL();
+      downloadUrl = await _repo.uploadPhoto(uid: uid, file: File(_photo!.path));
       // ignore: avoid_print
       print('[Onboarding/Photo] ✅ upload complete — url=$downloadUrl');
     } on FirebaseException catch (e) {
@@ -184,12 +177,9 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
       return;
     }
 
-    // ── 2. Persist URL to Firestore ────────────────────────────────────────────
+    // ── 2. Persist URL to Firestore via the shared repo ────────────────────────
     try {
-      await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .set({'photoUrls': [downloadUrl]}, SetOptions(merge: true));
+      await _repo.writeOrderedUrls(uid: uid, urls: [downloadUrl]);
       // ignore: avoid_print
       print('[Onboarding/Photo] ✅ photoUrls written to Firestore');
     } on FirebaseException catch (e) {
@@ -210,7 +200,13 @@ class _OnboardingPhotoScreenState extends State<OnboardingPhotoScreen> {
     }
 
     // ── 3. Update in-memory profile ────────────────────────────────────────────
-    if (mounted) DemoProfileScope.of(context).setPhoto(0, _photo);
+    // Mirror both layers so the immediately-rendered profile shows this photo
+    // without waiting for a background hydrate.
+    if (mounted) {
+      final profile = UserProfileScope.of(context);
+      profile.setPhoto(0, _photo);
+      profile.setPhotoUrl(0, downloadUrl);
+    }
 
     // ── 4. Advance to slideshow ────────────────────────────────────────────────
     if (!mounted) return;

@@ -1,16 +1,20 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:camera/camera.dart';
+import 'package:firebase_core/firebase_core.dart' show FirebaseException;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/dev/dev_account_gate.dart';
 import '../../../core/models/live_session_model.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/camera_service.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../../core/utils/live_avatar_crop.dart';
 
 // ── Step enum ────────────────────────────────────────────────────────────────
 
@@ -20,21 +24,34 @@ enum _Step {
   cameraError,
   cameraPermissionDenied,
   libraryReady,
-  verifying,
-  verified,
+  // After shutter (or library pick): captured image stays in the frame while
+  // the square-avatar crop derivation and the authoritative go-live batch run
+  // in series.  No theatrical delay — the screen looks the same as the
+  // moment of capture, just with the shutter hidden and the back button
+  // disabled, so the user does not perceive a separate "verifying" screen.
+  submitting,
+  // The captured selfie was accepted locally, but the authoritative go-live
+  // batch (live_sessions write + users mirror update + verification audit)
+  // failed.  We stay on this screen with the captured image preserved so
+  // the user can retry without re-capturing — the alternative (popping to
+  // Home) would silently drop the user onto the non-live UI even though
+  // their photo capture was fine.
+  goLiveFailed,
 }
 
 /// Live-selfie capture + verification screen.
 ///
 /// Flow:
-///   camera ready → tap shutter → verifying (1.5 s) → verified (0.6 s)
-///   → [LiveSession.goLive] (or [LiveSession.updateSelfie] on redo) → pop.
+///   camera ready → tap shutter → submitting (avatar crop + goLive write)
+///   → pop on success, or → goLiveFailed → retry.
+///   Redo path is identical except the submitting step calls
+///   [LiveSession.updateSelfie] and pops immediately.
 ///
 /// Capture source:
 ///   • iPhone / Android  → front camera, always.  No library fallback.
 ///   • macOS, but only when [macLibraryFallbackForThisAccount] returns true →
-///     photo library, because that machine has no camera.  The verifying /
-///     verified stages run identically after the image is chosen.
+///     photo library, because that machine has no camera.  The submitting
+///     step runs identically after the image is chosen.
 ///   • Everything else (other Mac accounts, web, Linux, Windows) → camera
 ///     unavailable error.  No silent bypass.
 class LiveVerificationScreen extends StatefulWidget {
@@ -48,35 +65,105 @@ class LiveVerificationScreen extends StatefulWidget {
   State<LiveVerificationScreen> createState() => _LiveVerificationScreenState();
 }
 
-class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
+class _LiveVerificationScreenState extends State<LiveVerificationScreen>
+    with WidgetsBindingObserver {
   _Step _step = _Step.preparing;
   CameraController? _camController;
   final ImagePicker _picker = ImagePicker();
   String? _capturedPath;
   String? _errorMessage;
 
+  /// Square-cropped avatar derived from [_capturedPath].  Held on state so
+  /// the [goLiveFailed] retry path can re-submit without re-deriving.
+  String? _capturedAvatarPath;
+
+  /// Verification method used for the captured selfie — held on state for
+  /// the same retry reason.
+  LiveVerificationMethod? _capturedMethod;
+
+  /// Re-entrancy guard for [_submitGoLive].  Stops a fast double-tap on
+  /// "Try Again" from issuing two concurrent goLive writes (which would
+  /// race the in-memory rollback in [LiveSession.goLive] on failure).
+  bool _isSubmitting = false;
+
+  /// True when the active [_camController] is bound to a front-facing lens.
+  /// Drives the preview-only un-mirror transform so the live preview matches
+  /// the un-mirrored sensor orientation that `takePicture()` writes to disk
+  /// — see [_buildFrameContent] for the policy and rationale.  Defaults to
+  /// false so a non-front fallback (rear lens, no front available) renders
+  /// the preview untransformed.
+  bool _isFrontCamera = false;
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _useMacLibraryFallback = macLibraryFallbackForThisAccount();
     _initCamera();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _camController?.dispose();
     super.dispose();
   }
 
+  /// Re-checks camera permission when the app returns to the foreground —
+  /// closes the recovery loop after the user opens system Settings from the
+  /// blocked-permission step, toggles Camera on, and swipes back.  Without
+  /// this, the screen would still read "Camera access is blocked" until the
+  /// user manually taps Try Again.
+  ///
+  /// Intentionally narrow: only acts when the screen is currently parked on
+  /// the permission-denied step.  Other steps (cameraReady, submitting,
+  /// libraryReady, cameraError) should not be perturbed by a
+  /// background/foreground cycle — re-running [_initCamera] from cameraReady
+  /// would leak the live controller; re-running from cameraError would
+  /// silently mask a hardware-level failure.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    if (_step != _Step.cameraPermissionDenied) return;
+    _recheckPermissionAfterResume();
+  }
+
+  /// Re-runs [_initCamera] when the app returns to the foreground while the
+  /// screen is parked on the permission-denied step.  Deliberately does NOT
+  /// pre-check `permission_handler` first: on iOS, `Permission.camera.status`
+  /// can disagree with the `camera` plugin's AVFoundation authorization read
+  /// (the user can have a working camera elsewhere in the app while
+  /// permission_handler still reports `permanentlyDenied`).  Letting the
+  /// camera plugin be the source of truth — the same way the profile
+  /// camera-capture screen does — is what makes recovery actually work.
+  Future<void> _recheckPermissionAfterResume() async {
+    if (!mounted) return;
+    setState(() => _step = _Step.preparing);
+    _initCamera();
+  }
+
   // ── Camera ────────────────────────────────────────────────────────────────
 
-  bool _cameraPermPermanentlyDenied = false;
+  /// Latest camera permission status — drives the action area copy on the
+  /// permission-denied step.  Null only during the first read.
+  CameraStatus? _cameraStatus;
 
   /// Cached at `initState` so the gate can't change mid-session if the user
   /// signs out from another tab, etc.  Read-only after init.
   late final bool _useMacLibraryFallback;
+
+  /// True when running inside the iOS Simulator (Xcode sets the
+  /// `SIMULATOR_DEVICE_NAME` env var).  Used purely to make the
+  /// "no camera hardware" copy honest about why the camera can't open —
+  /// the simulator exposes the permission API but never exposes a camera
+  /// device, so a granted permission still lands the user on the
+  /// no-hardware path.
+  static bool get _isIosSimulator =>
+      !kIsWeb &&
+      Platform.isIOS &&
+      Platform.environment.containsKey('SIMULATOR_DEVICE_NAME');
 
   /// Called from every camera-unavailable code path.  On mobile (and on every
   /// non-eligible Mac account) this enters the normal `cameraError` state so
@@ -97,6 +184,24 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     }
   }
 
+  /// Camera initialization, aligned with the working profile-camera flow
+  /// (`camera_capture_screen.dart`): the `camera` plugin itself is the
+  /// source of truth.  We do NOT pre-gate on `permission_handler` —
+  /// `Permission.camera.status` on iOS can disagree with the AVFoundation
+  /// authorization the camera plugin actually reads, so a working camera
+  /// elsewhere in the app could still cause this screen to show "blocked"
+  /// if we trusted permission_handler first.
+  ///
+  /// Order of operations:
+  ///   0. Mac library fallback (preserved exemption).
+  ///   1. iOS Simulator fast-path (no hardware regardless of permission).
+  ///   2. Non-mobile, non-fallback platforms — explicit unavailable.
+  ///   3. `availableCameras()` + `CameraController.initialize()`.
+  ///       On iOS this triggers the system prompt on first launch and
+  ///       throws on denial.  On success we are unambiguously granted.
+  ///   4. Classify the failure.  Permission-shaped exceptions move to the
+  ///       perm-denied step; permission_handler is consulted *only here*,
+  ///       and only to pick the right CTA copy (Allow vs Open Settings).
   Future<void> _initCamera() async {
     if (_useMacLibraryFallback) {
       if (mounted) {
@@ -108,43 +213,26 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       return;
     }
 
-    // ── 1. Check / request camera permission ──────────────────────────────
-    // Skip on non-mobile platforms where permission_handler is a no-op.
-    if (Platform.isIOS || Platform.isAndroid) {
-      var status = await Permission.camera.status;
-      if (status.isDenied) {
-        status = await Permission.camera.request();
-      }
-      if (status.isPermanentlyDenied || status.isRestricted) {
-        if (mounted) {
-          setState(() {
-            _cameraPermPermanentlyDenied = true;
-            _step = _Step.cameraPermissionDenied;
-          });
-        }
-        return;
-      }
-      if (!status.isGranted) {
-        // Denied (not permanent) — show retryable state.
-        if (mounted) {
-          setState(() {
-            _cameraPermPermanentlyDenied = false;
-            _step = _Step.cameraPermissionDenied;
-          });
-        }
-        return;
-      }
+    if (_isIosSimulator) {
+      _handleCameraUnavailable(
+        'iPhone Simulator has no camera.\nRun on a real device to verify.',
+      );
+      return;
     }
 
-    // ── 2. Initialise the camera controller ────────────────────────────────
+    if (kIsWeb || !(Platform.isIOS || Platform.isAndroid)) {
+      _handleCameraUnavailable(
+          'Camera capture is not available on this platform.');
+      return;
+    }
+
     try {
       final cameras = await availableCameras();
       if (cameras.isEmpty) {
-        _handleCameraUnavailable('No camera found on this device.');
+        _handleCameraUnavailable('No camera detected on this device.');
         return;
       }
 
-      // Prefer front-facing (selfie) camera; fall back to first available.
       final desc = cameras.firstWhere(
         (c) => c.lensDirection == CameraLensDirection.front,
         orElse: () => cameras.first,
@@ -162,18 +250,27 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       if (!mounted) return;
       setState(() {
         _camController = ctrl;
+        _isFrontCamera = desc.lensDirection == CameraLensDirection.front;
+        _cameraStatus = CameraStatus.granted;
         _step = _Step.cameraReady;
       });
     } on CameraException catch (e) {
-      // CameraException.code == 'cameraPermission' means the OS denied access
-      // after the controller tried to open the device (Android path).
-      if (e.code == 'cameraPermission') {
-        if (mounted) {
-          setState(() {
-            _cameraPermPermanentlyDenied = false;
-            _step = _Step.cameraPermissionDenied;
-          });
-        }
+      if (_isPermissionException(e)) {
+        // Camera plugin rejected for permission reasons.  Now — and only
+        // now — ask permission_handler what CTA to render.  If it agrees
+        // we're requestable, offer the in-app prompt; for anything else
+        // (including the iOS divergence where permission_handler reports
+        // granted but AVFoundation just denied), route to Open Settings,
+        // which is the only path that actually moves the needle.
+        final fresh = await CameraPermissionService.currentStatus();
+        if (!mounted) return;
+        final uiStatus = fresh == CameraStatus.requestable
+            ? CameraStatus.requestable
+            : CameraStatus.blockedForever;
+        setState(() {
+          _cameraStatus = uiStatus;
+          _step = _Step.cameraPermissionDenied;
+        });
       } else {
         _handleCameraUnavailable('Camera unavailable. Please try again.');
       }
@@ -182,8 +279,24 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     }
   }
 
+  /// Identifies [CameraException]s that mean the OS withheld camera access,
+  /// as opposed to a hardware / configuration failure.  Covers the codes
+  /// emitted by both the iOS (`camera_avfoundation`) and Android
+  /// (`camera_android_camerax`) implementations of the `camera` plugin.
+  static bool _isPermissionException(CameraException e) {
+    switch (e.code) {
+      case 'CameraAccessDenied':
+      case 'CameraAccessDeniedWithoutPrompt':
+      case 'CameraAccessRestricted':
+      case 'cameraPermission':
+        return true;
+      default:
+        return false;
+    }
+  }
+
   Future<void> _pickFromPhotoLibrary() async {
-    if (_step == _Step.verifying || _step == _Step.verified) return;
+    if (_step == _Step.submitting) return;
     try {
       final picked = await _picker.pickImage(
         source: ImageSource.gallery,
@@ -229,10 +342,39 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
       final xFile = await ctrl.takePicture();
       if (!mounted) return;
 
-      // Stop the camera feed — we have the captured image.
-      await ctrl.dispose();
-      _camController = null;
-      await _verifySelectedPhoto(
+      // Critical lifecycle ordering — DO NOT REORDER.
+      //
+      // 1) Leave _Step.cameraReady and clear _camController in the SAME
+      //    setState as seeding the captured state.  After this frame the
+      //    build tree no longer contains `CameraPreview(ctrl)`, so any
+      //    subsequent listener fire from the controller's teardown cannot
+      //    paint a disposed controller.
+      // 2) ONLY THEN dispose the local `ctrl` reference.  Done as
+      //    fire-and-forget — awaiting here would yield to the event loop
+      //    while CameraPreview could still be in the tree on slower
+      //    rebuild paths, and `dispose()` doesn't surface errors we'd act
+      //    on.
+      // 3) Continue into the shared submit logic via [_continueSubmit],
+      //    which skips the seeding setState that [_verifySelectedPhoto]
+      //    would otherwise run for non-camera entry points.
+      //
+      // The earlier ordering (`await ctrl.dispose(); _camController = null;
+      // await _verifySelectedPhoto(...)`) left _step on cameraReady through
+      // the disposal await, which is when the red "Disposed CameraController,
+      // buildPreview() was called on a disposed CameraController" frame
+      // landed.
+      setState(() {
+        _capturedPath = xFile.path;
+        _capturedAvatarPath = null;
+        _capturedMethod = LiveVerificationMethod.liveSelfie;
+        _errorMessage = null;
+        _step = _Step.submitting;
+        _camController = null;
+      });
+
+      unawaited(ctrl.dispose());
+
+      await _continueSubmit(
         xFile.path,
         verificationMethod: LiveVerificationMethod.liveSelfie,
       );
@@ -241,6 +383,10 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     }
   }
 
+  /// Library / profile-photo entry point.  No camera controller exists on
+  /// these paths, so the seed-then-dispose dance from [_captureAndVerify]
+  /// does not apply — we can seed `_step = submitting` here and forward to
+  /// the shared submit logic in [_continueSubmit].
   Future<void> _verifySelectedPhoto(
     String path, {
     required LiveVerificationMethod verificationMethod,
@@ -248,38 +394,141 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
     if (!mounted) return;
     setState(() {
       _capturedPath = path;
-      _step = _Step.verifying;
+      _capturedAvatarPath = null;
+      _capturedMethod = verificationMethod;
+      _errorMessage = null;
+      _step = _Step.submitting;
     });
+    await _continueSubmit(path, verificationMethod: verificationMethod);
+  }
 
-    await Future.delayed(const Duration(milliseconds: 1500));
+  /// Shared submit logic used by both the camera and library paths.  Assumes
+  /// `_step` is already [_Step.submitting] and `_capturedPath` /
+  /// `_capturedMethod` have been seeded — the camera path seeds those in the
+  /// same setState that nulls `_camController` (so disposal cannot race a
+  /// rebuild on `_Step.cameraReady`); the library path seeds them in
+  /// [_verifySelectedPhoto].
+  Future<void> _continueSubmit(
+    String path, {
+    required LiveVerificationMethod verificationMethod,
+  }) async {
+    // Derive the square avatar crop synchronously with the submit step.  No
+    // artificial hold: the captured image stays in the frame, the shutter is
+    // hidden, and the user sees a subtle inline indicator while the (typically
+    // <100 ms) crop runs and the goLive batch is awaited.  The raw portrait
+    // remains the source of truth for the verification frame; the derived
+    // crop is what circular avatar surfaces fill from.
+    final avatarPath = await deriveSquareAvatar(path);
     if (!mounted) return;
-    setState(() => _step = _Step.verified);
+    _capturedAvatarPath = avatarPath;
 
-    await Future.delayed(const Duration(milliseconds: 600));
-    if (!mounted) return;
-
-    final session = LiveSessionScope.of(context);
+    // Redo: the in-memory selfie/avatar swap is what Home reads, and the
+    // durable redo write inside [LiveSession.updateSelfie] is fire-and-forget
+    // (it does not change presence state).  Failure there does not put the
+    // user on the wrong screen, so we can pop immediately.
     if (widget.isRedo) {
-      session.updateSelfie(path);
-    } else {
-      session.goLive(
-        selfieFilePath: path,
+      final session = LiveSessionScope.of(context);
+      session.updateSelfie(
+        path,
+        avatarPath: avatarPath,
         verificationMethod: verificationMethod,
       );
+      Navigator.of(context).pop();
+      return;
     }
-    Navigator.of(context).pop();
+
+    // Initial go-live: must NOT pop until the LiveSession has actually
+    // published the live-state flip.  [LiveSession.goLive] awaits a
+    // discovery-snapshot read BEFORE flipping `_isLive = true`, so popping
+    // immediately would rebuild Home against the pre-flip state and land
+    // the user on the non-live UI.  Awaiting here guarantees Home only
+    // rebuilds once, with `isLive == true`.
+    await _submitGoLive();
+  }
+
+  /// Awaits the authoritative go-live write and pops on success.  On
+  /// failure, transitions to [_Step.goLiveFailed] so the user can retry
+  /// without re-capturing — the captured selfie path / avatar / method are
+  /// preserved on state.
+  ///
+  /// Reused by the retry button on [_Step.goLiveFailed].  Re-entrancy is
+  /// guarded by [_isSubmitting].
+  Future<void> _submitGoLive() async {
+    if (_isSubmitting) return;
+    final path = _capturedPath;
+    final method = _capturedMethod;
+    if (path == null || method == null) return;
+    _isSubmitting = true;
+
+    if (mounted && _step != _Step.submitting) {
+      setState(() {
+        _step = _Step.submitting;
+        _errorMessage = null;
+      });
+    }
+
+    final session = LiveSessionScope.of(context);
+    try {
+      await session.goLive(
+        selfieFilePath: path,
+        avatarFilePath: _capturedAvatarPath,
+        verificationMethod: method,
+      );
+      if (!mounted) return;
+      Navigator.of(context).pop();
+    } catch (e, st) {
+      // Log the real exception so the failure mode is diagnosable.  A
+      // generic "check your connection" hid the real cause for too long
+      // when the new verificationAttempts rule wasn't deployed yet.
+      debugPrint('[LiveVerificationScreen] goLive failed: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _step = _Step.goLiveFailed;
+        _errorMessage = _messageForGoLiveError(e);
+      });
+    } finally {
+      _isSubmitting = false;
+    }
+  }
+
+  /// Maps the exception thrown by [LiveSession.goLive] to user-facing copy.
+  /// The Firebase code is also surfaced when known, so a real failure is
+  /// distinguishable from a generic "try again" — particularly important
+  /// for `permission-denied`, which usually means a Firestore rule has not
+  /// been deployed.
+  static String _messageForGoLiveError(Object e) {
+    if (e is FirebaseException) {
+      switch (e.code) {
+        case 'permission-denied':
+          return "Couldn't go live: permission denied. The app may need an "
+              'update or the server rules are not yet deployed.';
+        case 'unavailable':
+        case 'deadline-exceeded':
+        case 'cancelled':
+          return "Couldn't reach the server. Check your connection and try "
+              'again.';
+        case 'failed-precondition':
+          return "Couldn't go live: server precondition failed. Try again "
+              'in a moment.';
+        case 'unauthenticated':
+          return 'Your session expired. Sign in again and retry.';
+        default:
+          return "Couldn't go live (${e.code}). Try again.";
+      }
+    }
+    return "Couldn't go live. Check your connection and try again.";
   }
 
   // ── Mac fallback: reuse in-memory profile photo ───────────────────────────
 
   /// Convenience for the Mac account: if the user has already picked a main
   /// profile photo this session, reuse that local file instead of opening the
-  /// library a second time.  Strictly local — reads `DemoProfile.mainPhoto`
+  /// library a second time.  Strictly local — reads `UserProfile.mainPhoto`
   /// (an [XFile] on disk).  When no local photo exists this method is not
   /// reachable — the panel hides the button entirely.
   Future<void> _useProfilePhoto() async {
-    if (_step == _Step.verifying || _step == _Step.verified) return;
-    final localPath = DemoProfileScope.of(context).mainPhoto?.path;
+    if (_step == _Step.submitting) return;
+    final localPath = UserProfileScope.of(context).mainPhoto?.path;
     if (localPath == null) return;
     await _verifySelectedPhoto(
       localPath,
@@ -314,7 +563,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           // Back / close
           _HeaderIconButton(
             icon: Icons.arrow_back_ios_new_rounded,
-            onTap: (_step == _Step.verifying || _step == _Step.verified)
+            onTap: _step == _Step.submitting
                 ? null
                 : () => Navigator.of(context).pop(),
           ),
@@ -367,57 +616,68 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
   // ── Body ──────────────────────────────────────────────────────────────────
 
   Widget _buildBody(BuildContext context) {
-    final mq = MediaQuery.of(context).size;
-    // Cap frame to fit the screen: at most 80% of width or 48% of height.
-    // This keeps the layout sane on both phone portrait and wide macOS windows.
-    final frameSize = (mq.width - 40).clamp(0.0, mq.height * 0.48);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final mq = MediaQuery.of(context).size;
+        final isTightHeight = constraints.maxHeight < 760;
+        // Shrink the square frame a bit on shorter phone layouts so the
+        // permission / no-camera states do not overflow vertically.
+        final frameHeightFactor = isTightHeight ? 0.42 : 0.48;
+        final frameSize = (mq.width - 40).clamp(0.0, mq.height * frameHeightFactor);
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Column(
-        children: [
-          const SizedBox(height: 8),
-          _buildIntroCopy(),
-          const SizedBox(height: 20),
+        return SingleChildScrollView(
+          padding: const EdgeInsets.symmetric(horizontal: 20),
+          child: ConstrainedBox(
+            constraints: BoxConstraints(minHeight: constraints.maxHeight),
+            child: Column(
+              children: [
+                const SizedBox(height: 8),
+                _buildIntroCopy(),
+                SizedBox(height: isTightHeight ? 16 : 20),
 
-          // ── Selfie frame ────────────────────────────────────────────────
-          _SelfieFrame(size: frameSize, child: _buildFrameContent(frameSize)),
+                // ── Selfie frame ──────────────────────────────────────────
+                _SelfieFrame(size: frameSize, child: _buildFrameContent(frameSize)),
 
-          const SizedBox(height: 28),
+                SizedBox(height: isTightHeight ? 20 : 28),
 
-          // ── Status section ──────────────────────────────────────────────
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 300),
-            child: _buildStatusSection(),
+                // ── Status section ────────────────────────────────────────
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 300),
+                  child: _buildStatusSection(),
+                ),
+
+                SizedBox(height: isTightHeight ? 20 : 28),
+
+                // ── Action area ───────────────────────────────────────────
+                _buildActionArea(),
+
+                const SizedBox(height: 36),
+              ],
+            ),
           ),
-
-          const Spacer(),
-
-          // ── Action area ─────────────────────────────────────────────────
-          _buildActionArea(),
-
-          const SizedBox(height: 36),
-        ],
-      ),
+        );
+      },
     );
   }
 
   Widget _buildIntroCopy() {
     final title = switch (_step) {
       _Step.libraryReady => 'Pick a clear face photo',
-      _Step.verifying => 'Scanning your photo',
-      _Step.verified => 'Identity confirmed',
+      _Step.submitting =>
+        widget.isRedo ? 'Updating your live photo' : 'Going live',
+      _Step.cameraError => 'Camera unavailable',
+      _Step.goLiveFailed => "Couldn't go live",
       _ => 'Show us it’s really you',
     };
     final subtitle = switch (_step) {
       _Step.libraryReady =>
-        'Choose a recent photo from your library. We’ll run the same scan before you go live.',
-      _Step.verifying =>
-        'Hold on a second while Icebreaker checks the image.',
-      _Step.verified =>
-        widget.isRedo
-            ? 'Your live photo is ready.'
-            : 'You’re about to enter Nearby.',
+        'Choose a recent photo from your library. We’ll use it for this live session.',
+      _Step.submitting => 'Hang tight…',
+      _Step.cameraError => _isIosSimulator
+          ? 'iPhone Simulator has no camera. Run on a real iPhone or Android device to verify.'
+          : 'We couldn’t start the camera on this device. This isn’t a permission issue — try again, or restart Icebreaker.',
+      _Step.goLiveFailed => _errorMessage ??
+          "We couldn't go live. Check your connection and try again.",
       _ =>
         'Your live photo stays tied to this session and helps people trust who they’re meeting.',
     };
@@ -491,7 +751,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
                 ),
                 const SizedBox(height: 12),
                 Text(
-                  _cameraPermPermanentlyDenied
+                  _cameraStatus == CameraStatus.blockedForever
                       ? 'Camera access is blocked.\nOpen Settings to enable it.'
                       : 'Camera access is required\nfor live verification.',
                   style: AppTextStyles.caption,
@@ -503,21 +763,24 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         );
 
       case _Step.libraryReady:
-        final profile = DemoProfileScope.of(context);
+        final profile = UserProfileScope.of(context);
         final localPath = profile.mainPhoto?.path;
         return Stack(
           fit: StackFit.expand,
           children: [
             if (localPath != null)
-              Image.file(
-                File(localPath),
-                width: frameSize,
-                height: frameSize,
-                fit: BoxFit.cover,
+              ColoredBox(
+                color: const Color(0xFF05000E),
+                child: Image.file(
+                  File(localPath),
+                  width: frameSize,
+                  height: frameSize,
+                  fit: BoxFit.contain,
+                ),
               )
             else
               const _LibraryPlaceholder(),
-            const _VerificationGuideOverlay(showScan: false),
+            const _VerificationGuideOverlay(),
           ],
         );
 
@@ -526,45 +789,80 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         if (ctrl == null || !ctrl.value.isInitialized) {
           return const SizedBox.shrink();
         }
-        // Fill frame with camera preview, mirrored (selfie mode).
-        return ClipRRect(
-          borderRadius: BorderRadius.circular(14),
-          child: SizedBox.square(
-            dimension: frameSize,
-            child: OverflowBox(
-              maxWidth: double.infinity,
-              maxHeight: double.infinity,
-              child: Transform.scale(
-                scaleX: -1, // mirror horizontally for selfie feel
-                child: Stack(
-                  fit: StackFit.expand,
-                  children: [
-                    CameraPreview(ctrl),
-                    const _VerificationGuideOverlay(showScan: false),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        );
-
-      case _Step.verifying:
-      case _Step.verified:
-        final path = _capturedPath;
-        if (path == null) return const SizedBox.shrink();
+        // The `camera` plugin reports `value.aspectRatio` as the SENSOR's
+        // native aspect (`previewSize.width / previewSize.height`), which on
+        // iOS is always the landscape orientation of the sensor (e.g.,
+        // 1920x1080 → 1.78) regardless of the device orientation in which
+        // it is displayed.  In a portrait UI the `CameraPreview` widget
+        // paints rotated portrait content, so to lay it out at the correct
+        // displayed aspect we need the inverse: 1080/1920 = 0.5625, i.e.
+        // `1 / ctrl.value.aspectRatio`.  Using `aspectRatio` directly is
+        // what produced the squat-horizontal band with large top/bottom
+        // bars — `AspectRatio` was being asked to make a 1.78-wide box
+        // inside a square, so it shrank vertically to fit width.
+        //
+        // Square framing is preserved (`_SelfieFrame` is still square).
+        // Letterbox bars sit on the LEFT and RIGHT, in the same near-black
+        // as the screen background, so the gradient frame still reads as a
+        // single composed surface.
+        //
+        // ── Front-camera orientation policy ────────────────────────────
+        // The Flutter `camera` plugin renders front-camera output in a
+        // mirrored "selfie convention" (what you'd see in a real mirror)
+        // while `takePicture()` writes the un-mirrored sensor frame to
+        // disk.  That two-track behavior is the source of the horizontal
+        // flip surprise on shutter press: preview shows mirrored, the
+        // saved file (and every downstream avatar/Nearby/profile surface
+        // built from it) shows un-mirrored.  See flutter/flutter#108745
+        // (iOS) and #156974 (Android regressions).
+        //
+        // The captured file is canonical — `deriveSquareAvatar` and every
+        // live-selfie consumer (Nearby `_LiveSelfieFrame`, profile photo
+        // strip, [LiveSelfieCircleImage]) paint it untransformed.  So we
+        // un-mirror the preview to match the file rather than mirroring
+        // every downstream surface to match the preview.  One rule, one
+        // place: a horizontal flip applied to the live preview only, and
+        // only when the active lens is front-facing.
+        final displayAspect = ctrl.value.aspectRatio <= 0
+            ? 1.0
+            : 1 / ctrl.value.aspectRatio;
+        Widget preview = CameraPreview(ctrl);
+        if (_isFrontCamera) {
+          preview = Transform.flip(flipX: true, child: preview);
+        }
         return Stack(
           fit: StackFit.expand,
           children: [
-            ClipRRect(
-              borderRadius: BorderRadius.circular(14),
-              child: Image.file(
-                File(path),
-                width: frameSize,
-                height: frameSize,
-                fit: BoxFit.cover,
+            const ColoredBox(color: Color(0xFF05000E)),
+            Center(
+              child: AspectRatio(
+                aspectRatio: displayAspect,
+                child: preview,
               ),
             ),
-            _VerificationGuideOverlay(showScan: _step == _Step.verifying),
+            const _VerificationGuideOverlay(),
+          ],
+        );
+
+      case _Step.submitting:
+      case _Step.goLiveFailed:
+        final path = _capturedPath;
+        if (path == null) return const SizedBox.shrink();
+        // Match the live-preview composition exactly: BoxFit.contain on the
+        // captured file, with the same dark fill behind, so the transition
+        // from `cameraReady` → `submitting` doesn't visually re-crop the
+        // image.  Parent `_SelfieFrame` already provides the rounded clip,
+        // so no inner ClipRRect is needed.  No scan sweep — capturing the
+        // photo is the meaningful event, and the goLive batch is fast
+        // enough that an animated overlay would feel like a fake hold.
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            ColoredBox(
+              color: const Color(0xFF05000E),
+              child: Image.file(File(path), fit: BoxFit.contain),
+            ),
+            const _VerificationGuideOverlay(),
           ],
         );
     }
@@ -583,7 +881,9 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           height: 80,
           child: Center(
             child: Text(
-              'Point your camera here and try again.',
+              _isIosSimulator
+                  ? 'Live verification needs real camera hardware.'
+                  : 'If this keeps happening, restart Icebreaker.',
               style: AppTextStyles.caption,
               textAlign: TextAlign.center,
             ),
@@ -623,16 +923,59 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
           ),
         );
 
-      case _Step.verifying:
-        return _VerifyingStatus(
-          key: const ValueKey('verifying'),
-          duration: const Duration(milliseconds: 1500),
+      case _Step.submitting:
+        return SizedBox(
+          key: const ValueKey('submitting'),
+          height: 88,
+          child: Center(
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2,
+                    valueColor:
+                        AlwaysStoppedAnimation<Color>(AppColors.brandCyan),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Text(
+                  widget.isRedo ? 'Updating…' : 'Going live…',
+                  style: AppTextStyles.bodyS.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
+            ),
+          ),
         );
 
-      case _Step.verified:
-        return _VerifiedStatus(
-          key: const ValueKey('verified'),
-          isRedo: widget.isRedo,
+      case _Step.goLiveFailed:
+        return SizedBox(
+          key: const ValueKey('go-live-failed'),
+          height: 88,
+          child: Center(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.error_outline_rounded,
+                  color: AppColors.textSecondary,
+                  size: 28,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Tap Try Again to retry going live.',
+                  style: AppTextStyles.bodyS.copyWith(
+                    color: AppColors.textSecondary,
+                  ),
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
+          ),
         );
     }
   }
@@ -667,37 +1010,58 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen> {
         );
 
       case _Step.cameraPermissionDenied:
-        // Permission denied — show Settings path (and retry if not permanent).
+        // Branch on the unified status:
+        //   requestable    → "Allow Camera" (in-app OS prompt) — avoids the
+        //                    iOS dead-end where Settings has no Camera row
+        //                    yet because the prompt was never shown.
+        //   blockedForever → "Open Settings" + "Try Again" (recovery requires
+        //                    the system Settings page).
+        if (_cameraStatus == CameraStatus.requestable) {
+          return _PermissionActionButton(
+            label: 'Allow Camera',
+            icon: Icons.camera_alt_outlined,
+            onTap: () {
+              setState(() => _step = _Step.preparing);
+              _initCamera();
+            },
+          );
+        }
         return Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             _PermissionActionButton(
               label: 'Open Settings',
               icon: Icons.settings_rounded,
-              onTap: () => openAppSettings(),
+              onTap: () => CameraPermissionService.openSettings(),
             ),
-            if (!_cameraPermPermanentlyDenied) ...[
-              const SizedBox(height: 12),
-              _PermissionActionButton(
-                label: 'Try Again',
-                icon: Icons.refresh_rounded,
-                onTap: () {
-                  setState(() => _step = _Step.preparing);
-                  _initCamera();
-                },
-                outlined: true,
-              ),
-            ],
+            const SizedBox(height: 12),
+            _PermissionActionButton(
+              label: 'Try Again',
+              icon: Icons.refresh_rounded,
+              onTap: () {
+                setState(() => _step = _Step.preparing);
+                _initCamera();
+              },
+              outlined: true,
+            ),
           ],
         );
 
-      case _Step.verifying:
-      case _Step.verified:
+      case _Step.submitting:
         return const SizedBox(height: 72);
+
+      case _Step.goLiveFailed:
+        return _PermissionActionButton(
+          label: 'Try Again',
+          icon: Icons.refresh_rounded,
+          onTap: () {
+            _submitGoLive();
+          },
+        );
 
       case _Step.libraryReady:
         final hasLocalProfilePhoto =
-            DemoProfileScope.of(context).mainPhoto != null;
+            UserProfileScope.of(context).mainPhoto != null;
         return _MacLibraryPanel(
           onChooseFromLibrary: _pickFromPhotoLibrary,
           onUseProfilePhoto: hasLocalProfilePhoto ? _useProfilePhoto : null,
@@ -767,9 +1131,7 @@ class _SelfieFrame extends StatelessWidget {
 }
 
 class _VerificationGuideOverlay extends StatelessWidget {
-  const _VerificationGuideOverlay({required this.showScan});
-
-  final bool showScan;
+  const _VerificationGuideOverlay();
 
   @override
   Widget build(BuildContext context) {
@@ -829,7 +1191,6 @@ class _VerificationGuideOverlay extends StatelessWidget {
             bottom: 18,
             child: _FrameCorner(alignment: Alignment.bottomRight),
           ),
-          if (showScan) const _ScanSweep(),
         ],
       ),
     );
@@ -882,198 +1243,6 @@ class _CornerPainter extends CustomPainter {
   @override
   bool shouldRepaint(covariant _CornerPainter oldDelegate) =>
       oldDelegate.top != top || oldDelegate.left != left;
-}
-
-class _ScanSweep extends StatefulWidget {
-  const _ScanSweep();
-
-  @override
-  State<_ScanSweep> createState() => _ScanSweepState();
-}
-
-class _ScanSweepState extends State<_ScanSweep>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(milliseconds: 1500),
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, _) {
-        return Align(
-          alignment: Alignment(0, -0.82 + (_controller.value * 1.64)),
-          child: Container(
-            margin: const EdgeInsets.symmetric(horizontal: 34),
-            height: 3,
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              gradient: const LinearGradient(
-                colors: [
-                  Colors.transparent,
-                  AppColors.brandCyan,
-                  AppColors.brandPink,
-                  Colors.transparent,
-                ],
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppColors.brandCyan.withValues(alpha: 0.55),
-                  blurRadius: 16,
-                  spreadRadius: 1,
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-// ── Verifying status ──────────────────────────────────────────────────────────
-
-class _VerifyingStatus extends StatelessWidget {
-  const _VerifyingStatus({super.key, required this.duration});
-  final Duration duration;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(Icons.check_rounded, color: AppColors.success, size: 36),
-        const SizedBox(height: 10),
-        Text(
-          'Verifying…',
-          style: AppTextStyles.h2.copyWith(
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.2,
-          ),
-        ),
-        const SizedBox(height: 16),
-        _NeonProgressBar(duration: duration),
-      ],
-    );
-  }
-}
-
-class _VerifiedStatus extends StatelessWidget {
-  const _VerifiedStatus({super.key, required this.isRedo});
-  final bool isRedo;
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const Icon(
-          Icons.check_circle_rounded,
-          color: AppColors.success,
-          size: 36,
-        ),
-        const SizedBox(height: 10),
-        Text(
-          'Verified!',
-          style: AppTextStyles.h2.copyWith(color: AppColors.success),
-        ),
-        const SizedBox(height: 6),
-        Text(
-          isRedo ? 'Selfie updated!' : 'Going live…',
-          style: AppTextStyles.bodyS,
-        ),
-      ],
-    );
-  }
-}
-
-// ── Neon progress bar ────────────────────────────────────────────────────────
-
-class _NeonProgressBar extends StatefulWidget {
-  const _NeonProgressBar({required this.duration});
-  final Duration duration;
-
-  @override
-  State<_NeonProgressBar> createState() => _NeonProgressBarState();
-}
-
-class _NeonProgressBarState extends State<_NeonProgressBar>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _ctrl;
-  late final Animation<double> _progress;
-
-  @override
-  void initState() {
-    super.initState();
-    _ctrl = AnimationController(vsync: this, duration: widget.duration);
-    _progress = CurvedAnimation(parent: _ctrl, curve: Curves.easeInOut);
-    _ctrl.forward();
-  }
-
-  @override
-  void dispose() {
-    _ctrl.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return AnimatedBuilder(
-      animation: _progress,
-      builder: (context, _) {
-        return Stack(
-          children: [
-            // Track
-            Container(
-              height: 4,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(2),
-                color: AppColors.divider,
-              ),
-            ),
-            // Fill
-            FractionallySizedBox(
-              widthFactor: _progress.value,
-              child: Container(
-                height: 4,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(2),
-                  gradient: const LinearGradient(
-                    colors: [AppColors.brandPink, AppColors.brandCyan],
-                  ),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.brandCyan.withValues(alpha: 0.55),
-                      blurRadius: 10,
-                      spreadRadius: 1,
-                    ),
-                    BoxShadow(
-                      color: AppColors.brandPink.withValues(alpha: 0.40),
-                      blurRadius: 8,
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
 }
 
 // ── Shutter button ────────────────────────────────────────────────────────────

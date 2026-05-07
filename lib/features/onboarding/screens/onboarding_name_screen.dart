@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/profile_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
@@ -13,7 +14,7 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 ///
 /// Saves firstName to:
 ///   • Firestore  users/{uid}  (merge update)
-///   • DemoProfileScope        (in-memory, keeps the rest of the app in sync)
+///   • UserProfileScope        (in-memory, keeps the rest of the app in sync)
 ///
 /// Continue is disabled until the input passes [_isValid].
 /// On success navigates to the next onboarding step.
@@ -74,10 +75,15 @@ class _OnboardingNameScreenState extends State<OnboardingNameScreen> {
     // ── 1. Firestore ──────────────────────────────────────────────────────────
     if (uid != null) {
       try {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .set({'firstName': name}, SetOptions(merge: true));
+        // Dual-write: legacy users/{uid}.firstName for existing readers,
+        // and the canonical profiles/{uid}.firstName as the public surface.
+        await Future.wait([
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set({'firstName': name}, SetOptions(merge: true)),
+          ProfileRepository().setFields(uid, {'firstName': name}),
+        ]);
         // ignore: avoid_print
         print('[Onboarding/Name] ✅ Firestore users/$uid.firstName="$name"');
       } on FirebaseException catch (e) {
@@ -103,7 +109,7 @@ class _OnboardingNameScreenState extends State<OnboardingNameScreen> {
 
     // ── 2. In-memory profile ──────────────────────────────────────────────────
     if (mounted) {
-      final p = DemoProfileScope.of(context);
+      final p = UserProfileScope.of(context);
       p.saveTextFields(
         firstName: name,
         age: p.age,
@@ -115,6 +121,7 @@ class _OnboardingNameScreenState extends State<OnboardingNameScreen> {
         ageRange: p.ageRange,
         interests: p.interests,
         hobbies: p.hobbies,
+        maxDistanceMeters: p.maxDistanceMeters,
       );
     }
 

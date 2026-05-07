@@ -5,10 +5,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
-import 'package:permission_handler/permission_handler.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/location_service.dart';
+import '../../../core/services/profile_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
@@ -26,7 +27,7 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 /// On tap:
 ///   - Validates fields; shows inline errors if blank.
 ///   - Requests OS location permission (or proceeds silently if already granted).
-///   - Saves hometown to DemoProfile and Firestore users/{uid}.hometown.
+///   - Saves hometown to UserProfile and Firestore users/{uid}.hometown.
 ///   - Saves locationPermissionGranted=true to Firestore on grant.
 ///   - Navigates to the first-photo screen.
 ///
@@ -50,6 +51,16 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
     with WidgetsBindingObserver {
   _LocationState _state = _LocationState.initial;
   bool _canRetry = true;
+
+  /// True from the moment the user taps "Allow Location" until the iOS
+  /// permission sheet resolves.  We DO NOT swap the screen to a separate
+  /// loading subtree while this is true — the `_InitialView` (and therefore
+  /// the City/State `TextField`s) stays mounted so UIKit's keyboard input
+  /// session keeps a valid owner across the system-dialog presentation.
+  /// The flag is used purely to (a) gate re-entry into `_requestPermission`
+  /// on a double tap, and (b) render an in-place spinner inside the Allow
+  /// button so the user sees feedback.
+  bool _requestInFlight = false;
 
   // ── Hometown form ────────────────────────────────────────────────────────────
   final _cityController = TextEditingController();
@@ -97,41 +108,69 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
       await _saveAndAdvance();
       return;
     }
-    final status = await Permission.locationWhenInUse.status;
-    if (status.isGranted) {
+    final status = await LocationService.currentStatus();
+    if (status == LocationStatus.granted) {
       await _handleGranted(alreadyGranted: true);
     }
   }
 
   /// Called when the user taps "Allow Location".
+  ///
+  /// Structurally important: the `_InitialView` (and its City/State
+  /// `TextField`s) stays mounted for the full duration of this method.  We do
+  /// not transition to a separate loading subtree before calling
+  /// `LocationService.requestIfNeeded()`.  That guarantees UIKit's keyboard
+  /// input session always has a valid `TextField` owner during the iOS
+  /// system-dialog presentation, which is what previously generated the
+  /// "RTIInputSystemClient … dismissAutoFillPanel" and "Snapshotting a view
+  /// (UIKeyboardImpl) that is not in a visible window" warnings.
   Future<void> _requestPermission() async {
-    // Validate hometown fields before doing anything.
+    if (_requestInFlight) return; // already presenting the OS sheet
     if (!_fieldsValid) {
       setState(() => _showFieldErrors = true);
       return;
     }
+
+    // Synchronously drop keyboard focus.  Combined with the stable view
+    // hierarchy below, this is sufficient: the TextField is still mounted, so
+    // UIKit's input session has a valid owner while the keyboard animates
+    // away and the system permission dialog presents.  No timing-based wait
+    // is needed.
+    FocusManager.instance.primaryFocus?.unfocus();
+
+    setState(() => _requestInFlight = true);
 
     if (!_isMobile) {
       await _saveAndAdvance();
       return;
     }
 
-    setState(() => _state = _LocationState.requesting);
+    final status = await LocationService.requestIfNeeded();
+    if (!mounted) return;
 
-    final status = await Permission.locationWhenInUse.request();
-
-    if (status.isGranted) {
-      await _handleGranted();
-    } else if (status.isPermanentlyDenied || status.isRestricted) {
-      setState(() {
-        _state = _LocationState.blocked;
-        _canRetry = false;
-      });
-    } else {
-      setState(() {
-        _state = _LocationState.blocked;
-        _canRetry = true;
-      });
+    switch (status) {
+      case LocationStatus.granted:
+        // _handleGranted swaps to _LoadingView, which is safe here: the OS
+        // sheet has already dismissed and the keyboard has been unfocused
+        // since the top of this method, so there is no live input session
+        // to orphan.
+        await _handleGranted();
+      case LocationStatus.blockedForever:
+      case LocationStatus.servicesDisabled:
+        // Terminal — recovery requires system Settings.
+        setState(() {
+          _requestInFlight = false;
+          _state = _LocationState.blocked;
+          _canRetry = false;
+        });
+      case LocationStatus.requestable:
+        // User dismissed without granting on Android, or otherwise not yet
+        // resolved — re-prompt is allowed.
+        setState(() {
+          _requestInFlight = false;
+          _state = _LocationState.blocked;
+          _canRetry = true;
+        });
     }
   }
 
@@ -148,11 +187,11 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
   }) async {
     final city = _cityController.text.trim();
     final state = _stateController.text.trim();
-    final stateCode = DemoProfile.abbreviateState(state);
+    final stateCode = UserProfile.abbreviateState(state);
 
     // ── In-memory profile ──────────────────────────────────────────────────────
     if (mounted) {
-      DemoProfileScope.of(context).setHometown(city, state);
+      UserProfileScope.of(context).setHometown(city, state);
     }
 
     // ── Firestore ──────────────────────────────────────────────────────────────
@@ -169,10 +208,48 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
       };
       if (data.isNotEmpty) {
         try {
-          await FirebaseFirestore.instance
-              .collection('users')
-              .doc(uid)
-              .set(data, SetOptions(merge: true));
+          // Dual-write: hometown struct mirrors to profiles/{uid} along with
+          // pre-formatted hometownDisplay/hometownShort so the public surface
+          // doesn't need to recompute them.  locationPermissionGranted stays
+          // on users/{uid} only — it's a settings field, not display.
+          final profilePayload = <String, dynamic>{};
+          if (city.isNotEmpty || state.isNotEmpty) {
+            // Mirror UserProfile.hometownDisplay / hometownShort exactly so
+            // the public surface formats identically to the in-memory state.
+            String display;
+            if (city.isEmpty) {
+              display = state;
+            } else if (state.isEmpty) {
+              display = city;
+            } else {
+              display = '$city, $state';
+            }
+            String short;
+            if (city.isEmpty) {
+              short = stateCode;
+            } else if (state.isEmpty) {
+              short = city;
+            } else {
+              short = '$city, $stateCode';
+            }
+            profilePayload['hometown'] = {
+              'city': city,
+              'state': state,
+              'stateCode': stateCode,
+            };
+            profilePayload['hometownDisplay'] = display;
+            profilePayload['hometownShort'] = short;
+          }
+          final writes = <Future<void>>[
+            FirebaseFirestore.instance
+                .collection('users')
+                .doc(uid)
+                .set(data, SetOptions(merge: true)),
+          ];
+          if (profilePayload.isNotEmpty) {
+            writes.add(ProfileRepository().setFields(uid, profilePayload));
+          }
+          await Future.wait(writes);
           // ignore: avoid_print
           print('[Onboarding/Location] ✅ saved hometown=$city,$state'
               '${grantedPermission ? ' locationPermissionGranted=true${alreadyGranted ? ' (was already granted)' : ''}' : ''}');
@@ -186,7 +263,17 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
     _navigateNext();
   }
 
-  void _notNow() {
+  /// Tapping "Not Now" swaps the entire `_InitialView` out for
+  /// `_BlockedView`, which means the City/State `TextField`s are unmounted.
+  /// If the keyboard was up, we must let UIKit release its input session
+  /// before the TextFields disappear — otherwise the autofill-panel teardown
+  /// fires against a stale session.  We do this by dropping focus and then
+  /// awaiting the end of the current frame (frame-aligned, not an arbitrary
+  /// delay) before mutating state.
+  Future<void> _notNow() async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
     setState(() {
       _state = _LocationState.blocked;
       _canRetry = true;
@@ -211,15 +298,15 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
               cityController: _cityController,
               stateController: _stateController,
               showFieldErrors: _showFieldErrors,
+              requestInFlight: _requestInFlight,
               onFieldChanged: () => setState(() {}),
               onAllow: _requestPermission,
               onNotNow: _notNow,
             ),
-          _LocationState.requesting => const _LoadingView(),
           _LocationState.blocked => _BlockedView(
               canRetry: _canRetry,
               onTryAgain: _requestPermission,
-              onOpenSettings: openAppSettings,
+              onOpenSettings: LocationService.openSettings,
             ),
           _LocationState.granted => const _LoadingView(),
         },
@@ -232,7 +319,13 @@ class _OnboardingLocationScreenState extends State<OnboardingLocationScreen>
 // States
 // ─────────────────────────────────────────────────────────────────────────────
 
-enum _LocationState { initial, requesting, blocked, granted }
+/// Top-level screen state.
+///
+/// `initial` covers both the resting form and the "request in flight" period
+/// (we keep the form mounted while the OS dialog is up — see
+/// `_requestInFlight`).  `blocked` is shown when the user denied or chose
+/// "Not Now".  `granted` is a brief loading state right before navigation.
+enum _LocationState { initial, blocked, granted }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // _InitialView
@@ -243,6 +336,7 @@ class _InitialView extends StatelessWidget {
     required this.cityController,
     required this.stateController,
     required this.showFieldErrors,
+    required this.requestInFlight,
     required this.onFieldChanged,
     required this.onAllow,
     required this.onNotNow,
@@ -251,6 +345,12 @@ class _InitialView extends StatelessWidget {
   final TextEditingController cityController;
   final TextEditingController stateController;
   final bool showFieldErrors;
+
+  /// True while the iOS permission sheet is up.  The form stays visible and
+  /// the TextFields stay mounted; we just disable taps and show a spinner
+  /// inside the Allow button so the user gets feedback.
+  final bool requestInFlight;
+
   final VoidCallback onFieldChanged;
   final VoidCallback onAllow;
   final VoidCallback onNotNow;
@@ -390,8 +490,12 @@ class _InitialView extends StatelessWidget {
           const SizedBox(height: 32),
 
           // ── Allow Location button ─────────────────────────────────────────
+          // Tap is gated by `requestInFlight`; visual feedback is an in-place
+          // spinner that replaces the label while the OS sheet is up.  The
+          // surrounding form (and the TextFields) stays mounted so UIKit can
+          // present the system dialog over a stable view hierarchy.
           GestureDetector(
-            onTap: onAllow,
+            onTap: requestInFlight ? null : onAllow,
             child: AnimatedOpacity(
               opacity: _fieldsValid ? 1.0 : 0.50,
               duration: const Duration(milliseconds: 180),
@@ -411,16 +515,25 @@ class _InitialView extends StatelessWidget {
                       : null,
                 ),
                 alignment: Alignment.center,
-                child: Text('Allow Location', style: AppTextStyles.buttonL),
+                child: requestInFlight
+                    ? const SizedBox(
+                        width: 22,
+                        height: 22,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2.5,
+                          color: Colors.white,
+                        ),
+                      )
+                    : Text('Allow Location', style: AppTextStyles.buttonL),
               ),
             ),
           ),
 
           const SizedBox(height: 16),
 
-          // Not Now
+          // Not Now (disabled while the OS sheet is up)
           GestureDetector(
-            onTap: onNotNow,
+            onTap: requestInFlight ? null : onNotNow,
             behavior: HitTestBehavior.opaque,
             child: Padding(
               padding: const EdgeInsets.symmetric(vertical: 6),
@@ -521,7 +634,7 @@ class _HometownField extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _LoadingView  (requesting or saving)
+// _LoadingView  (post-grant, while saving + navigating)
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _LoadingView extends StatelessWidget {

@@ -4,26 +4,26 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/services/profile_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 
 /// Onboarding — Step 4: Who you're open to meeting.
 ///
-/// Firestore storage (users/{uid}):
-///   openTo  String  — 'women' | 'men' | 'everyone'
+/// Firestore storage:
+///   • profiles/{uid}.interestedIn  String  — canonical lowercase code
+///     ('women' | 'men' | 'everyone' — non_binary is added in Edit Profile)
+///   • users/{uid}.interestedIn     String  — mirror of the canonical value
 ///
-/// A single canonical string is the right shape here because:
-///   • Discovery queries filter on a single equality check:
-///     where('gender', isEqualTo: X) — and 'everyone' means skip
-///     the gender filter entirely, handled in the query layer.
-///   • There is no multi-select ambiguity to model.
+/// The retired field name `openTo` is no longer written; both the Nearby
+/// snapshot reader and the sign-in resume gate continue to accept the old
+/// key on legacy accounts, so removing it from the write path here cuts
+/// over cleanly without breaking anyone mid-onboarding.
 ///
-/// DemoProfile:
-///   interestedIn  String  — 'Women' | 'Men' | 'Everyone'
-///   Keeps the existing in-memory field that the profile/edit screens
-///   already read.
+/// UserProfile.interestedIn is kept in canonical lowercase as well — UI
+/// renders Title-case via [UserProfile.interestedInLabel].
 class OnboardingOpenToScreen extends StatefulWidget {
   const OnboardingOpenToScreen({super.key});
 
@@ -54,12 +54,22 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
     // ── Firestore ─────────────────────────────────────────────────────────────
     if (uid != null) {
       try {
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .set({'openTo': option.firestoreValue}, SetOptions(merge: true));
+        // Dual-write the canonical preference to BOTH stores.  The field is
+        // `interestedIn` post-cutover; legacy `openTo` is no longer written
+        // and the readers fall back to it for older accounts.
+        await Future.wait([
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set(
+                {'interestedIn': option.firestoreValue},
+                SetOptions(merge: true),
+              ),
+          ProfileRepository()
+              .setFields(uid, {'interestedIn': option.firestoreValue}),
+        ]);
         // ignore: avoid_print
-        print('[Onboarding/OpenTo] ✅ openTo=${option.firestoreValue}');
+        print('[Onboarding/OpenTo] ✅ interestedIn=${option.firestoreValue}');
       } on FirebaseException catch (e) {
         // ignore: avoid_print
         print('[Onboarding/OpenTo] ❌ Firestore ${e.code}: ${e.message}');
@@ -83,7 +93,7 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
 
     // ── In-memory profile ─────────────────────────────────────────────────────
     if (mounted) {
-      final p = DemoProfileScope.of(context);
+      final p = UserProfileScope.of(context);
       p.saveTextFields(
         firstName: p.firstName,
         age: p.age,
@@ -91,10 +101,12 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
         occupation: p.occupation,
         height: p.height,
         lookingFor: p.lookingFor,
-        interestedIn: option.displayLabel, // 'Women' | 'Men' | 'Everyone'
+        // Canonical lowercase — UI uses [UserProfile.interestedInLabel].
+        interestedIn: option.firestoreValue,
         ageRange: p.ageRange,
         interests: p.interests,
         hobbies: p.hobbies,
+        maxDistanceMeters: p.maxDistanceMeters,
       );
     }
 

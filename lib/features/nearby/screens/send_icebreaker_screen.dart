@@ -4,7 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
-import '../../../core/state/demo_profile.dart';
+import '../../../core/state/user_profile.dart';
+import '../../../core/state/flow_coordinator.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -30,7 +31,7 @@ import '../../../shared/widgets/pill_button.dart';
 /// Firestore document written to: icebreakers/{auto-id}
 ///   senderId           — Firebase Auth UID
 ///   recipientId        — target user ID
-///   senderFirstName    — from DemoProfile (denormalised)
+///   senderFirstName    — from UserProfile (denormalised)
 ///   recipientFirstName — from route extra (denormalised)
 ///   message            — trimmed user input
 ///   status             — 'sent'
@@ -207,7 +208,14 @@ class _SendIcebreakerScreenState extends State<SendIcebreakerScreen> {
       }
 
       // 3. Gather values needed inside the transaction.
-      final senderFirstName = DemoProfileScope.of(context).firstName;
+      final profile = UserProfileScope.of(context);
+      final senderFirstName = profile.firstName;
+      // First non-empty photo URL = the user's primary photo for matching
+      // surfaces.  Snapshotted onto the icebreaker doc so the sender's
+      // wait screen can render the paired-photo hero from `icebreakers/{id}`
+      // alone, surviving cold launch / redirect / app resume.
+      final senderPhotoUrl = profile.allPhotoUrls
+          .firstWhere((u) => u.isNotEmpty, orElse: () => '');
       final expiresAt = now.add(
         const Duration(seconds: AppConstants.icebreakerTtlSeconds),
       );
@@ -270,6 +278,8 @@ class _SendIcebreakerScreenState extends State<SendIcebreakerScreen> {
           'recipientId': widget.recipientId,
           'senderFirstName': senderFirstName,
           'recipientFirstName': widget.recipientFirstName,
+          'senderPhotoUrl': senderPhotoUrl,
+          'recipientPhotoUrl': widget.recipientPhotoUrl,
           'message': message,
           'status': 'sent',
           'createdAt': Timestamp.fromDate(now),
@@ -285,7 +295,18 @@ class _SendIcebreakerScreenState extends State<SendIcebreakerScreen> {
       // 5. Sync in-memory state with the committed Firestore values.
       session.setCredits(newCredits, newResetAt);
 
-      context.go(AppRoutes.messages);
+      // 6. Seed the FlowCoordinator lock BEFORE navigation so the router
+      // agrees that /icebreaker-waiting/{id} is a live lock in the very
+      // first redirect pass. The outgoing Firestore stream remains the
+      // source of truth and will confirm/clear this optimistic value.
+      FlowCoordinatorScope.of(context).seedPendingOutgoing(
+        icebreakerId: icebreakerRef.id,
+        expiresAt: expiresAt,
+      );
+
+      // 7. Land the sender directly on the locked wait screen.
+      final waitTarget = '${AppRoutes.icebreakerWaiting}/${icebreakerRef.id}';
+      context.go(waitTarget);
     } on FirebaseException catch (e) {
       debugPrint('[SendIcebreaker] ❌ FirebaseException '
           'code=${e.code} message=${e.message}');

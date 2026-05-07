@@ -512,7 +512,7 @@ class FlowCoordinator extends ChangeNotifier {
 }
 
 /// InheritedNotifier scope so any widget under the app root can read the
-/// coordinator without a manual provider.  Mirrors [DemoProfileScope] +
+/// coordinator without a manual provider.  Mirrors [UserProfileScope] +
 /// [LiveSessionScope] for consistency.
 class FlowCoordinatorScope extends InheritedNotifier<FlowCoordinator> {
   const FlowCoordinatorScope({
