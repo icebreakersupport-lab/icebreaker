@@ -53,9 +53,11 @@ class MessagesScreen extends StatefulWidget {
 ///             at the screen level.
 enum _StreamState { loading, ready, error }
 
-class _MessagesScreenState extends State<MessagesScreen> {
+class _MessagesScreenState extends State<MessagesScreen>
+    with WidgetsBindingObserver {
   String? _myUid;
 
+  StreamSubscription<User?>? _authSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _receivedSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sentSub;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _convSub;
@@ -122,8 +124,21 @@ class _MessagesScreenState extends State<MessagesScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _myUid = FirebaseAuth.instance.currentUser?.uid;
     _attachStreams();
+    // Re-attach streams whenever the auth uid changes (sign-in, sign-out,
+    // account switch).  Without this, the screen keeps listening under the
+    // uid that was current at first build — invisible to the user when they
+    // switch accounts and explains why a freshly-sent icebreaker never
+    // appears for users whose State outlived an auth change.
+    _authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
+      final newUid = user?.uid;
+      if (newUid == _myUid) return;
+      _myUid = newUid;
+      _resetStreams();
+      _attachStreams();
+    });
     _refreshTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (mounted) setState(() {});
     });
@@ -131,11 +146,47 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _authSub?.cancel();
     _receivedSub?.cancel();
     _sentSub?.cancel();
     _convSub?.cancel();
     _refreshTimer?.cancel();
     super.dispose();
+  }
+
+  /// On iOS, Firestore listeners can get stuck after the app spends time in
+  /// the background — the connection silently drops and reattach is needed
+  /// to resume real-time updates.  Force a clean re-attach on every resume
+  /// so the Messages screen always reflects the current server state, not a
+  /// stale local cache from before the app went to sleep.
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) return;
+    final current = FirebaseAuth.instance.currentUser?.uid;
+    _myUid = current;
+    _resetStreams();
+    _attachStreams();
+  }
+
+  /// Cancels active Firestore subscriptions and resets the per-stream
+  /// readiness/error state to `loading`.  Used by `_retry`, the auth-change
+  /// listener, and the resume hook so re-attach always starts from a clean
+  /// slate (not "ready with stale data").
+  void _resetStreams() {
+    _receivedSub?.cancel();
+    _sentSub?.cancel();
+    _convSub?.cancel();
+    if (!mounted) return;
+    setState(() {
+      _received = const [];
+      _sent = const [];
+      _conversations = const [];
+      _receivedState = _StreamState.loading;
+      _sentState = _StreamState.loading;
+      _convState = _StreamState.loading;
+      _firstError = null;
+    });
   }
 
   void _attachStreams() {
@@ -223,20 +274,10 @@ class _MessagesScreenState extends State<MessagesScreen> {
   }
 
   /// Cancels the existing subscriptions and re-attaches all three streams
-  /// from a clean slate.  Triggered by the Retry button on the error state.
+  /// from a clean slate.  Triggered by the Retry button on the error state
+  /// and by pull-to-refresh.
   void _retry() {
-    _receivedSub?.cancel();
-    _sentSub?.cancel();
-    _convSub?.cancel();
-    setState(() {
-      _received = const [];
-      _sent = const [];
-      _conversations = const [];
-      _receivedState = _StreamState.loading;
-      _sentState = _StreamState.loading;
-      _convState = _StreamState.loading;
-      _firstError = null;
-    });
+    _resetStreams();
     _attachStreams();
   }
 
