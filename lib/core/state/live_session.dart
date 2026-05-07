@@ -1,13 +1,17 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/widgets.dart';
 
 import '../constants/app_constants.dart';
 import '../models/live_session_model.dart';
+import '../services/live_session_media_repository.dart';
 import '../services/live_session_repository.dart';
 import '../services/location_service.dart';
+import 'demo_profile.dart';
 
 /// In-memory live-presence state, backed by `live_sessions/{uid}` in Firestore.
 ///
@@ -29,10 +33,14 @@ import '../services/location_service.dart';
 ///     entry/exit is mirrored into `live_sessions.visibilityState` during
 ///     Phase 1.
 class LiveSession extends ChangeNotifier {
-  LiveSession({LiveSessionRepository? repo})
-      : _repo = repo ?? LiveSessionRepository();
+  LiveSession({
+    LiveSessionRepository? repo,
+    LiveSessionMediaRepository? mediaRepo,
+  })  : _repo = repo ?? LiveSessionRepository(),
+        _mediaRepo = mediaRepo ?? LiveSessionMediaRepository();
 
   final LiveSessionRepository _repo;
+  final LiveSessionMediaRepository _mediaRepo;
 
   // ── Presence state (mirrors the Firestore doc) ─────────────────────────────
 
@@ -40,6 +48,13 @@ class LiveSession extends ChangeNotifier {
   DateTime? _expiresAt;
   int _liveCredits = 1;
   String? _selfieFilePath;
+
+  /// Local-only path to a square crop of [_selfieFilePath], derived once at
+  /// capture time so circular avatar surfaces can fully fill the circle with
+  /// `BoxFit.cover` without re-cropping the raw portrait at every render.
+  /// Null until the cropper writes the file (or if derivation failed — the
+  /// UI then falls back to the raw selfie with `contain` + letterbox).
+  String? _avatarFilePath;
 
   /// Full session model from the most recent snapshot, or null when there is
   /// no active/terminal doc for this user.  Exposed so UI that needs richer
@@ -58,9 +73,31 @@ class LiveSession extends ChangeNotifier {
   /// [AppConstants.locationUpdateIntervalSeconds] seconds while live.
   Timer? _locationTimer;
 
+  /// Bootstrap retry timer: fires every
+  /// [_initialPositionRetryInterval] seconds until the very first
+  /// successful position write lands.  Without this, a missed first GPS
+  /// read (cold cache, services blip, iOS first-fix latency) would leave
+  /// the just-started session at `geohash == null` for the full
+  /// 60 s periodic-tick window — and Nearby's cell query filters by
+  /// `where('geohash', >=, prefix)`, so a null-geohash session is
+  /// invisible to peers regardless of `status='active'` or
+  /// `visibilityState='discoverable'`.  Cancelled the moment a real
+  /// position lands and on every session-end / hydrate path.
+  Timer? _initialPositionRetryTimer;
+
+  /// True once the current session has had at least one real position
+  /// write (lat/lng/geohash all populated server-side).  Drives the
+  /// branch in [_writePosition] between bootstrap-aggressive retries
+  /// and the post-bootstrap heartbeat-on-null behaviour.  Reset to
+  /// false at every session start.
+  bool _hasWrittenInitialPosition = false;
+
   /// One-shot timer for the 24-hour icebreaker-credit reset.  Fires
   /// [hydrateCredits] with the stored uid.
   Timer? _resetTimer;
+
+  static const Duration _initialPositionRetryInterval =
+      Duration(seconds: 5);
 
   // ── Stream subscriptions ──────────────────────────────────────────────────
 
@@ -73,8 +110,52 @@ class LiveSession extends ChangeNotifier {
   /// when functions write visibility directly.
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _meetupMirrorSub;
 
+  /// Stream on `meetups/{currentMeetupId}` — armed only while
+  /// `users/{uid}.currentMeetupId` is non-null.  We use the meetup's actual
+  /// status (not just the presence of an id) to decide visibility, so a
+  /// stranded `users.currentMeetupId` (CF crash, missed deploy, expired retry
+  /// budget after a terminal transition) cannot leave the session invisible
+  /// to Nearby forever.  Terminal status → write discoverable AND attempt a
+  /// self-heal clear of `users.currentMeetupId`; active status → hidden.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _meetupStatusSub;
+
+  /// Meetup ids we've already attempted to self-heal in this LiveSession
+  /// instance.  One attempt per zombie per process — if the write fails we
+  /// log and stop, since the next sign-in or process restart re-arms the set.
+  final Set<String> _meetupSelfHealAttempted = <String>{};
+
+  /// Statuses that release the user from the in-meetup lock.  Mirrors the
+  /// server-side `TERMINAL_MEETUP_STATUSES` set in functions/src/index.ts —
+  /// keep both in sync.  The mirror collapses any of these to
+  /// `visibilityState=discoverable`, so a successful match no longer leaves
+  /// the participants invisible to each other in Nearby.
+  static const _terminalMeetupStatuses = <String>{
+    'matched',
+    'ended',
+    'no_match',
+    'expired_finding',
+    'cancelled_finding',
+    'cancelled_talking',
+  };
+
   /// Last value we mirrored, so we don't re-write on every unrelated field change.
   String? _lastMirroredCurrentMeetupId;
+
+  /// Last meetup status we wrote visibility against.  Tracked so a
+  /// `talking → matched` transition immediately flips visibility back to
+  /// `discoverable` even when `users.currentMeetupId` hasn't been cleared yet.
+  String? _lastMirroredMeetupStatus;
+
+  /// False until the very first emission of [_subscribeToMeetupMirror] has
+  /// produced a successful `writeMeetupVisibility`.  Forces ONE unconditional
+  /// reconciliation write per fresh subscription so a session whose
+  /// `live_sessions.visibilityState` was stranded at `hidden_in_meetup` by
+  /// an offline cleanup window is realigned with whatever
+  /// `users.currentMeetupId` currently says — even when the in-memory cache
+  /// (`prev`) and the snapshot value happen to match (`null == null`), which
+  /// the equality short-circuit on subsequent ticks would otherwise skip
+  /// forever, leaving the session permanently invisible to Nearby.
+  bool _mirrorBootstrapped = false;
 
   // ── Identity + credits ────────────────────────────────────────────────────
 
@@ -89,6 +170,7 @@ class LiveSession extends ChangeNotifier {
   bool get isLive => _isLive;
   DateTime? get expiresAt => _expiresAt;
   String? get selfieFilePath => _selfieFilePath;
+  String? get avatarFilePath => _avatarFilePath;
   int get liveCredits => _liveCredits;
   int get icebreakerCredits => _icebreakerCredits;
   DateTime? get icebreakerCreditsResetAt => _icebreakerCreditsResetAt;
@@ -112,6 +194,7 @@ class LiveSession extends ChangeNotifier {
   /// It is persisted so the session record clearly indicates what happened.
   Future<void> goLive({
     String? selfieFilePath,
+    String? avatarFilePath,
     LiveVerificationMethod verificationMethod =
         LiveVerificationMethod.liveSelfie,
   }) async {
@@ -126,24 +209,50 @@ class LiveSession extends ChangeNotifier {
     // of any mid-session Settings edits to users/{uid}.
     final snap = await _readDiscoverySnapshot(uid);
 
+    // Upload the captured selfie to Firebase Storage so Nearby's hero card
+    // can render it for other users.  Best-effort: if the upload fails, the
+    // user still goes live — the hero card just falls back to their profile
+    // photos.  Web doesn't reach this path (selfie capture is mobile-only),
+    // and the test-mode paths still produce a local file we can upload.
+    String? liveSelfieUrl;
+    if (selfieFilePath != null && !kIsWeb) {
+      try {
+        final file = File(selfieFilePath);
+        if (await file.exists()) {
+          liveSelfieUrl = await _mediaRepo.uploadLiveSelfie(
+            uid: uid,
+            file: file,
+          );
+          debugPrint('[LiveSession] selfie uploaded → $liveSelfieUrl');
+        } else {
+          debugPrint('[LiveSession] selfie file missing — skipping upload');
+        }
+      } catch (e) {
+        // Non-fatal: proceed to session write with liveSelfieUrl: null.
+        debugPrint('[LiveSession] selfie upload failed (non-fatal): $e');
+      }
+    }
+
     // Remember the prior values so we can roll back if the batch fails.
     final prevIsLive = _isLive;
     final prevExpiresAt = _expiresAt;
     final prevSelfiePath = _selfieFilePath;
+    final prevAvatarPath = _avatarFilePath;
     final prevCredits = _liveCredits;
     final prevCurrentSession = _currentSession;
 
     final now = DateTime.now();
     final expires = now.add(const Duration(hours: 1));
-    final initialVisibility = snap.discoverable
-        ? LiveSessionVisibility.discoverable
-        : LiveSessionVisibility.discoveryDisabled;
+    // Going Live is always discoverable — no user-controlled opt-out.
+    const initialVisibility = LiveSessionVisibility.discoverable;
 
     _isLive = true;
     _expiresAt = expires;
     if (selfieFilePath != null) _selfieFilePath = selfieFilePath;
+    if (avatarFilePath != null) _avatarFilePath = avatarFilePath;
     final creditsToPersist = _liveCredits;
     if (_liveCredits > 0) _liveCredits--;
+    final remainingCredits = _liveCredits;
 
     // Optimistic synthesis: seed `_currentSession` from the values we are
     // about to commit so any listener that reads the session between the
@@ -164,13 +273,13 @@ class LiveSession extends ChangeNotifier {
       verificationCompletedAt: now,
       currentMeetupId: null,
       visibilityState: initialVisibility,
+      liveSelfieUrl: liveSelfieUrl,
       lat: null,
       lng: null,
       geohash: null,
       locationUpdatedAt: null,
       maxDistanceMetersSnapshot: snap.maxDistanceMeters,
-      discoverableSnapshot: snap.discoverable,
-      showMeSnapshot: snap.showMe,
+      interestedInSnapshot: snap.interestedIn,
       ageRangeMinSnapshot: snap.ageRangeMin,
       ageRangeMaxSnapshot: snap.ageRangeMax,
       liveCreditsAtStart: creditsToPersist,
@@ -191,11 +300,12 @@ class LiveSession extends ChangeNotifier {
         uid: uid,
         verificationMethod: verificationMethod,
         maxDistanceMetersSnapshot: snap.maxDistanceMeters,
-        discoverableSnapshot: snap.discoverable,
-        showMeSnapshot: snap.showMe,
+        interestedInSnapshot: snap.interestedIn,
         ageRangeMinSnapshot: snap.ageRangeMin,
         ageRangeMaxSnapshot: snap.ageRangeMax,
         liveCreditsAtStart: creditsToPersist,
+        remainingLiveCredits: remainingCredits,
+        liveSelfieUrl: liveSelfieUrl,
       );
     } catch (e, st) {
       // Authoritative write failed — nothing landed server-side (atomic
@@ -207,6 +317,7 @@ class LiveSession extends ChangeNotifier {
       _isLive = prevIsLive;
       _expiresAt = prevExpiresAt;
       _selfieFilePath = prevSelfiePath;
+      _avatarFilePath = prevAvatarPath;
       _liveCredits = prevCredits;
       _currentSession = prevCurrentSession;
       notifyListeners();
@@ -214,6 +325,13 @@ class LiveSession extends ChangeNotifier {
     }
 
     // Server state landed — safe to subscribe and arm the refresh loop.
+    // Reset the bootstrap-window flags so the very first _writePosition
+    // call after Go Live is treated as bootstrap (aggressive 5 s retry
+    // until first real geohash lands).
+    _hasWrittenInitialPosition = false;
+    _initialPositionRetryTimer?.cancel();
+    _initialPositionRetryTimer = null;
+
     _subscribeToSession(uid);
     _subscribeToMeetupMirror(uid);
     _writePosition(uid);
@@ -235,13 +353,37 @@ class LiveSession extends ChangeNotifier {
 
   /// Reads the device GPS and writes the position to both `live_sessions`
   /// and the `users` mirror inside a single atomic batch (see
-  /// [LiveSessionRepository.writePosition]).  A null GPS result (permission
-  /// revoked, timeout, airplane mode) is treated as "skip this tick" rather
-  /// than writing a half-state — the next tick re-reads.
+  /// [LiveSessionRepository.writePosition]).
+  ///
+  /// On null GPS (permission revoked, timeout, iOS background throttling,
+  /// momentary services blip) we do NOT skip silently — that lets
+  /// `locationUpdatedAt` go stale and Nearby drops the user as
+  /// `location_stale` even though they're still live.  Instead we issue a
+  /// freshness-only heartbeat: the last-known coords stay as they were,
+  /// and only the timestamps refresh.  The next tick re-reads GPS; the
+  /// next successful read overwrites coords + timestamp together.
+  ///
+  /// Bootstrap caveat: until the very first successful write lands,
+  /// `geohash` on the session doc is null and the doc is invisible to
+  /// Nearby's cell query (`where('geohash', >=, prefix)` excludes null
+  /// fields).  If the first GPS read returns null, we don't want to wait
+  /// the full 60 s periodic-tick window — we schedule a 5 s retry until
+  /// the first real position lands, then drop back to the standard
+  /// periodic + heartbeat behaviour.
   Future<void> _writePosition(String uid) async {
     final pos = await LocationService.getPosition();
     if (pos == null) {
-      debugPrint('[LiveSession] no GPS position — skipping write');
+      debugPrint('[LiveSession] no GPS — heartbeating freshness only');
+      try {
+        await _repo.heartbeatPosition(uid: uid);
+      } catch (e) {
+        debugPrint('[LiveSession] heartbeat failed (will retry): $e');
+      }
+      // Pre-bootstrap: heartbeat alone leaves geohash=null and the session
+      // query-invisible.  Retry aggressively until we get a real first fix.
+      if (!_hasWrittenInitialPosition && _isLive) {
+        _scheduleInitialPositionRetry(uid);
+      }
       return;
     }
     final geohash = LocationService.encode(pos.latitude, pos.longitude);
@@ -252,10 +394,32 @@ class LiveSession extends ChangeNotifier {
         lng: pos.longitude,
         geohash: geohash,
       );
+      if (!_hasWrittenInitialPosition) {
+        _hasWrittenInitialPosition = true;
+        _initialPositionRetryTimer?.cancel();
+        _initialPositionRetryTimer = null;
+        debugPrint('[LiveSession] first position landed — bootstrap retry off');
+      }
     } catch (e) {
       // Batch either landed fully or not at all.  Retry on the next tick.
       debugPrint('[LiveSession] writePosition batch failed (will retry): $e');
+      if (!_hasWrittenInitialPosition && _isLive) {
+        _scheduleInitialPositionRetry(uid);
+      }
     }
+  }
+
+  /// Arms (or re-arms) a single-shot timer that re-attempts
+  /// [_writePosition] in [_initialPositionRetryInterval].  Used only
+  /// during the bootstrap window — once the first real position lands,
+  /// the timer is cancelled and not re-armed.
+  void _scheduleInitialPositionRetry(String uid) {
+    _initialPositionRetryTimer?.cancel();
+    _initialPositionRetryTimer = Timer(_initialPositionRetryInterval, () {
+      if (!_isLive || _hasWrittenInitialPosition) return;
+      debugPrint('[LiveSession] bootstrap retry — attempting position write');
+      _writePosition(uid);
+    });
   }
 
   void _scheduleExpiry() {
@@ -283,9 +447,72 @@ class LiveSession extends ChangeNotifier {
     _startLocationRefresh(uid);
   }
 
-  void updateSelfie(String path) {
+  /// Redo verification — user re-captured their live selfie while already
+  /// live.  Updates the in-memory selfie/avatar paths AND fires authoritative
+  /// durable writes through the repository so the verification status,
+  /// timestamp, audit trail, AND the session-scoped `liveSelfieUrl` (which
+  /// drives Nearby's hero image rail for other users) reflect the redo.
+  /// All Firestore / Storage work is fire-and-forget here: redo never affects
+  /// the live presence state itself, so a transient failure logs and the user
+  /// keeps running on the previous remote record.
+  void updateSelfie(
+    String path, {
+    String? avatarPath,
+    LiveVerificationMethod verificationMethod =
+        LiveVerificationMethod.liveSelfie,
+  }) {
     _selfieFilePath = path;
+    _avatarFilePath = avatarPath;
     notifyListeners();
+
+    final uid = _uid ?? FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      debugPrint('[LiveSession] updateSelfie: no uid — skipping redo write');
+      return;
+    }
+    _repo
+        .recordPhotoVerificationRedo(
+          uid: uid,
+          verificationMethod: verificationMethod,
+        )
+        .catchError((Object e) {
+      debugPrint('[LiveSession] redo verification write failed: $e');
+    });
+
+    // Refresh the remote live selfie so other users see the new capture in
+    // Nearby.  Reuses the same upload helper as goLive(), then patches just
+    // `liveSelfieUrl` on the active session doc — single field update, no
+    // users mirror, no presence-state implications.  Wrapped in an async
+    // closure so the surrounding method stays synchronous (callers don't
+    // await redos) and any failure is contained.
+    _refreshRemoteLiveSelfie(uid: uid, path: path);
+  }
+
+  /// Best-effort: upload [path] to Firebase Storage and patch
+  /// `live_sessions/{uid}.liveSelfieUrl` to the resulting URL.  Non-fatal —
+  /// a failure leaves the prior remote URL in place; the local redo has
+  /// already succeeded by the time this runs.
+  void _refreshRemoteLiveSelfie({
+    required String uid,
+    required String path,
+  }) {
+    if (kIsWeb) return;
+    Future<void>(() async {
+      try {
+        final file = File(path);
+        if (!await file.exists()) {
+          debugPrint(
+              '[LiveSession] redo selfie file missing — skipping remote refresh');
+          return;
+        }
+        final url = await _mediaRepo.uploadLiveSelfie(uid: uid, file: file);
+        await _repo.setLiveSelfieUrl(uid: uid, url: url);
+        debugPrint('[LiveSession] redo selfie uploaded → $url');
+      } catch (e) {
+        debugPrint(
+            '[LiveSession] redo remote selfie refresh failed (non-fatal): $e');
+      }
+    });
   }
 
   /// Public end-session entry point — user tapped End Live.
@@ -305,6 +532,9 @@ class LiveSession extends ChangeNotifier {
     _expiryTimer = null;
     _locationTimer?.cancel();
     _locationTimer = null;
+    _initialPositionRetryTimer?.cancel();
+    _initialPositionRetryTimer = null;
+    _hasWrittenInitialPosition = false;
     _isLive = false;
     _expiresAt = null;
 
@@ -347,6 +577,9 @@ class LiveSession extends ChangeNotifier {
           _expiresAt = null;
           _expiryTimer?.cancel();
           _locationTimer?.cancel();
+          _initialPositionRetryTimer?.cancel();
+          _initialPositionRetryTimer = null;
+          _hasWrittenInitialPosition = false;
         }
         notifyListeners();
         return;
@@ -362,6 +595,9 @@ class LiveSession extends ChangeNotifier {
           _expiryTimer = null;
           _locationTimer?.cancel();
           _locationTimer = null;
+          _initialPositionRetryTimer?.cancel();
+          _initialPositionRetryTimer = null;
+          _hasWrittenInitialPosition = false;
         }
         notifyListeners();
         return;
@@ -384,14 +620,32 @@ class LiveSession extends ChangeNotifier {
   // ── Phase-1 meetup visibility mirror ──────────────────────────────────────
 
   /// Watches `users/{uid}.currentMeetupId` (written by Cloud Functions on
-  /// meetup create / terminal / block) and mirrors the change into
+  /// meetup create / terminal / block) AND the referenced meetup doc's
+  /// status, then mirrors the resulting visibility into
   /// `live_sessions/{uid}.{currentMeetupId, visibilityState}` so Nearby's
   /// visibility filter on the new collection stays accurate during Phase 1.
+  ///
+  /// Visibility is decided from the *meetup status*, not just the presence
+  /// of `currentMeetupId`.  A successful match (or any other terminal
+  /// status) collapses straight to `discoverable`, even when
+  /// `onMeetupTerminal` hasn't yet cleared the user-doc field — this
+  /// prevents a stranded mirror after CF crashes / missed deploys / expired
+  /// retry budget from leaving matched users invisible to Nearby.  The
+  /// mirror also attempts a self-heal write to clear
+  /// `users.currentMeetupId` when it observes a zombie state, but the
+  /// visibility flip does NOT depend on that write succeeding.
   ///
   /// Remove in Phase 2 once the Cloud Functions write directly to
   /// `live_sessions/{uid}`.
   void _subscribeToMeetupMirror(String uid) {
     _meetupMirrorSub?.cancel();
+    _meetupStatusSub?.cancel();
+    _meetupStatusSub = null;
+    _lastMirroredMeetupStatus = null;
+    // Reset bootstrap so the first emission of this fresh subscription
+    // forces an unconditional reconciliation write — see comment on
+    // [_mirrorBootstrapped] for why.
+    _mirrorBootstrapped = false;
     _meetupMirrorSub = FirebaseFirestore.instance
         .collection('users')
         .doc(uid)
@@ -399,34 +653,158 @@ class LiveSession extends ChangeNotifier {
         .listen((snap) {
       if (!snap.exists) return;
       final newMeetupId = snap.data()?['currentMeetupId'] as String?;
-      if (newMeetupId == _lastMirroredCurrentMeetupId) return;
-
-      // We need the discoverableSnapshot to decide what visibilityState to
-      // restore when the meetup clears.  If the session model hasn't loaded
-      // yet, defer the mirror write — biasing toward strict (do nothing) is
-      // safer than guessing.  The next snapshot tick will retry once the
-      // model is in memory.
-      final session = _currentSession;
-      if (session == null) {
-        debugPrint('[LiveSession] meetup mirror deferred — currentSession not '
-            'loaded yet');
-        return;
-      }
-      _lastMirroredCurrentMeetupId = newMeetupId;
-      _repo
-          .writeMeetupVisibility(
-            uid: uid,
-            currentMeetupId: newMeetupId,
-            discoverableSnapshot: session.discoverableSnapshot,
-          )
-          .catchError((Object e) {
-        // Non-fatal — the visibility transition will be retried on the next
-        // users-doc snapshot tick if it failed transiently.
-        debugPrint('[LiveSession] meetup visibility mirror failed: $e');
-      });
+      _onCurrentMeetupIdTick(uid: uid, newMeetupId: newMeetupId);
     }, onError: (Object e) {
       debugPrint('[LiveSession] users stream error (mirror): $e');
     });
+  }
+
+  /// Reacts to a `users.currentMeetupId` change (or first emission).  Sets
+  /// up a meetup-doc subscription when the field is non-null so visibility
+  /// can track the actual meetup status; tears that subscription down and
+  /// writes `discoverable` when the field is null.
+  void _onCurrentMeetupIdTick({
+    required String uid,
+    required String? newMeetupId,
+  }) {
+    final prev = _lastMirroredCurrentMeetupId;
+    final idChanged = newMeetupId != prev;
+    if (!_mirrorBootstrapped || idChanged) {
+      debugPrint('[LiveSession/mirror] users.currentMeetupId tick: '
+          'prev=$prev new=$newMeetupId bootstrapped=$_mirrorBootstrapped');
+    }
+
+    if (idChanged) {
+      _meetupStatusSub?.cancel();
+      _meetupStatusSub = null;
+      _lastMirroredMeetupStatus = null;
+    }
+
+    if (newMeetupId == null) {
+      // No active meetup → unconditionally discoverable.
+      if (_mirrorBootstrapped && newMeetupId == prev) return;
+      _writeMirroredVisibility(
+        uid: uid,
+        currentMeetupId: null,
+        meetupStatus: null,
+      );
+      return;
+    }
+
+    // Subscribe to the meetup doc so visibility tracks status, not just the
+    // presence of an id.  `_meetupStatusSub` is null when either we just
+    // (re)attached to a different meetup id or we never had one — both
+    // cases need a fresh subscription.
+    if (_meetupStatusSub == null) {
+      _meetupStatusSub = FirebaseFirestore.instance
+          .collection('meetups')
+          .doc(newMeetupId)
+          .snapshots()
+          .listen((mSnap) {
+        final status = mSnap.data()?['status'] as String?;
+        _onMeetupStatusTick(
+          uid: uid,
+          meetupId: newMeetupId,
+          status: status,
+          exists: mSnap.exists,
+        );
+      }, onError: (Object e) {
+        debugPrint('[LiveSession/mirror] meetup-status stream error '
+            '(meetupId=$newMeetupId): $e');
+      });
+    }
+  }
+
+  void _onMeetupStatusTick({
+    required String uid,
+    required String meetupId,
+    required String? status,
+    required bool exists,
+  }) {
+    // Defensive: a freshly-created meetup may briefly look "missing"
+    // between the user-doc write and the meetup-doc write propagating to
+    // this listener.  Treat absence as a no-op (don't flip visibility),
+    // not as terminal — the meetup status path will re-fire the moment
+    // the doc lands.
+    if (!exists) return;
+
+    final isTerminal =
+        status != null && _terminalMeetupStatuses.contains(status);
+    final visibilityCurrentMeetupId = isTerminal ? null : meetupId;
+
+    final prevId = _lastMirroredCurrentMeetupId;
+    final prevStatus = _lastMirroredMeetupStatus;
+    final idChanged = visibilityCurrentMeetupId != prevId;
+    final statusChanged = status != prevStatus;
+    if (_mirrorBootstrapped && !idChanged && !statusChanged) return;
+
+    debugPrint('[LiveSession/mirror] meetup-status tick: meetupId=$meetupId '
+        'status=$status terminal=$isTerminal '
+        'visibilityCurrentMeetupId=$visibilityCurrentMeetupId');
+
+    _writeMirroredVisibility(
+      uid: uid,
+      currentMeetupId: visibilityCurrentMeetupId,
+      meetupStatus: status,
+    );
+
+    // Best-effort self-heal: when the meetup is in a terminal status but
+    // `users.currentMeetupId` still points at it, clear that field once
+    // per process so future cold-starts converge without relying on this
+    // status subscription.  Visibility has already been flipped above —
+    // the heal is purely cleanup, not load-bearing.
+    if (isTerminal && _meetupSelfHealAttempted.add(meetupId)) {
+      unawaited(_selfHealClearStrandedCurrentMeetupId(
+        uid: uid,
+        meetupId: meetupId,
+        status: status,
+      ));
+    }
+  }
+
+  void _writeMirroredVisibility({
+    required String uid,
+    required String? currentMeetupId,
+    required String? meetupStatus,
+  }) {
+    // Do NOT advance the cache before the write succeeds.  Leaving
+    // `_lastMirroredCurrentMeetupId == prev` means the next snapshot tick
+    // sees inequality and re-fires the write — that is the retry path.
+    _repo
+        .writeMeetupVisibility(
+          uid: uid,
+          currentMeetupId: currentMeetupId,
+        )
+        .then((_) {
+      _lastMirroredCurrentMeetupId = currentMeetupId;
+      _lastMirroredMeetupStatus = meetupStatus;
+      _mirrorBootstrapped = true;
+      debugPrint('[LiveSession/mirror] writeMeetupVisibility OK '
+          '(currentMeetupId=$currentMeetupId status=$meetupStatus)');
+    }).catchError((Object e) {
+      debugPrint('[LiveSession/mirror] writeMeetupVisibility FAILED '
+          '(currentMeetupId=$currentMeetupId status=$meetupStatus): $e — '
+          'will retry on next tick');
+    });
+  }
+
+  Future<void> _selfHealClearStrandedCurrentMeetupId({
+    required String uid,
+    required String meetupId,
+    required String? status,
+  }) async {
+    debugPrint('[LiveSession/mirror] self-heal clearing stranded '
+        'users.currentMeetupId=$meetupId (status=$status)');
+    try {
+      await FirebaseFirestore.instance.collection('users').doc(uid).update({
+        'currentMeetupId': FieldValue.delete(),
+      });
+      debugPrint('[LiveSession/mirror] self-heal write OK '
+          '(currentMeetupId=$meetupId)');
+    } catch (e) {
+      debugPrint('[LiveSession/mirror] self-heal write FAILED '
+          '(currentMeetupId=$meetupId): $e');
+    }
   }
 
   // ── Cold-start / sign-in hydration ────────────────────────────────────────
@@ -482,6 +860,13 @@ class LiveSession extends ChangeNotifier {
       _scheduleExpiry();
       _subscribeToSession(uid);
       _subscribeToMeetupMirror(uid);
+      // Treat hydrate the same as a fresh start for the bootstrap retry:
+      // even if the doc carries an old geohash, a hydrated session that
+      // can't get a first GPS read on resume must keep retrying instead
+      // of waiting 60 s for the next periodic tick.
+      _hasWrittenInitialPosition = false;
+      _initialPositionRetryTimer?.cancel();
+      _initialPositionRetryTimer = null;
       _startLocationRefresh(uid);
       // One immediate position write so geohash is fresh for Nearby.
       _writePosition(uid);
@@ -499,17 +884,26 @@ class LiveSession extends ChangeNotifier {
     _sessionSub = null;
     _meetupMirrorSub?.cancel();
     _meetupMirrorSub = null;
+    _meetupStatusSub?.cancel();
+    _meetupStatusSub = null;
     _expiryTimer?.cancel();
     _expiryTimer = null;
     _locationTimer?.cancel();
     _locationTimer = null;
+    _initialPositionRetryTimer?.cancel();
+    _initialPositionRetryTimer = null;
+    _hasWrittenInitialPosition = false;
     _resetTimer?.cancel();
     _resetTimer = null;
     _isLive = false;
     _expiresAt = null;
     _selfieFilePath = null;
+    _avatarFilePath = null;
     _currentSession = null;
     _lastMirroredCurrentMeetupId = null;
+    _lastMirroredMeetupStatus = null;
+    _mirrorBootstrapped = false;
+    _meetupSelfHealAttempted.clear();
     _uid = null;
     notifyListeners();
   }
@@ -518,8 +912,10 @@ class LiveSession extends ChangeNotifier {
   void dispose() {
     _sessionSub?.cancel();
     _meetupMirrorSub?.cancel();
+    _meetupStatusSub?.cancel();
     _expiryTimer?.cancel();
     _locationTimer?.cancel();
+    _initialPositionRetryTimer?.cancel();
     _resetTimer?.cancel();
     super.dispose();
   }
@@ -643,27 +1039,69 @@ class LiveSession extends ChangeNotifier {
 
   // ── Discovery snapshot helper ─────────────────────────────────────────────
 
+  /// Reads the discovery snapshot used to freeze the live session at Go Live.
+  ///
+  /// Source-of-truth model:
+  ///   • PUBLIC preferences (`interestedIn`, `ageRangeMin`, `ageRangeMax`) come
+  ///     from `profiles/{uid}` first.  Legacy accounts whose profiles doc
+  ///     hasn't been backfilled yet fall back to `users/{uid}`, where the
+  ///     same fields lived prior to the cutover.
+  ///   • PRIVATE discovery controls (`maxDistanceMeters`) ALWAYS come from
+  ///     `users/{uid}` — they are not on the public profile by design.
+  ///
+  /// `interestedIn` value is normalised through
+  /// [DemoProfile.interestedInToCanonical] so the snapshot is canonical
+  /// lowercase regardless of which legacy field name (interestedIn / showMe /
+  /// openTo) or casing the source doc carried.  A read failure on either doc
+  /// produces the documented defaults rather than aborting Go Live.
   Future<_DiscoverySnapshot> _readDiscoverySnapshot(String uid) async {
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(uid)
-          .get();
-      final data = doc.data() ?? const {};
+      final db = FirebaseFirestore.instance;
+      final results = await Future.wait([
+        db.collection('profiles').doc(uid).get(),
+        db.collection('users').doc(uid).get(),
+      ]);
+      final profileData = results[0].data() ?? const {};
+      final userData = results[1].data() ?? const {};
+
+      String pickInterestedIn() {
+        // Prefer canonical `interestedIn` on profiles, then on users; fall
+        // through to the older `showMe` (Settings) and `openTo` (onboarding)
+        // keys for accounts that never wrote the canonical field.
+        for (final candidate in [
+          profileData['interestedIn'],
+          userData['interestedIn'],
+          userData['showMe'],
+          userData['openTo'],
+        ]) {
+          if (candidate is String && candidate.isNotEmpty) {
+            return DemoProfile.interestedInToCanonical(candidate);
+          }
+        }
+        return 'everyone';
+      }
+
+      int pickInt(String key, int fallback) {
+        final p = profileData[key];
+        if (p is num) return p.toInt();
+        final u = userData[key];
+        if (u is num) return u.toInt();
+        return fallback;
+      }
+
       return _DiscoverySnapshot(
         maxDistanceMeters:
-            ((data['maxDistanceMeters'] as num?)?.toInt() ?? 30).clamp(30, 60),
-        discoverable: (data['discoverable'] as bool?) ?? true,
-        showMe: (data['showMe'] as String?) ?? 'everyone',
-        ageRangeMin: (data['ageRangeMin'] as num?)?.toInt() ?? 18,
-        ageRangeMax: (data['ageRangeMax'] as num?)?.toInt() ?? 99,
+            ((userData['maxDistanceMeters'] as num?)?.toInt() ?? 30)
+                .clamp(30, 60),
+        interestedIn: pickInterestedIn(),
+        ageRangeMin: pickInt('ageRangeMin', 18),
+        ageRangeMax: pickInt('ageRangeMax', 99),
       );
     } catch (e) {
       debugPrint('[LiveSession] discovery snapshot read failed: $e');
       return const _DiscoverySnapshot(
         maxDistanceMeters: 30,
-        discoverable: true,
-        showMe: 'everyone',
+        interestedIn: 'everyone',
         ageRangeMin: 18,
         ageRangeMax: 99,
       );
@@ -674,14 +1112,12 @@ class LiveSession extends ChangeNotifier {
 class _DiscoverySnapshot {
   const _DiscoverySnapshot({
     required this.maxDistanceMeters,
-    required this.discoverable,
-    required this.showMe,
+    required this.interestedIn,
     required this.ageRangeMin,
     required this.ageRangeMax,
   });
   final int maxDistanceMeters;
-  final bool discoverable;
-  final String showMe;
+  final String interestedIn;
   final int ageRangeMin;
   final int ageRangeMax;
 }
