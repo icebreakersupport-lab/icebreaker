@@ -115,49 +115,78 @@ export const onMeetupDecisionWritten = onDocumentWritten(
       return;
     }
 
-    // ── 4. Idempotency check ─────────────────────────────────────────────────
-    // Conversation ID = meetupId.  Deterministic — clients can poll for it
-    // without a list query.
-    const convRef = db.collection('conversations').doc(meetupId);
-    const convSnap = await convRef.get();
-
-    if (convSnap.exists) {
-      console.log(`[unlock] conversation ${meetupId} already exists — no-op`);
+    // ── 4. Idempotency: have we already concluded THIS meetup? ──────────────
+    // The function fires on every decision write, so we can re-enter with both
+    // decisions present after the work has already run.  Anchor idempotency on
+    // the meetup's own status — once it's 'matched', this meetup's pass is
+    // complete and re-doing the work would just churn the conversation
+    // snapshot without changing user-visible state.
+    if (meetup.status === 'matched') {
+      console.log(`[unlock] meetup ${meetupId} already matched — no-op`);
       return;
     }
 
-    // ── 5. Create the conversation ───────────────────────────────────────────
+    // ── 5. Resolve the conversation by deterministic pair-ID ────────────────
+    // The conversation ID is now derived from the SORTED participant UIDs, not
+    // the meetupId.  This means a re-match between the same two users lands
+    // back in the same chat thread — both halves of the rule "matched users
+    // can rematch and end up in the existing conversation, never a duplicate."
+    //
+    // The matches/{meetupId} ledger below stays keyed by meetupId, so we still
+    // get one permanent record per match *event* (useful as a history of
+    // every time these two users have matched).
+    const conversationId = [uid1, uid2].sort().join('_');
+    const convRef = db.collection('conversations').doc(conversationId);
+    const convSnap = await convRef.get();
+
     // Participant metadata is sourced from the meetup doc, not from the
     // decision payload, so clients cannot inject arbitrary names or photos.
     const names: Record<string, string> = meetup.participantNames ?? {};
     const photos: Record<string, string> = meetup.participantPhotos ?? {};
+    const sourceIcebreakerId = meetup.icebreakerId ?? '';
 
-    await convRef.set({
-      participants: [uid1, uid2],
-      participantNames: names,
-      participantPhotos: photos,
-      status: 'active',
-      lastMessage: '',
-      lastMessageAt: FieldValue.serverTimestamp(),
-      [`unreadCount_${uid1}`]: 0,
-      [`unreadCount_${uid2}`]: 0,
-      createdAt: FieldValue.serverTimestamp(),
-      sourceIcebreakerId: meetup.icebreakerId ?? '',
-      meetupId: meetupId,
-    });
+    if (convSnap.exists) {
+      // Re-match: refresh the meetup back-reference and metadata snapshot, but
+      // PRESERVE chat history — leave lastMessage / lastMessageAt / unread
+      // counters alone so the user sees the existing thread continue.
+      // Status: only re-activate if it isn't 'blocked' (a block is a
+      // deliberate UX state and a fresh match shouldn't override it).
+      const existing = convSnap.data() ?? {};
+      const wasBlocked = existing.status === 'blocked';
+      await convRef.update({
+        participantNames: names,
+        participantPhotos: photos,
+        meetupId: meetupId,
+        sourceIcebreakerId,
+        ...(wasBlocked ? {} : { status: 'active' }),
+      });
+      console.log(
+        `[unlock] re-match: reused conversation ${conversationId} for meetup ${meetupId}` +
+          (wasBlocked ? ' (status=blocked preserved)' : ''),
+      );
+    } else {
+      // First match between this pair — create the conversation.
+      await convRef.set({
+        participants: [uid1, uid2],
+        participantNames: names,
+        participantPhotos: photos,
+        status: 'active',
+        lastMessage: '',
+        lastMessageAt: FieldValue.serverTimestamp(),
+        [`unreadCount_${uid1}`]: 0,
+        [`unreadCount_${uid2}`]: 0,
+        createdAt: FieldValue.serverTimestamp(),
+        sourceIcebreakerId,
+        meetupId: meetupId,
+      });
+      console.log(`[unlock] conversation ${conversationId} created for meetup ${meetupId}`);
+    }
 
-    // ── 6. Write the permanent match record ─────────────────────────────────
-    // `matches/{meetupId}` is an immutable snapshot of the moment of matching:
-    // participants, names, photos, and the match colour as they were when the
-    // ice broke.  Unlike `conversations` (which mutates on every chat message
-    // and can flip to status='blocked'), this doc is a permanent ledger of
-    // "these two users matched on this date."  Useful for analytics, profile
-    // showcases, and any future feature that needs match history regardless
-    // of the chat's current state.
-    //
-    // We reach this block only on the first run-through (the convSnap.exists
-    // guard above bails on subsequent fires), so a single set() is safe and
-    // idempotent in practice.
+    // ── 6. Write the permanent match record (one per match event) ───────────
+    // `matches/{meetupId}` stays keyed by meetupId on purpose: re-matches
+    // between the same pair produce a NEW match record each time, giving us a
+    // permanent ledger of every successful match — distinct from the
+    // single-thread conversation that survives across re-matches.
     const matchRef = db.collection('matches').doc(meetupId);
     await matchRef.set({
       participants: [uid1, uid2],
@@ -166,8 +195,8 @@ export const onMeetupDecisionWritten = onDocumentWritten(
       matchColorHex: (meetup.matchColorHex as string | undefined) ?? '',
       matchedAt: FieldValue.serverTimestamp(),
       meetupId: meetupId,
-      conversationId: meetupId,
-      sourceIcebreakerId: meetup.icebreakerId ?? '',
+      conversationId,
+      sourceIcebreakerId,
     });
 
     // Mark the meetup as matched.
@@ -175,7 +204,7 @@ export const onMeetupDecisionWritten = onDocumentWritten(
       .update({ status: 'matched', matchedAt: FieldValue.serverTimestamp() })
       .catch((err) => console.error('[unlock] meetup status update failed:', err));
 
-    console.log(`[unlock] conversation + match record created for meetup ${meetupId}`);
+    console.log(`[unlock] match record + status flip done for meetup ${meetupId}`);
   },
 );
 
