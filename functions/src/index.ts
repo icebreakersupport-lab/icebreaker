@@ -4,10 +4,14 @@ import { onSchedule } from 'firebase-functions/v2/scheduler';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
+import { getAuth } from 'firebase-admin/auth';
+import { getStorage } from 'firebase-admin/storage';
 
 initializeApp();
 
 const db = getFirestore();
+const auth = getAuth();
+const storage = getStorage();
 
 const MEETUP_MATCH_COLOR_HEXES = [
   '#FF073A', // neon red
@@ -476,6 +480,175 @@ const TERMINAL_MEETUP_STATUSES: ReadonlySet<string> = new Set([
   'cancelled_talking',
 ]);
 
+async function deleteQueryDocs(
+  docs: FirebaseFirestore.QueryDocumentSnapshot<FirebaseFirestore.DocumentData>[],
+  recursive = false,
+): Promise<number> {
+  const seen = new Set<string>();
+  let deleted = 0;
+  for (const doc of docs) {
+    if (seen.has(doc.ref.path)) continue;
+    seen.add(doc.ref.path);
+    if (recursive) {
+      await db.recursiveDelete(doc.ref);
+    } else {
+      await doc.ref.delete().catch((err) => {
+        // Firestore treats deleting a missing doc as success, but this keeps
+        // the account-deletion flow tolerant if the doc disappears mid-pass.
+        console.warn(`[account-delete] delete ${doc.ref.path} failed:`, err);
+        throw err;
+      });
+    }
+    deleted += 1;
+  }
+  return deleted;
+}
+
+async function safeDeleteDoc(
+  ref: FirebaseFirestore.DocumentReference<FirebaseFirestore.DocumentData>,
+): Promise<void> {
+  try {
+    await db.recursiveDelete(ref);
+  } catch (err) {
+    console.warn(`[account-delete] recursiveDelete ${ref.path} failed:`, err);
+    throw err;
+  }
+}
+
+/**
+ * deleteMyAccount — authoritative account deletion path.
+ *
+ * Why a callable instead of client-only deletes:
+ *   • The client cannot delete Firebase Auth users other than itself, cannot
+ *     sweep shared documents safely, and cannot enumerate Storage objects by
+ *     prefix. A server-owned flow keeps the app's deletion promise honest.
+ *   • We intentionally delete shared app artifacts involving the account
+ *     (meetups, matches, conversations, icebreakers, reports) so the account
+ *     is removed from the runnable product surface instead of being merely
+ *     hidden from sign-in.
+ */
+export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+
+  const uid = request.auth.uid;
+  const userRef = db.collection('users').doc(uid);
+  const liveSessionRef = db.collection('live_sessions').doc(uid);
+  const profileRef = db.collection('profiles').doc(uid);
+  const blockedByRef = db.collection('blockedBy').doc(uid);
+
+  const [
+    sentIcebreakersSnap,
+    receivedIcebreakersSnap,
+    meetupsSnap,
+    conversationsSnap,
+    matchesSnap,
+    reportsByMeSnap,
+    reportsAboutMeSnap,
+    blocksByMeSnap,
+    blocksAgainstMeSnap,
+  ] = await Promise.all([
+    db.collection('icebreakers').where('senderId', '==', uid).get(),
+    db.collection('icebreakers').where('recipientId', '==', uid).get(),
+    db.collection('meetups').where('participants', 'array-contains', uid).get(),
+    db.collection('conversations').where('participants', 'array-contains', uid).get(),
+    db.collection('matches').where('participants', 'array-contains', uid).get(),
+    db.collection('reports').where('reporterId', '==', uid).get(),
+    db.collection('reports').where('reportedId', '==', uid).get(),
+    db.collection('blocks').where('blockerId', '==', uid).get(),
+    db.collection('blocks').where('blockedId', '==', uid).get(),
+  ]);
+
+  // Release anyone still pointed at a meetup involving this account before the
+  // meetup docs disappear. This prevents surviving users from staying stuck in
+  // Home/Nearby limbo after their counterpart deletes their account.
+  for (const meetupDoc of meetupsSnap.docs) {
+    const participants = (meetupDoc.data().participants as string[] | undefined) ?? [];
+    await Promise.all(
+      participants.map(async (participantUid) => {
+        const participantRef = db.collection('users').doc(participantUid);
+        const participantSnap = await participantRef.get();
+        const currentMeetupId = participantSnap.data()?.currentMeetupId as string | undefined;
+        if (currentMeetupId === meetupDoc.id) {
+          await participantRef.update({ currentMeetupId: FieldValue.delete() }).catch((err) => {
+            console.warn(
+              `[account-delete] currentMeetupId clear failed for ${participantUid}:`,
+              err,
+            );
+            throw err;
+          });
+        }
+      }),
+    );
+  }
+
+  // Remove every block edge this user participates in so other users do not
+  // retain stale forward/reverse indexes to a deleted account.
+  const blockDocs = [...blocksByMeSnap.docs, ...blocksAgainstMeSnap.docs];
+  const seenBlocks = new Set<string>();
+  for (const doc of blockDocs) {
+    if (seenBlocks.has(doc.ref.path)) continue;
+    seenBlocks.add(doc.ref.path);
+    const data = doc.data();
+    const blockerId = data.blockerId as string | undefined;
+    const blockedId = data.blockedId as string | undefined;
+    if (!blockerId || !blockedId) continue;
+    await Promise.allSettled([
+      doc.ref.delete(),
+      db
+        .collection('users')
+        .doc(blockerId)
+        .collection('blockedUsers')
+        .doc(blockedId)
+        .delete(),
+      db.collection('blockedBy').doc(blockedId).collection('blockers').doc(blockerId).delete(),
+    ]);
+  }
+
+  const deletedIcebreakers = await deleteQueryDocs([
+    ...sentIcebreakersSnap.docs,
+    ...receivedIcebreakersSnap.docs,
+  ]);
+  const deletedMeetups = await deleteQueryDocs(meetupsSnap.docs, true);
+  const deletedConversations = await deleteQueryDocs(conversationsSnap.docs, true);
+  const deletedMatches = await deleteQueryDocs(matchesSnap.docs);
+  const deletedReports = await deleteQueryDocs([
+    ...reportsByMeSnap.docs,
+    ...reportsAboutMeSnap.docs,
+  ]);
+
+  await Promise.all([
+    safeDeleteDoc(liveSessionRef).catch(() => undefined),
+    safeDeleteDoc(profileRef).catch(() => undefined),
+    safeDeleteDoc(blockedByRef).catch(() => undefined),
+    safeDeleteDoc(userRef).catch(() => undefined),
+    storage.bucket().deleteFiles({ prefix: `users/${uid}/` }).catch((err) => {
+      console.warn(`[account-delete] storage delete failed for users/${uid}/:`, err);
+      throw err;
+    }),
+  ]);
+
+  await auth.deleteUser(uid);
+
+  console.log(
+    `[account-delete] deleted uid=${uid} ` +
+      `icebreakers=${deletedIcebreakers} meetups=${deletedMeetups} ` +
+      `conversations=${deletedConversations} matches=${deletedMatches} ` +
+      `reports=${deletedReports} blocks=${seenBlocks.size}`,
+  );
+
+  return {
+    ok: true,
+    deletedIcebreakers,
+    deletedMeetups,
+    deletedConversations,
+    deletedMatches,
+    deletedReports,
+    deletedBlocks: seenBlocks.size,
+  };
+});
+
 /**
  * respondToIcebreaker — the only legal path for an icebreaker to advance from
  * 'sent' to 'accepted' or 'declined'.
@@ -772,9 +945,40 @@ export const onMeetupTerminal = onDocumentWritten(
         }
       }),
     );
+
+    // Backref the terminal outcome onto the source icebreaker so the Messages
+    // History view can render a per-icebreaker stage label ("Met — no match",
+    // "Cancelled before meeting", etc.) without reading the meetup doc per
+    // row.  Only the icebreaker that initiated this meetup is updated; if the
+    // meetup was created without a sourceIcebreakerId (shouldn't happen today,
+    // defensive in case a future entry-point bypasses the icebreaker flow)
+    // the backref is skipped.
+    const sourceIcebreakerId =
+      (after.icebreakerId as string | undefined) ?? '';
+    if (sourceIcebreakerId.length > 0) {
+      try {
+        await db
+          .collection('icebreakers')
+          .doc(sourceIcebreakerId)
+          .update({
+            meetupOutcome: afterStatus,
+            meetupConcludedAt: FieldValue.serverTimestamp(),
+          });
+      } catch (err) {
+        console.error(
+          `[meetup-terminal] failed to backref outcome onto ` +
+            `icebreaker ${sourceIcebreakerId}:`,
+          err,
+        );
+      }
+    }
+
     console.log(
       `[meetup-terminal] ${meetupId}: ${beforeStatus} → ${afterStatus}; ` +
-        `cleared currentMeetupId on [${participants.join(', ')}]`,
+        `cleared currentMeetupId on [${participants.join(', ')}]` +
+        (sourceIcebreakerId
+          ? `; backref'd outcome onto icebreaker ${sourceIcebreakerId}`
+          : ''),
     );
   },
 );

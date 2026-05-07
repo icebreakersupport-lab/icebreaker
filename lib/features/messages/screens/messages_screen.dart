@@ -511,25 +511,48 @@ class _MessagesScreenState extends State<MessagesScreen> {
         continue;
       }
 
-      // Expired → History.
-      if (status == 'expired' ||
-          (status == 'sent' &&
-              expiresAt != null &&
-              !expiresAt.isAfter(now))) {
+      // Anything past Active Now → History.  Status drives the preview/icon;
+      // accepted icebreakers join their meetup outcome to differentiate the
+      // post-accept stages (no_match, cancelled_finding, etc.).
+      final terminal = _terminalForIcebreaker(
+        status: status,
+        meetupOutcome: data['meetupOutcome'] as String?,
+        expiresAt: expiresAt,
+        now: now,
+      );
+      if (terminal != null) {
+        // Matched: handled by the conversation row, never the icebreaker.
+        if (terminal.skip) continue;
         history.add(_HistoryItem(
           icebreakerId: doc.id,
           conversationId: null,
           isOutgoing: false,
           otherFirstName: senderFirstName,
           otherPhotoUrl: '',
-          previewText: 'Icebreaker expired',
-          timestamp: _formatRelative(expiresAt ?? createdAt, now),
-          icon: Icons.timer_off_outlined,
+          previewText: terminal.previewIncoming,
+          timestamp: _formatRelative(
+            terminal.timestampSource(
+              expiresAt: expiresAt,
+              createdAt: createdAt,
+              concludedAt:
+                  (data['meetupConcludedAt'] as Timestamp?)?.toDate(),
+            ),
+            now,
+          ),
+          icon: terminal.icon,
           message: message,
-          status: 'expired',
+          status: terminal.statusCode,
           sentAt: createdAt,
           expiresAt: expiresAt,
-          sortMs: (expiresAt ?? createdAt ?? now).millisecondsSinceEpoch,
+          sortMs: (terminal
+                      .timestampSource(
+                        expiresAt: expiresAt,
+                        createdAt: createdAt,
+                        concludedAt: (data['meetupConcludedAt'] as Timestamp?)
+                            ?.toDate(),
+                      ) ??
+                  now)
+              .millisecondsSinceEpoch,
         ));
       }
     }
@@ -578,24 +601,44 @@ class _MessagesScreenState extends State<MessagesScreen> {
         continue;
       }
 
-      if (status == 'expired' ||
-          (status == 'sent' &&
-              expiresAt != null &&
-              !expiresAt.isAfter(now))) {
+      final terminal = _terminalForIcebreaker(
+        status: status,
+        meetupOutcome: data['meetupOutcome'] as String?,
+        expiresAt: expiresAt,
+        now: now,
+      );
+      if (terminal != null) {
+        if (terminal.skip) continue;
         history.add(_HistoryItem(
           icebreakerId: doc.id,
           conversationId: null,
           isOutgoing: true,
           otherFirstName: recipientFirstName,
           otherPhotoUrl: '',
-          previewText: 'Icebreaker expired',
-          timestamp: _formatRelative(expiresAt ?? createdAt, now),
-          icon: Icons.timer_off_outlined,
+          previewText: terminal.previewOutgoing,
+          timestamp: _formatRelative(
+            terminal.timestampSource(
+              expiresAt: expiresAt,
+              createdAt: createdAt,
+              concludedAt:
+                  (data['meetupConcludedAt'] as Timestamp?)?.toDate(),
+            ),
+            now,
+          ),
+          icon: terminal.icon,
           message: message,
-          status: 'expired',
+          status: terminal.statusCode,
           sentAt: createdAt,
           expiresAt: expiresAt,
-          sortMs: (expiresAt ?? createdAt ?? now).millisecondsSinceEpoch,
+          sortMs: (terminal
+                      .timestampSource(
+                        expiresAt: expiresAt,
+                        createdAt: createdAt,
+                        concludedAt: (data['meetupConcludedAt'] as Timestamp?)
+                            ?.toDate(),
+                      ) ??
+                  now)
+              .millisecondsSinceEpoch,
         ));
       }
     }
@@ -844,6 +887,111 @@ class _MessagesScreenState extends State<MessagesScreen> {
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
+  /// Maps an icebreaker's `(status, meetupOutcome, expiry)` triple to the
+  /// History card it should produce — or null when the row should NOT
+  /// surface in History (e.g. still sent and unexpired; the Active Now path
+  /// handles those).
+  ///
+  /// The full set of terminal stages an icebreaker can reach:
+  ///
+  ///   sent → (TTL) → expired                  "Icebreaker expired"
+  ///   sent → declined                         "{They|You} declined"
+  ///   sent → accepted → matched               (skipped — conversation row)
+  ///   sent → accepted → no_match              "No match"
+  ///   sent → accepted → expired_finding       "Missed each other"
+  ///   sent → accepted → cancelled_finding     "Cancelled before meeting"
+  ///   sent → accepted → cancelled_talking     "Cancelled mid-conversation"
+  ///   sent → accepted → ended                 (skipped — conversation row,
+  ///                                            ended is the post-match
+  ///                                            continued-private exit)
+  ///   sent → accepted → (no outcome yet)      "Connecting…"
+  ///
+  /// `previewIncoming` / `previewOutgoing` differ where pronouns matter
+  /// ("You declined" vs "They declined").  `timestampSource` chooses the
+  /// best wall-clock anchor for each terminal: meetupConcludedAt wins for
+  /// post-accept terminals, expiresAt for TTL expiry, createdAt as a
+  /// last-resort fallback.
+  static _IcebreakerTerminal? _terminalForIcebreaker({
+    required String status,
+    required String? meetupOutcome,
+    required DateTime? expiresAt,
+    required DateTime now,
+  }) {
+    final timeExpired =
+        status == 'sent' && expiresAt != null && !expiresAt.isAfter(now);
+    if (status == 'expired' || timeExpired) {
+      return const _IcebreakerTerminal(
+        statusCode: 'expired',
+        previewIncoming: 'Icebreaker expired',
+        previewOutgoing: 'Icebreaker expired',
+        icon: Icons.timer_off_outlined,
+        anchor: _TerminalAnchor.expiry,
+      );
+    }
+    if (status == 'declined') {
+      return const _IcebreakerTerminal(
+        statusCode: 'declined',
+        previewIncoming: 'You declined',
+        previewOutgoing: 'They declined',
+        icon: Icons.close_rounded,
+        anchor: _TerminalAnchor.created,
+      );
+    }
+    if (status == 'accepted') {
+      switch (meetupOutcome) {
+        case 'matched':
+        case 'ended':
+          return const _IcebreakerTerminal.skip();
+        case 'no_match':
+          return const _IcebreakerTerminal(
+            statusCode: 'no_match',
+            previewIncoming: 'No match',
+            previewOutgoing: 'No match',
+            icon: Icons.heart_broken_outlined,
+            anchor: _TerminalAnchor.concluded,
+          );
+        case 'expired_finding':
+          return const _IcebreakerTerminal(
+            statusCode: 'expired_finding',
+            previewIncoming: 'Missed each other',
+            previewOutgoing: 'Missed each other',
+            icon: Icons.location_off_outlined,
+            anchor: _TerminalAnchor.concluded,
+          );
+        case 'cancelled_finding':
+          return const _IcebreakerTerminal(
+            statusCode: 'cancelled_finding',
+            previewIncoming: 'Cancelled before meeting',
+            previewOutgoing: 'Cancelled before meeting',
+            icon: Icons.cancel_outlined,
+            anchor: _TerminalAnchor.concluded,
+          );
+        case 'cancelled_talking':
+          return const _IcebreakerTerminal(
+            statusCode: 'cancelled_talking',
+            previewIncoming: 'Cancelled mid-conversation',
+            previewOutgoing: 'Cancelled mid-conversation',
+            icon: Icons.cancel_outlined,
+            anchor: _TerminalAnchor.concluded,
+          );
+        default:
+          // Accepted but no outcome on the doc yet — meetup is in flight,
+          // OR the icebreaker pre-dates the onMeetupTerminal backref deploy
+          // and the meetup doc isn't joined here.  Render a neutral "in
+          // progress" row so the user at least sees that the icebreaker
+          // was accepted.
+          return const _IcebreakerTerminal(
+            statusCode: 'accepted',
+            previewIncoming: 'Connecting…',
+            previewOutgoing: 'Connecting…',
+            icon: Icons.hourglass_bottom_rounded,
+            anchor: _TerminalAnchor.created,
+          );
+      }
+    }
+    return null;
+  }
+
   /// Compact relative-time formatter for chat-list rows.  Avoids pulling in
   /// `package:intl` for what is effectively six branches.
   static String _formatRelative(DateTime? dt, DateTime now) {
@@ -996,6 +1144,66 @@ class _HistoryItem {
   final DateTime? sentAt;
   final DateTime? expiresAt;
   final int sortMs;
+}
+
+/// Which wall-clock value to anchor a History row to — picked per-terminal
+/// because each stage has a different "this is when it concluded" moment.
+enum _TerminalAnchor {
+  /// status='expired' or sent-past-TTL — anchor on expiresAt (when the TTL
+  /// crossed) so the timestamp matches the stage label.
+  expiry,
+
+  /// status='declined' or status='accepted' without an outcome yet — anchor
+  /// on the icebreaker createdAt because we don't have a more precise
+  /// transition time on the doc.
+  created,
+
+  /// Post-accept terminals — anchor on meetupConcludedAt (written by
+  /// onMeetupTerminal) which captures the moment the meetup actually
+  /// resolved.
+  concluded,
+}
+
+class _IcebreakerTerminal {
+  const _IcebreakerTerminal({
+    required this.statusCode,
+    required this.previewIncoming,
+    required this.previewOutgoing,
+    required this.icon,
+    required this.anchor,
+  }) : skip = false;
+
+  /// Skipped terminals — the row should NOT render in History because
+  /// another surface owns it (the conversation row for matched / ended).
+  const _IcebreakerTerminal.skip()
+      : statusCode = '',
+        previewIncoming = '',
+        previewOutgoing = '',
+        icon = Icons.help_outline,
+        anchor = _TerminalAnchor.created,
+        skip = true;
+
+  final String statusCode;
+  final String previewIncoming;
+  final String previewOutgoing;
+  final IconData icon;
+  final _TerminalAnchor anchor;
+  final bool skip;
+
+  DateTime? timestampSource({
+    required DateTime? expiresAt,
+    required DateTime? createdAt,
+    required DateTime? concludedAt,
+  }) {
+    switch (anchor) {
+      case _TerminalAnchor.expiry:
+        return expiresAt ?? createdAt;
+      case _TerminalAnchor.created:
+        return createdAt;
+      case _TerminalAnchor.concluded:
+        return concludedAt ?? createdAt;
+    }
+  }
 }
 
 /// Horizontal avatar tile for the Matches strip.  Photo in a brand-pink
