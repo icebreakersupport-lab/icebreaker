@@ -9,6 +9,7 @@ import 'package:flutter/material.dart';
 
 import 'core/constants/app_constants.dart';
 import 'core/router/app_router.dart';
+import 'core/services/billing_service.dart';
 import 'core/services/profile_repository.dart';
 import 'core/state/user_profile.dart';
 import 'core/state/flow_coordinator.dart';
@@ -87,6 +88,12 @@ class _IcebreakerAppState extends State<IcebreakerApp>
     _hydrateProfileIfSignedIn();
     _listenForAuthChanges();
     _listenForTokenRefresh();
+    // Boot the IAP plugin once at app start so the Shop has products and
+    // pricing ready by the time the user opens it, and so any pending
+    // purchases left over from a previous session (interrupted redeem
+    // CF, killed app mid-purchase) are re-delivered and finalised
+    // automatically via the purchase stream.
+    BillingService.instance.initialize();
   }
 
   /// Clears in-memory profile + live session on sign-out and re-hydrates both
