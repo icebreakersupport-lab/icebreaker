@@ -40,6 +40,7 @@ class BillingService extends ChangeNotifier {
   Map<String, ProductDetails> _products = const {};
   final Set<String> _purchasingIds = <String>{};
   String? _lastError;
+  String? _lastSuccessProductId;
 
   /// True after [initialize] confirmed the store is reachable.  When false,
   /// the Shop should disable its real-purchase CTAs and surface a hint.
@@ -61,6 +62,26 @@ class BillingService extends ChangeNotifier {
   /// Last user-visible error from any billing operation.  Cleared on the
   /// next successful action; the Shop reads this to show a toast.
   String? get lastError => _lastError;
+
+  /// Most recent productId for which the redeem CF returned success.  The
+  /// Shop reads this on every notify, shows a confirmation toast, then
+  /// calls [clearLastSuccess] so the same purchase isn't acked twice.
+  String? get lastSuccessProductId => _lastSuccessProductId;
+
+  /// Clears the one-shot success signal after the UI has shown its
+  /// confirmation.  Safe to call when nothing is buffered.
+  void clearLastSuccess() {
+    if (_lastSuccessProductId == null) return;
+    _lastSuccessProductId = null;
+    notifyListeners();
+  }
+
+  /// Clears the last-error signal after the UI has shown its toast.
+  void clearLastError() {
+    if (_lastError == null) return;
+    _lastError = null;
+    notifyListeners();
+  }
 
   /// Wires up the plugin and loads product details from the store.  Safe
   /// to call multiple times — subsequent calls are no-ops.  On platforms
@@ -209,12 +230,16 @@ class BillingService extends ChangeNotifier {
         case PurchaseStatus.restored:
           final granted = await _redeem(p);
           _purchasingIds.remove(p.productID);
-          if (granted && p.pendingCompletePurchase) {
-            // Only acknowledge with the store after we've credited the
-            // user.  If the redeem call failed, leaving the purchase
-            // pending lets the OS re-deliver it on next launch so we can
-            // retry — strictly better than acknowledging and losing it.
-            await _iap.completePurchase(p);
+          if (granted) {
+            _lastSuccessProductId = p.productID;
+            if (p.pendingCompletePurchase) {
+              // Only acknowledge with the store after we've credited the
+              // user.  If the redeem call failed, leaving the purchase
+              // pending lets the OS re-deliver it on next launch so we
+              // can retry — strictly better than acknowledging and
+              // losing it.
+              await _iap.completePurchase(p);
+            }
           }
           notifyListeners();
           break;

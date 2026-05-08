@@ -1,22 +1,15 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 
+import '../../../core/constants/product_catalog.dart';
+import '../../../core/services/billing_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 
 // ── File-level gradient constants ─────────────────────────────────────────────
-
-const _kIceGradient = LinearGradient(
-  colors: [AppColors.brandCyan, AppColors.brandPurple],
-);
-
-const _kSessionGradient = LinearGradient(
-  begin: Alignment.centerLeft,
-  end: Alignment.centerRight,
-  colors: [AppColors.brandPink, AppColors.brandPurple],
-);
 
 const _kGoldGradient = LinearGradient(
   begin: Alignment.topLeft,
@@ -24,39 +17,92 @@ const _kGoldGradient = LinearGradient(
   colors: [Color(0xFFFFBE3C), Color(0xFFE07000)],
 );
 
-/// Demo-only Shop screen — opened from the Home screen SHOP button.
+/// Shop screen — opened from the Home screen SHOP button.
 ///
 /// Sections:
-///   1. Earn Free      — watch ads; 2 ads → 1 Icebreaker, 1 ad → 1 Live Session
+///   1. Earn Free      — watch ads; 1 ad → 1 Icebreaker, 2 ads → 1 Live Session
+///                       (still placeholder — rewarded ads ship in a later phase)
 ///   2. One-Time Packs — singles + multi-packs for both item types
+///                       (wired to `BillingService` → store → `redeemPurchase` CF)
 ///   3. Subscriptions  — auto-rotating 10-second carousel (Plus / Gold)
-///   4. Best Value     — featured bundle card
-///
-/// No real payment wiring. All CTAs show a floating demo snackbar.
-class ShopScreen extends StatelessWidget {
+///                       (still placeholder — subscriptions ship in a later phase)
+///   4. Best Value     — featured bundle card (wired to BillingService)
+class ShopScreen extends StatefulWidget {
   const ShopScreen({super.key});
 
-  // ── Snackbar helpers ────────────────────────────────────────────────────
+  @override
+  State<ShopScreen> createState() => _ShopScreenState();
+}
 
-  void _mockPurchase(BuildContext context, String item) {
-    ScaffoldMessenger.of(context).showSnackBar(_snack(
-      '$item — purchase flow coming soon.',
-    ));
+class _ShopScreenState extends State<ShopScreen> {
+  BillingService get _billing => BillingService.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _billing.addListener(_onBillingChanged);
+    // Cold-open guard: if products didn't finish loading at app start
+    // (no network, store unavailable on first try), kick off a refresh
+    // when the user actually reaches the Shop.
+    if (_billing.isAvailable && _billing.products.isEmpty) {
+      _billing.reloadProducts();
+    }
+  }
+
+  @override
+  void dispose() {
+    _billing.removeListener(_onBillingChanged);
+    super.dispose();
+  }
+
+  void _onBillingChanged() {
+    if (!mounted) return;
+    final success = _billing.lastSuccessProductId;
+    if (success != null) {
+      final def = ProductCatalog.byId(success);
+      final label = def?.title ?? success;
+      _showSnack('$label added to your account.');
+      _billing.clearLastSuccess();
+    }
+    final err = _billing.lastError;
+    if (err != null && err.isNotEmpty) {
+      _showSnack(err);
+      _billing.clearLastError();
+    }
+    setState(() {});
+  }
+
+  void _buy(String productId) {
+    if (!_billing.isAvailable) {
+      _showSnack('Store is unavailable. Please try again later.');
+      return;
+    }
+    if (_billing.products[productId] == null) {
+      _showSnack('Product not loaded yet. Pull to refresh and try again.');
+      return;
+    }
+    _billing.buy(productId);
+  }
+
+  Future<void> _onRefresh() => _billing.reloadProducts();
+
+  Future<void> _restore() async {
+    await _billing.restore();
+    if (!mounted) return;
+    _showSnack('Checking for past purchases…');
   }
 
   void _mockWatch(BuildContext context, String reward) {
-    ScaffoldMessenger.of(context).showSnackBar(_snack(
-      'Ad would play here → $reward (demo).',
-    ));
+    _showSnack('Ad would play here → $reward (demo).');
   }
 
   void _mockSubscribe(BuildContext context, String plan) {
-    ScaffoldMessenger.of(context).showSnackBar(_snack(
-      '$plan subscription — billing coming soon.',
-    ));
+    _showSnack('$plan subscription — billing coming soon.');
   }
 
-  SnackBar _snack(String message) => SnackBar(
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
         content: Text(
           message,
           style: AppTextStyles.caption.copyWith(color: Colors.white),
@@ -66,7 +112,15 @@ class ShopScreen extends StatelessWidget {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
         margin: const EdgeInsets.all(16),
         duration: const Duration(seconds: 2),
-      );
+      ),
+    );
+  }
+
+  String _priceFor(String productId) {
+    final ProductDetails? details = _billing.products[productId];
+    if (details != null) return details.price;
+    return ProductCatalog.byId(productId)?.displayPrice ?? '';
+  }
 
   // ── Build ────────────────────────────────────────────────────────────────
 
@@ -87,10 +141,28 @@ class ShopScreen extends StatelessWidget {
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Text('Shop', style: AppTextStyles.h3),
+        actions: [
+          if (_billing.isAvailable)
+            TextButton(
+              onPressed: _restore,
+              child: Text(
+                'Restore',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.brandCyan,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ),
+        ],
       ),
       body: SafeArea(
         top: false,
-        child: ListView(
+        child: RefreshIndicator(
+          onRefresh: _onRefresh,
+          color: AppColors.brandPink,
+          backgroundColor: AppColors.bgSurface,
+          child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 60),
           children: [
             // Subheader
@@ -111,24 +183,28 @@ class ShopScreen extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  // Icebreaker earn — 2 ads required
-                  Expanded(
-                    child: _EarnCard(
-                      iconColor: AppColors.brandCyan,
-                      icon: Icons.ac_unit_rounded,
-                      reward: '1 Icebreaker 🧊',
-                      adsRequired: 2,
-                      onTap: () => _mockWatch(context, '1 Icebreaker'),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  // Live session earn — 1 ad
+                  // Icebreaker earn — 1 ad required (the cheaper pull).
+                  // Icon + color match the canonical Icebreaker treatment
+                  // used by the home stat row: pink heart.
                   Expanded(
                     child: _EarnCard(
                       iconColor: AppColors.brandPink,
                       icon: Icons.favorite_rounded,
-                      reward: '1 Live Session',
+                      reward: '1 Icebreaker',
                       adsRequired: 1,
+                      onTap: () => _mockWatch(context, '1 Icebreaker'),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+                  // Live session earn — 2 ads required (the bigger reward).
+                  // Icon + color match the canonical Live Session treatment
+                  // used by the home stat row: cyan bolt.
+                  Expanded(
+                    child: _EarnCard(
+                      iconColor: AppColors.brandCyan,
+                      icon: Icons.bolt_rounded,
+                      reward: '1 Live Session',
+                      adsRequired: 2,
                       onTap: () => _mockWatch(context, '1 Live Session'),
                     ),
                   ),
@@ -152,59 +228,74 @@ class ShopScreen extends StatelessWidget {
                 children: [
                   // ── Icebreakers ──────────────────────────────────────
                   _PackRow(
-                    gradient: _kIceGradient,
-                    emoji: '🧊',
+                    iconColor: AppColors.brandPink,
+                    icon: Icons.favorite_rounded,
                     title: '1 Icebreaker',
                     subtitle: 'Single use',
-                    price: r'$0.99',
-                    onTap: () => _mockPurchase(context, '1 Icebreaker'),
+                    price: _priceFor(ProductCatalog.icebreakers1.productId),
+                    isPurchasing: _billing.isPurchasing(
+                        ProductCatalog.icebreakers1.productId),
+                    onTap: () =>
+                        _buy(ProductCatalog.icebreakers1.productId),
                   ),
                   const _RowDivider(),
                   _PackRow(
-                    gradient: _kIceGradient,
-                    emoji: '🧊',
+                    iconColor: AppColors.brandPink,
+                    icon: Icons.favorite_rounded,
                     title: '5 Icebreakers',
                     subtitle: 'One-time purchase',
-                    price: r'$2.99',
-                    onTap: () => _mockPurchase(context, '5 Icebreakers'),
+                    price: _priceFor(ProductCatalog.icebreakers5.productId),
+                    isPurchasing: _billing.isPurchasing(
+                        ProductCatalog.icebreakers5.productId),
+                    onTap: () =>
+                        _buy(ProductCatalog.icebreakers5.productId),
                   ),
                   const _RowDivider(),
                   _PackRow(
-                    gradient: _kIceGradient,
-                    emoji: '🧊',
+                    iconColor: AppColors.brandPink,
+                    icon: Icons.favorite_rounded,
                     title: '10 Icebreakers',
                     subtitle: 'One-time purchase',
-                    price: r'$4.99',
-                    onTap: () => _mockPurchase(context, '10 Icebreakers'),
+                    price: _priceFor(ProductCatalog.icebreakers10.productId),
+                    isPurchasing: _billing.isPurchasing(
+                        ProductCatalog.icebreakers10.productId),
+                    onTap: () =>
+                        _buy(ProductCatalog.icebreakers10.productId),
                   ),
                   // ── Group break ──────────────────────────────────────
                   const _GroupDivider(),
                   // ── Live sessions ────────────────────────────────────
                   _PackRow(
-                    gradient: _kSessionGradient,
-                    emoji: '⚡',
+                    iconColor: AppColors.brandCyan,
+                    icon: Icons.bolt_rounded,
                     title: '1 Live Session',
                     subtitle: 'Single use',
-                    price: r'$0.99',
-                    onTap: () => _mockPurchase(context, '1 Live Session'),
+                    price: _priceFor(ProductCatalog.live1.productId),
+                    isPurchasing:
+                        _billing.isPurchasing(ProductCatalog.live1.productId),
+                    onTap: () => _buy(ProductCatalog.live1.productId),
                   ),
                   const _RowDivider(),
                   _PackRow(
-                    gradient: _kSessionGradient,
-                    emoji: '⚡',
+                    iconColor: AppColors.brandCyan,
+                    icon: Icons.bolt_rounded,
                     title: '5 Live Sessions',
                     subtitle: 'One-time purchase',
-                    price: r'$4.99',
-                    onTap: () => _mockPurchase(context, '5 Live Sessions'),
+                    price: _priceFor(ProductCatalog.live5.productId),
+                    isPurchasing:
+                        _billing.isPurchasing(ProductCatalog.live5.productId),
+                    onTap: () => _buy(ProductCatalog.live5.productId),
                   ),
                   const _RowDivider(),
                   _PackRow(
-                    gradient: _kSessionGradient,
-                    emoji: '⚡',
+                    iconColor: AppColors.brandCyan,
+                    icon: Icons.bolt_rounded,
                     title: '10 Live Sessions',
                     subtitle: 'One-time purchase',
-                    price: r'$8.99',
-                    onTap: () => _mockPurchase(context, '10 Live Sessions'),
+                    price: _priceFor(ProductCatalog.live10.productId),
+                    isPurchasing:
+                        _billing.isPurchasing(ProductCatalog.live10.productId),
+                    onTap: () => _buy(ProductCatalog.live10.productId),
                   ),
                 ],
               ),
@@ -225,10 +316,13 @@ class ShopScreen extends StatelessWidget {
             const _SectionLabel('Best Value'),
             const SizedBox(height: 12),
             _BundleCard(
-              onTap: () => _mockPurchase(
-                  context, '5 Icebreakers + 5 Live Sessions'),
+              price: _priceFor(ProductCatalog.bundle55.productId),
+              isPurchasing:
+                  _billing.isPurchasing(ProductCatalog.bundle55.productId),
+              onTap: () => _buy(ProductCatalog.bundle55.productId),
             ),
           ],
+        ),
         ),
       ),
     );
@@ -281,18 +375,24 @@ class _EarnCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Icon circle
+          // Branded icon badge — rounded-square, matching the home stat
+          // tile (36×36 r10) and profile action tile (40×40 r12).  Shop
+          // sits at the upper end of the scale (52×52 r16) since the earn
+          // card is the most prominent surface in the row, but the recipe
+          // — alpha-0.14 fill, alpha-0.32 border, accent icon at the same
+          // ~1:2 ratio — keeps it in the same visual family.
           Container(
             width: 52,
             height: 52,
             decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: iconColor.withValues(alpha: 0.12),
+              color: iconColor.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(
-                color: iconColor.withValues(alpha: 0.25),
+                color: iconColor.withValues(alpha: 0.32),
+                width: 1.2,
               ),
             ),
-            child: Icon(icon, color: iconColor, size: 24),
+            child: Icon(icon, color: iconColor, size: 26),
           ),
 
           const SizedBox(height: 10),
@@ -380,40 +480,47 @@ class _EarnCard extends StatelessWidget {
 
 class _PackRow extends StatelessWidget {
   const _PackRow({
-    required this.gradient,
-    required this.emoji,
+    required this.iconColor,
+    required this.icon,
     required this.title,
     required this.subtitle,
     required this.price,
     required this.onTap,
+    this.isPurchasing = false,
   });
 
-  final LinearGradient gradient;
-  final String emoji;
+  final Color iconColor;
+  final IconData icon;
   final String title;
   final String subtitle;
   final String price;
   final VoidCallback onTap;
+  final bool isPurchasing;
 
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onTap,
+      onTap: isPurchasing ? null : onTap,
       behavior: HitTestBehavior.opaque,
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         child: Row(
           children: [
-            // Emoji badge
+            // Branded icon badge — same recipe as the top earn card,
+            // sized for the pack-row scale: alpha-tinted fill + tinted
+            // border + accent icon centered at a 1:2 icon-to-badge ratio.
             Container(
               width: 40,
               height: 40,
               decoration: BoxDecoration(
-                gradient: gradient,
+                color: iconColor.withValues(alpha: 0.14),
                 borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: iconColor.withValues(alpha: 0.32),
+                ),
               ),
               alignment: Alignment.center,
-              child: Text(emoji, style: const TextStyle(fontSize: 18)),
+              child: Icon(icon, color: iconColor, size: 20),
             ),
             const SizedBox(width: 14),
             // Title + subtitle
@@ -449,14 +556,24 @@ class _PackRow extends StatelessWidget {
                     gradient: AppColors.brandGradient,
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Text(
-                    'BUY',
-                    style: AppTextStyles.caption.copyWith(
-                      color: Colors.white,
-                      fontWeight: FontWeight.w800,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
+                  child: isPurchasing
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            valueColor:
+                                AlwaysStoppedAnimation<Color>(Colors.white),
+                          ),
+                        )
+                      : Text(
+                          'BUY',
+                          style: AppTextStyles.caption.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: 0.8,
+                          ),
+                        ),
                 ),
               ],
             ),
@@ -863,8 +980,14 @@ class _Feature extends StatelessWidget {
 // ── Bundle card ───────────────────────────────────────────────────────────────
 
 class _BundleCard extends StatelessWidget {
-  const _BundleCard({required this.onTap});
+  const _BundleCard({
+    required this.onTap,
+    required this.price,
+    this.isPurchasing = false,
+  });
   final VoidCallback onTap;
+  final String price;
+  final bool isPurchasing;
 
   @override
   Widget build(BuildContext context) {
@@ -931,7 +1054,7 @@ class _BundleCard extends StatelessWidget {
             textBaseline: TextBaseline.alphabetic,
             children: [
               Text(
-                r'$6.99',
+                price,
                 style: AppTextStyles.h1.copyWith(
                   fontWeight: FontWeight.w800,
                   letterSpacing: -0.5,
@@ -950,7 +1073,7 @@ class _BundleCard extends StatelessWidget {
           const SizedBox(height: 20),
 
           GestureDetector(
-            onTap: onTap,
+            onTap: isPurchasing ? null : onTap,
             child: Container(
               width: double.infinity,
               height: 52,
@@ -966,13 +1089,23 @@ class _BundleCard extends StatelessWidget {
                 ],
               ),
               alignment: Alignment.center,
-              child: Text(
-                'GET THE BUNDLE',
-                style: AppTextStyles.buttonL.copyWith(
-                  color: AppColors.brandPink,
-                  letterSpacing: 0.8,
-                ),
-              ),
+              child: isPurchasing
+                  ? const SizedBox(
+                      width: 22,
+                      height: 22,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2.4,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                            AppColors.brandPink),
+                      ),
+                    )
+                  : Text(
+                      'GET THE BUNDLE',
+                      style: AppTextStyles.buttonL.copyWith(
+                        color: AppColors.brandPink,
+                        letterSpacing: 0.8,
+                      ),
+                    ),
             ),
           ),
         ],
