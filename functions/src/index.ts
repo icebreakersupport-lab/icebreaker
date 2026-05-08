@@ -1,6 +1,7 @@
 import { onDocumentWritten, onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import * as functionsV1 from 'firebase-functions/v1';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
@@ -515,24 +516,16 @@ async function safeDeleteDoc(
   }
 }
 
-/**
- * deleteMyAccount — authoritative account deletion path.
- *
- * Why a callable instead of client-only deletes:
- *   • The client cannot delete Firebase Auth users other than itself, cannot
- *     sweep shared documents safely, and cannot enumerate Storage objects by
- *     prefix. A server-owned flow keeps the app's deletion promise honest.
- *   • We intentionally delete shared app artifacts involving the account
- *     (meetups, matches, conversations, icebreakers, reports) so the account
- *     is removed from the runnable product surface instead of being merely
- *     hidden from sign-in.
- */
-export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) => {
-  if (!request.auth) {
-    throw new HttpsError('unauthenticated', 'Sign in required.');
-  }
+type AccountDeleteSummary = {
+  deletedIcebreakers: number;
+  deletedMeetups: number;
+  deletedConversations: number;
+  deletedMatches: number;
+  deletedReports: number;
+  deletedBlocks: number;
+};
 
-  const uid = request.auth.uid;
+async function deleteAccountArtifacts(uid: string): Promise<AccountDeleteSummary> {
   const userRef = db.collection('users').doc(uid);
   const liveSessionRef = db.collection('live_sessions').doc(uid);
   const profileRef = db.collection('profiles').doc(uid);
@@ -560,9 +553,6 @@ export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) =
     db.collection('blocks').where('blockedId', '==', uid).get(),
   ]);
 
-  // Release anyone still pointed at a meetup involving this account before the
-  // meetup docs disappear. This prevents surviving users from staying stuck in
-  // Home/Nearby limbo after their counterpart deletes their account.
   for (const meetupDoc of meetupsSnap.docs) {
     const participants = (meetupDoc.data().participants as string[] | undefined) ?? [];
     await Promise.all(
@@ -583,8 +573,6 @@ export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) =
     );
   }
 
-  // Remove every block edge this user participates in so other users do not
-  // retain stale forward/reverse indexes to a deleted account.
   const blockDocs = [...blocksByMeSnap.docs, ...blocksAgainstMeSnap.docs];
   const seenBlocks = new Set<string>();
   for (const doc of blockDocs) {
@@ -629,17 +617,7 @@ export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) =
     }),
   ]);
 
-  await auth.deleteUser(uid);
-
-  console.log(
-    `[account-delete] deleted uid=${uid} ` +
-      `icebreakers=${deletedIcebreakers} meetups=${deletedMeetups} ` +
-      `conversations=${deletedConversations} matches=${deletedMatches} ` +
-      `reports=${deletedReports} blocks=${seenBlocks.size}`,
-  );
-
   return {
-    ok: true,
     deletedIcebreakers,
     deletedMeetups,
     deletedConversations,
@@ -647,6 +625,59 @@ export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) =
     deletedReports,
     deletedBlocks: seenBlocks.size,
   };
+}
+
+/**
+ * deleteMyAccount — authoritative account deletion path.
+ *
+ * Why a callable instead of client-only deletes:
+ *   • The client cannot delete Firebase Auth users other than itself, cannot
+ *     sweep shared documents safely, and cannot enumerate Storage objects by
+ *     prefix. A server-owned flow keeps the app's deletion promise honest.
+ *   • We intentionally delete shared app artifacts involving the account
+ *     (meetups, matches, conversations, icebreakers, reports) so the account
+ *     is removed from the runnable product surface instead of being merely
+ *     hidden from sign-in.
+ */
+export const deleteMyAccount = onCall({ timeoutSeconds: 540 }, async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+
+  const uid = request.auth.uid;
+  console.log(`[account-delete] starting uid=${uid}`);
+  const summary = await deleteAccountArtifacts(uid);
+
+  await auth.deleteUser(uid);
+
+  console.log(
+    `[account-delete] deleted uid=${uid} ` +
+      `icebreakers=${summary.deletedIcebreakers} meetups=${summary.deletedMeetups} ` +
+      `conversations=${summary.deletedConversations} matches=${summary.deletedMatches} ` +
+      `reports=${summary.deletedReports} blocks=${summary.deletedBlocks}`,
+  );
+
+  return {
+    ok: true,
+    deletedIcebreakers: summary.deletedIcebreakers,
+    deletedMeetups: summary.deletedMeetups,
+    deletedConversations: summary.deletedConversations,
+    deletedMatches: summary.deletedMatches,
+    deletedReports: summary.deletedReports,
+    deletedBlocks: summary.deletedBlocks,
+  };
+});
+
+export const onAuthUserDeletedCleanup = functionsV1.auth.user().onDelete(async (user) => {
+  const uid = user.uid;
+  console.log(`[account-delete-auth] cleanup start uid=${uid}`);
+  const summary = await deleteAccountArtifacts(uid);
+  console.log(
+    `[account-delete-auth] cleanup done uid=${uid} ` +
+      `icebreakers=${summary.deletedIcebreakers} meetups=${summary.deletedMeetups} ` +
+      `conversations=${summary.deletedConversations} matches=${summary.deletedMatches} ` +
+      `reports=${summary.deletedReports} blocks=${summary.deletedBlocks}`,
+  );
 });
 
 /**
@@ -1276,3 +1307,159 @@ export const onMeetupDecisionExpired = onSchedule(
     );
   },
 );
+
+// ─── In-app purchase redemption ───────────────────────────────────────────────
+
+/**
+ * Server-side product catalog.  MUST match
+ * `lib/core/constants/product_catalog.dart` exactly — both the SKU IDs
+ * (which are the IDs configured in App Store Connect / Google Play
+ * Console) and the credit-grant amounts.  The client never tells the
+ * server how many credits a SKU is worth; the server looks it up here.
+ */
+const PRODUCT_CATALOG: Record<string, { icebreakers: number; liveSessions: number }> = {
+  icebreakers_1: { icebreakers: 1, liveSessions: 0 },
+  icebreakers_5: { icebreakers: 5, liveSessions: 0 },
+  icebreakers_10: { icebreakers: 10, liveSessions: 0 },
+  live_1: { icebreakers: 0, liveSessions: 1 },
+  live_5: { icebreakers: 0, liveSessions: 5 },
+  live_10: { icebreakers: 0, liveSessions: 10 },
+  bundle_5_5: { icebreakers: 5, liveSessions: 5 },
+};
+
+/**
+ * Redeems an in-app purchase from either the App Store or Google Play.
+ *
+ * Authoritative crediting path: the BillingService on-device forwards
+ * every successful purchase here, and only acknowledges with the OS
+ * once this function returns success.  That ordering means dropped
+ * network calls or transient CF failures don't strand purchases — the
+ * OS re-delivers the pending transaction on next app open and the
+ * client retries.
+ *
+ * Idempotency comes from a per-transaction dedupe doc at
+ *   purchases/{platform}_{transactionId}
+ * The first call writes the doc inside the same transaction that
+ * applies the credit increment; any subsequent call short-circuits
+ * with a 'already_applied' result.  Two different users redeeming the
+ * same transaction (only possible via a tampered client) are rejected
+ * with permission-denied.
+ *
+ * Receipt validation against Apple's App Store Server API / Google
+ * Play Developer API is NOT yet wired — the client receipt is stored
+ * verbatim on the dedupe doc so a follow-up commit can layer in proper
+ * validation without a client change.
+ */
+export const redeemPurchase = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+  const uid = request.auth.uid;
+  const data = (request.data ?? {}) as {
+    platform?: unknown;
+    productId?: unknown;
+    transactionId?: unknown;
+    verificationSource?: unknown;
+    serverVerificationData?: unknown;
+    localVerificationData?: unknown;
+  };
+
+  const platform = data.platform;
+  const productId = data.productId;
+  const transactionId = data.transactionId;
+
+  if (platform !== 'apple' && platform !== 'google') {
+    throw new HttpsError('invalid-argument', "platform must be 'apple' or 'google'");
+  }
+  if (typeof productId !== 'string' || productId.length === 0) {
+    throw new HttpsError('invalid-argument', 'productId required');
+  }
+  if (typeof transactionId !== 'string' || transactionId.length === 0) {
+    throw new HttpsError('invalid-argument', 'transactionId required');
+  }
+
+  const grant = PRODUCT_CATALOG[productId];
+  if (!grant) {
+    throw new HttpsError('invalid-argument', `Unknown productId: ${productId}`);
+  }
+
+  const dedupeId = `${platform}_${transactionId}`;
+  const purchaseRef = db.collection('purchases').doc(dedupeId);
+  const userRef = db.collection('users').doc(uid);
+
+  const verificationSource =
+    typeof data.verificationSource === 'string' ? data.verificationSource : '';
+  const serverVerificationData =
+    typeof data.serverVerificationData === 'string'
+      ? data.serverVerificationData
+      : '';
+  const localVerificationData =
+    typeof data.localVerificationData === 'string'
+      ? data.localVerificationData
+      : '';
+
+  const result = await db.runTransaction(async (tx) => {
+    const existing = await tx.get(purchaseRef);
+    if (existing.exists) {
+      const existingUid = existing.data()?.uid as string | undefined;
+      if (existingUid && existingUid !== uid) {
+        throw new HttpsError(
+          'permission-denied',
+          'Transaction already redeemed by another account.',
+        );
+      }
+      // Same user re-calling for the same transaction (network retry,
+      // duplicate stream event) — treat as success without double-crediting.
+      return {
+        ok: true,
+        applied: false,
+        productId,
+        granted: grant,
+      };
+    }
+
+    const userSnap = await tx.get(userRef);
+    const currentIcebreakers =
+      (userSnap.data()?.icebreakerCredits as number | undefined) ?? 0;
+    const currentLive =
+      (userSnap.data()?.liveSessionCredits as number | undefined) ?? 0;
+
+    const userUpdate: Record<string, unknown> = {
+      lastPurchaseAt: FieldValue.serverTimestamp(),
+    };
+    if (grant.icebreakers > 0) {
+      userUpdate.icebreakerCredits = currentIcebreakers + grant.icebreakers;
+    }
+    if (grant.liveSessions > 0) {
+      userUpdate.liveSessionCredits = currentLive + grant.liveSessions;
+    }
+
+    tx.set(purchaseRef, {
+      uid,
+      platform,
+      productId,
+      transactionId,
+      grantedIcebreakers: grant.icebreakers,
+      grantedLiveSessions: grant.liveSessions,
+      verificationSource,
+      serverVerificationData,
+      localVerificationData,
+      redeemedAt: FieldValue.serverTimestamp(),
+      validated: false,
+    });
+    tx.set(userRef, userUpdate, { merge: true });
+
+    return {
+      ok: true,
+      applied: true,
+      productId,
+      granted: grant,
+    };
+  });
+
+  console.log(
+    `[redeem-purchase] uid=${uid} platform=${platform} sku=${productId} ` +
+      `tx=${transactionId} applied=${result.applied}`,
+  );
+  return result;
+});
