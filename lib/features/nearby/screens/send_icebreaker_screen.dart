@@ -244,12 +244,22 @@ class _SendIcebreakerScreenState extends State<SendIcebreakerScreen> {
             (userSnap.data()?['icebreakerCreditsResetAt'] as Timestamp?)
                 ?.toDate();
 
-        // Apply 24-hour reset if the window has expired.
+        // Apply 24-hour TOP-UP (not reset) when the window has expired.
+        // The timer raises the balance back to the free-tier floor only
+        // when current credits are at or below that floor — purchased
+        // credits sitting above the floor are never touched by the timer.
         final windowExpired =
             storedResetAt != null && now.isAfter(storedResetAt);
         if (windowExpired) {
-          debugPrint('[SendIcebreaker] 24h window expired — resetting credits');
-          credits = AppConstants.freeIcebreakerCreditsPerSignup;
+          final floor = AppConstants.freeIcebreakerCreditsPerSignup;
+          if (credits < floor) {
+            debugPrint('[SendIcebreaker] 24h window expired — '
+                'topping up $credits → $floor');
+            credits = floor;
+          } else {
+            debugPrint('[SendIcebreaker] 24h window expired — '
+                'no top-up needed (credits=$credits ≥ floor=$floor)');
+          }
         }
 
         // Server-side credit guard. Throws so the transaction aborts cleanly.

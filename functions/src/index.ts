@@ -782,7 +782,9 @@ export const respondToIcebreaker = onCall(async (request) => {
     const senderFirstName = (ib.senderFirstName as string | undefined) ?? '';
     const recipientFirstName = (ib.recipientFirstName as string | undefined) ?? '';
 
-    // ── 2. Recipient credits + 24h reset ──────────────────────────────────────
+    // ── 2. Recipient credits + 24h top-up ─────────────────────────────────────
+    // The 24h timer is a TOP-UP to the free-tier floor, not an overwrite —
+    // purchased credits above the floor are never erased by the timer.
     const recipientRef = db.collection('users').doc(uid);
     const recipientSnap = await tx.get(recipientRef);
     let credits =
@@ -793,7 +795,9 @@ export const respondToIcebreaker = onCall(async (request) => {
       | undefined;
     const nowMs = Date.now();
     const windowExpired = !!storedResetAt && nowMs > storedResetAt.toMillis();
-    if (windowExpired) credits = FREE_ICEBREAKER_CREDITS;
+    if (windowExpired && credits < FREE_ICEBREAKER_CREDITS) {
+      credits = FREE_ICEBREAKER_CREDITS;
+    }
     if (credits <= 0) {
       throw new HttpsError('failed-precondition', 'No icebreakers left');
     }

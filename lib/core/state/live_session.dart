@@ -969,9 +969,22 @@ class LiveSession extends ChangeNotifier {
           '\n  windowExpired=$windowExpired');
 
       if (windowExpired) {
+        // Top-up semantics, NOT overwrite.  The 24h timer raises a balance
+        // back up to the free-tier floor when it's at or below the floor —
+        // it never decreases credits.  This protects purchased credits that
+        // sit above the floor (e.g. user buys a 5-pack on top of 3 free →
+        // 8 total, the next timer tick must not erase the purchased 5).
+        final floorIcebreakers = AppConstants.freeIcebreakerCreditsPerSignup;
+        final floorLiveCredits = AppConstants.freeGoLiveCreditsPerSignup;
+        final currentIcebreakers = storedIcebreakers ?? 0;
+        final currentLiveCredits = storedLiveCredits ?? 0;
+        final newIcebreakers = currentIcebreakers < floorIcebreakers
+            ? floorIcebreakers
+            : currentIcebreakers;
+        final newLiveCredits = currentLiveCredits < floorLiveCredits
+            ? floorLiveCredits
+            : currentLiveCredits;
         final newResetAt = now.add(const Duration(hours: 24));
-        final newIcebreakers = AppConstants.freeIcebreakerCreditsPerSignup;
-        final newLiveCredits = AppConstants.freeGoLiveCreditsPerSignup;
 
         await db.collection('users').doc(uid).set(
           {
