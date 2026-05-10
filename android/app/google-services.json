@@ -1,0 +1,67 @@
+{
+  "project_info": {
+    "project_number": "483506779098",
+    "project_id": "icebreaker-924c2",
+    "storage_bucket": "icebreaker-924c2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:483506779098:android:710df980b809926bcd46e3",
+        "android_client_info": {
+          "package_name": "com.dylandreiling.icebreaker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAPCew6uWXcvqrzJNeKwfaf1q-LZ306R-w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:483506779098:android:d055abb4e06c8de1cd46e3",
+        "android_client_info": {
+          "package_name": "com.dylandreiling.icebreakerlive"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAPCew6uWXcvqrzJNeKwfaf1q-LZ306R-w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    },
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:483506779098:android:729cbf889d6980e2cd46e3",
+        "android_client_info": {
+          "package_name": "com.example.icebreaker"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAPCew6uWXcvqrzJNeKwfaf1q-LZ306R-w"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
