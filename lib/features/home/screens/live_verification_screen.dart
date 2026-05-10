@@ -86,14 +86,6 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen>
   /// race the in-memory rollback in [LiveSession.goLive] on failure).
   bool _isSubmitting = false;
 
-  /// True when the active [_camController] is bound to a front-facing lens.
-  /// Drives the preview-only un-mirror transform so the live preview matches
-  /// the un-mirrored sensor orientation that `takePicture()` writes to disk
-  /// — see [_buildFrameContent] for the policy and rationale.  Defaults to
-  /// false so a non-front fallback (rear lens, no front available) renders
-  /// the preview untransformed.
-  bool _isFrontCamera = false;
-
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
   @override
@@ -250,7 +242,6 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen>
       if (!mounted) return;
       setState(() {
         _camController = ctrl;
-        _isFrontCamera = desc.lensDirection == CameraLensDirection.front;
         _cameraStatus = CameraStatus.granted;
         _step = _Step.cameraReady;
       });
@@ -806,30 +797,16 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen>
         // as the screen background, so the gradient frame still reads as a
         // single composed surface.
         //
-        // ── Front-camera orientation policy ────────────────────────────
-        // The Flutter `camera` plugin renders front-camera output in a
-        // mirrored "selfie convention" (what you'd see in a real mirror)
-        // while `takePicture()` writes the un-mirrored sensor frame to
-        // disk.  That two-track behavior is the source of the horizontal
-        // flip surprise on shutter press: preview shows mirrored, the
-        // saved file (and every downstream avatar/Nearby/profile surface
-        // built from it) shows un-mirrored.  See flutter/flutter#108745
-        // (iOS) and #156974 (Android regressions).
-        //
-        // The captured file is canonical — `deriveSquareAvatar` and every
-        // live-selfie consumer (Nearby `_LiveSelfieFrame`, profile photo
-        // strip, [LiveSelfieCircleImage]) paint it untransformed.  So we
-        // un-mirror the preview to match the file rather than mirroring
-        // every downstream surface to match the preview.  One rule, one
-        // place: a horizontal flip applied to the live preview only, and
-        // only when the active lens is front-facing.
+        // Front-camera preview renders in the plugin's default "selfie
+        // convention" (mirrored, like a real mirror) so the experience
+        // matches the native iOS/Android camera apps.  The captured file
+        // is the un-mirrored sensor frame, which is also the iOS default
+        // for saved photos and what every downstream surface (Nearby
+        // `_LiveSelfieFrame`, profile photo strip, [LiveSelfieCircleImage])
+        // paints untransformed.
         final displayAspect = ctrl.value.aspectRatio <= 0
             ? 1.0
             : 1 / ctrl.value.aspectRatio;
-        Widget preview = CameraPreview(ctrl);
-        if (_isFrontCamera) {
-          preview = Transform.flip(flipX: true, child: preview);
-        }
         return Stack(
           fit: StackFit.expand,
           children: [
@@ -837,7 +814,7 @@ class _LiveVerificationScreenState extends State<LiveVerificationScreen>
             Center(
               child: AspectRatio(
                 aspectRatio: displayAspect,
-                child: preview,
+                child: CameraPreview(ctrl),
               ),
             ),
             const _VerificationGuideOverlay(),
