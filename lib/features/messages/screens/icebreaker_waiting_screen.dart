@@ -87,8 +87,8 @@ class _IcebreakerWaitingScreenState extends State<IcebreakerWaitingScreen> {
               ),
               const SizedBox(height: 12),
               Text(
-                'Your icebreaker is on the way. We\'ll move you forward as soon '
-                'as they respond — or this expires.',
+                'Your icebreaker is in the room. As soon as they accept, '
+                'you\'ll meet up by color. No back-and-forth, no chat purgatory.',
                 style: AppTextStyles.bodyS.copyWith(
                   color: AppColors.textSecondary,
                 ),

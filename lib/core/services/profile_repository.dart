@@ -91,6 +91,7 @@ class ProfileRepository {
       if (hobbies != null) 'hobbies': hobbies.toList(),
       'updatedAt': FieldValue.serverTimestamp(),
     };
+    // ignore_for_file: use_null_aware_elements
     await setFields(uid, payload);
   }
 

@@ -403,9 +403,9 @@ class _SignUpScreenState extends State<SignUpScreen> {
                                     ..onTap = () => _openUrl(_privacyUrl),
                                 ),
                                 const TextSpan(
-                                  text: '.  I understand Icebreaker has zero '
-                                      'tolerance for objectionable content '
-                                      'or abusive users.',
+                                  text: '. I get that Icebreaker is for real '
+                                      'meetings in real places — zero tolerance '
+                                      'for harassment, spam, or fake profiles.',
                                 ),
                               ],
                             ),

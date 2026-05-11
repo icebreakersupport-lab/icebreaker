@@ -21,7 +21,7 @@ class BlocksRepository {
 
   final FirebaseFirestore _db;
 
-  /// Emits a Set<String> containing every uid that should be hidden from
+  /// Emits a `Set<String>` containing every uid that should be hidden from
   /// [myUid]'s Nearby feed at any given moment.  Updates whenever either
   /// the blockedUsers or blockedBy subcollection changes.
   ///
@@ -101,6 +101,7 @@ class BlocksRepository {
       if (blockedDisplayName != null) 'displayName': blockedDisplayName,
       if (blockedPhotoUrl != null) 'photoUrl': blockedPhotoUrl,
     };
+    // ignore_for_file: use_null_aware_elements
     final reversePayload = <String, dynamic>{
       'blockedAt': blockedAt,
       'source': source,
