@@ -39,13 +39,70 @@ end
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_ios_build_settings(target)
-    # Required by permission_handler — opt in to the location permission macro.
-    # Without this the iOS permission request is a no-op.
+    # Required by permission_handler — opt in to each permission macro.
+    # Without these the iOS permission request is a no-op and status reads
+    # always return "denied".  Every permission the app actually uses must
+    # be listed here; permissions we don't use (microphone, contacts, etc.)
+    # are intentionally omitted so their code is never compiled in.
     target.build_configurations.each do |config|
       config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= [
         '$(inherited)',
         'PERMISSION_LOCATION=1',
+        'PERMISSION_CAMERA=1',
+        'PERMISSION_PHOTOS=1',
+        'PERMISSION_NOTIFICATIONS=1',
       ]
+
+      # Xcode 16 promotes `-Wquoted-include-in-framework-header` to an error
+      # for several pods that use double-quoted includes inside framework
+      # umbrella headers (permission_handler_apple, nanopb, PromisesObjC,
+      # …).  Those headers live in vendored pod sources we don't own — we
+      # can't rewrite them in-place because `ios/.symlinks/plugins/...` is
+      # regenerated on every `pod install`.  Scope the warning down on the
+      # pod target only (the Runner app target is not in this loop, so its
+      # warning policy is unaffected).
+      config.build_settings['CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER'] = 'NO'
+
+      # Normalize each pod target's deployment target to the app minimum
+      # (iOS 13.0).  Several plugin podspecs still declare iOS 9.0 / 11.0 /
+      # 12.0, which fires "<pod> deployment target … is below … project's
+      # minimum" warnings on every Pods build.  We only RAISE the floor —
+      # any pod that already declares a higher minimum (e.g. recent
+      # Firebase SDKs at 13.0+) keeps its own value.
+      current_target = config.build_settings['IPHONEOS_DEPLOYMENT_TARGET']
+      if current_target.nil? || current_target.to_f < 13.0
+        config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '13.0'
+      end
+    end
+
+    # Several Flutter Firebase / permission_handler plugin sources still
+    # call deprecated iOS APIs (e.g. `setIndexConfigurationFromJSON:` in
+    # cloud_firestore, `keyWindow` / `fetchSignInMethodsForEmail` /
+    # `updateEmail` / `dynamicLinkDomain` in firebase_auth,
+    # `deepLinkURLScheme` in firebase_core, `subscriberCellularProvider`
+    # in permission_handler_apple).  Those files live under
+    # `ios/.symlinks/plugins/<plugin>/...` — the symlinks are regenerated
+    # on every `pod install`, so in-place patches would vanish.  Instead,
+    # silence -Wdeprecated-declarations on a tight allowlist of pod
+    # targets only.  This does NOT silence other warning classes (unused
+    # variables, incompatible pointer types, Swift sendability advisories)
+    # — those stay visible because they're real source-quality issues
+    # that will disappear once we eventually bump the plugin majors.
+    deprecated_api_pods = %w[
+      cloud_firestore
+      firebase_auth
+      firebase_core
+      in_app_purchase_storekit
+      permission_handler_apple
+    ]
+    if deprecated_api_pods.include?(target.name)
+      target.build_configurations.each do |config|
+        config.build_settings['GCC_WARN_ABOUT_DEPRECATED_FUNCTIONS'] = 'NO'
+        config.build_settings['WARNING_CFLAGS'] = [
+          '$(inherited)',
+          '-Wno-deprecated-declarations',
+        ]
+      end
     end
   end
 end
