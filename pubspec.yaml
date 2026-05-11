@@ -74,6 +74,10 @@ dependencies:
   # serve personalized ads. Skipping the prompt drops eCPM significantly.
   app_tracking_transparency: ^2.0.4
 
+  # Image decode + center-crop for the live verification avatar pipeline
+  # (deriveSquareAvatar).  Pure Dart, no native deps.
+  image: ^4.5.4
+
 
 dev_dependencies:
   flutter_test:

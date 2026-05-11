@@ -17,6 +17,7 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../../../shared/widgets/pill_button.dart';
+import '../models/nearby_image.dart';
 import '../widgets/nearby_focus_card.dart';
 import '../widgets/nearby_about_me_card.dart';
 
