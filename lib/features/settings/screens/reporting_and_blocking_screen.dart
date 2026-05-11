@@ -36,24 +36,32 @@ class ReportingAndBlockingScreen extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
+              Text(
+                'Icebreaker is a real-name, real-time, in-person app. We have '
+                'zero tolerance for harassment, spam, or anything that gets in '
+                'the way of someone safely meeting people they want to meet.',
+                style: AppTextStyles.bodyS.copyWith(
+                  color: AppColors.textSecondary,
+                ),
+              ),
+              const SizedBox(height: 24),
               Text('How to report someone', style: AppTextStyles.h3),
               const SizedBox(height: 8),
               Text(
-                'Tap a user\'s profile — anywhere you see one in Nearby, Messages, '
-                'or a chat thread — and use the flag icon in the top right. '
-                'Choose a reason: harassment, spam, fake profile, inappropriate '
-                'content, or other. Reports are reviewed within 24 hours. '
-                'Users with three confirmed reports are auto-suspended for review.',
+                'Tap any profile — in Nearby, Messages, or a chat — and use '
+                'the flag icon in the top right. Pick a reason: harassment, '
+                'spam, fake profile, inappropriate content, or other. We '
+                'review every report within 24 hours. Three reports = '
+                'automatic suspension while we look into it.',
                 style: AppTextStyles.bodyS,
               ),
               const SizedBox(height: 20),
               Text('How to block someone', style: AppTextStyles.h3),
               const SizedBox(height: 8),
               Text(
-                'Blocking takes effect immediately and works both ways — they '
-                'won\'t see you in Nearby, and any open conversations are '
-                'archived. You can review and unblock people anytime from '
-                'Settings → Blocked Users.',
+                'Blocking is instant and goes both ways. They won\'t see you '
+                'in Nearby, and any conversation between you gets archived. '
+                'You can review or undo this anytime under Settings → Blocked Users.',
                 style: AppTextStyles.bodyS,
               ),
               const SizedBox(height: 20),
@@ -77,13 +85,12 @@ class ReportingAndBlockingScreen extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 20),
-              Text('Contact us', style: AppTextStyles.h3),
+              Text('Need to escalate?', style: AppTextStyles.h3),
               const SizedBox(height: 8),
               Text(
-                'If you need to escalate something — a serious incident, '
-                'a safety concern, or you think we made the wrong call on a '
-                'report — email us at $_supportEmail and we\'ll respond '
-                'within 24 hours.',
+                'Serious incident, safety concern, or you think we got it '
+                'wrong on a report? Email $_supportEmail. A real person '
+                'responds within 24 hours.',
                 style: AppTextStyles.bodyS,
               ),
             ],
