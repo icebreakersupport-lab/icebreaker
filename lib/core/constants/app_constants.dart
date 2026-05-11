@@ -47,6 +47,7 @@ abstract final class AppConstants {
 
 abstract final class AppRoutes {
   static const String splash = '/';
+  static const String welcome = '/welcome';
   static const String signIn = '/sign-in';
   static const String signUp = '/sign-up';
   static const String verifyPhone = '/verify-phone';
@@ -70,6 +71,7 @@ abstract final class AppRoutes {
   // Nested routes
   static const String sendIcebreaker = '/nearby/send-icebreaker';
   static const String icebreakerReceived = '/icebreaker-received';
+  static const String icebreakerWaiting = '/icebreaker-waiting';
   static const String matched = '/meetup/matched';
   static const String colorMatch = '/meetup/color-match';
   static const String postMeet = '/meetup/post-meet';

@@ -1,7 +1,9 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -24,7 +26,28 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _confirmFocus = FocusNode();
 
   bool _isLoading = false;
+  bool _acceptedTerms = false;
   String? _errorMessage;
+
+  static const _termsUrl = 'https://icebreakerlive.com/terms.html';
+  static const _privacyUrl = 'https://icebreakerlive.com/privacy.html';
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "Couldn't open the page. Try again later.",
+            style: AppTextStyles.bodyS.copyWith(color: Colors.white),
+          ),
+          backgroundColor: AppColors.bgElevated,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -57,7 +80,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   bool get _confirmNonEmpty => _confirmController.text.isNotEmpty;
 
-  bool get _isValid => _emailValid && _passwordValid && _passwordsMatch;
+  bool get _isValid =>
+      _emailValid && _passwordValid && _passwordsMatch && _acceptedTerms;
 
   Future<void> _signUp() async {
     if (!_isValid || _isLoading) return;
@@ -305,7 +329,93 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         : const SizedBox.shrink(),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
+
+                  // ── EULA accept ───────────────────────────────────────────
+                  // Apple App Review Guideline 1.2 requires UGC apps to have
+                  // the user agree to a Terms of Service / EULA before posting
+                  // content.  We gate the Create Account button on this flag
+                  // so signup itself is the consent moment — every account in
+                  // the system has affirmed the terms by definition.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: Checkbox(
+                            value: _acceptedTerms,
+                            onChanged: _isLoading
+                                ? null
+                                : (v) => setState(
+                                      () => _acceptedTerms = v ?? false,
+                                    ),
+                            activeColor: AppColors.brandPink,
+                            checkColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            side: const BorderSide(
+                              color: AppColors.divider,
+                              width: 1.5,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: _isLoading
+                              ? null
+                              : () => setState(
+                                    () => _acceptedTerms = !_acceptedTerms,
+                                  ),
+                          behavior: HitTestBehavior.opaque,
+                          child: Text.rich(
+                            TextSpan(
+                              style: AppTextStyles.bodyS.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
+                              children: [
+                                const TextSpan(text: 'I agree to the '),
+                                TextSpan(
+                                  text: 'Terms of Service',
+                                  style: TextStyle(
+                                    color: AppColors.brandPink,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () => _openUrl(_termsUrl),
+                                ),
+                                const TextSpan(text: ' and '),
+                                TextSpan(
+                                  text: 'Privacy Policy',
+                                  style: TextStyle(
+                                    color: AppColors.brandPink,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () => _openUrl(_privacyUrl),
+                                ),
+                                const TextSpan(
+                                  text: '.  I understand Icebreaker has zero '
+                                      'tolerance for objectionable content '
+                                      'or abusive users.',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 18),
 
                   // ── Create Account button ─────────────────────────────────
                   _AuthButton(
