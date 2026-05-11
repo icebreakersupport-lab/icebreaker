@@ -1,18 +1,30 @@
+import 'dart:math' as math;
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/profile_repository.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 
-/// Onboarding final step — 7-slide product walkthrough.
+/// Onboarding final step — 9-slide animated product walkthrough.
 ///
 /// Each slide contains a mock panel that visually mirrors the real
 /// app screen it describes, using the same color tokens, card shapes,
-/// and layout patterns as the production UI.
+/// layout patterns, and (where it matters) live motion that the
+/// production UI uses — countdowns count down, messages type
+/// themselves, the heart pulses, the meetup color cycles.
+///
+/// Per-slide animation lifecycle: each animated mock is a
+/// StatefulWidget that takes an [isActive] boolean.  When the page
+/// scrolls a slide into view, that slide flips `isActive=true` and
+/// the mock's internal AnimationController forwards/repeats.  When
+/// scrolled away, the controller resets so the animation replays
+/// fresh the next time the user lands on it.
 ///
 /// Swipeable PageView + Next tap. Skip and "Let's Go" route to /home.
 class OnboardingSlideshowScreen extends StatefulWidget {
@@ -34,7 +46,7 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
       _finish();
     } else {
       _controller.nextPage(
-        duration: const Duration(milliseconds: 300),
+        duration: const Duration(milliseconds: 320),
         curve: Curves.easeInOut,
       );
     }
@@ -60,10 +72,16 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
           return;
         }
 
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .set({'profileComplete': true}, SetOptions(merge: true));
+        // Dual-write profileComplete on both users/{uid} (read by BootstrapRoot
+        // for the post-launch destination) and profiles/{uid} (canonical
+        // public surface).
+        await Future.wait([
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set({'profileComplete': true}, SetOptions(merge: true)),
+          ProfileRepository().setFields(uid, {'profileComplete': true}),
+        ]);
         // ignore: avoid_print
         print('[Onboarding/Slideshow] ✅ profileComplete=true written for $uid');
       } on FirebaseException catch (e) {
@@ -123,7 +141,10 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
                 controller: _controller,
                 itemCount: _slides.length,
                 onPageChanged: (i) => setState(() => _current = i),
-                itemBuilder: (_, i) => _SlideView(data: _slides[i]),
+                itemBuilder: (_, i) => _SlideView(
+                  data: _slides[i],
+                  isActive: i == _current,
+                ),
               ),
             ),
 
@@ -193,58 +214,74 @@ const _slides = [
   _SlideData(
     index: 0,
     accentColor: AppColors.brandPink,
-    tag: 'GO LIVE',
-    headline: 'Go live when you\'re ready\nto meet people.',
+    tag: 'THE PROBLEM',
+    headline: 'Stop swiping.\nStart meeting.',
     body:
-        'Icebreaker works in real time. Only people who are live nearby can see each other.',
+        'Dating apps trained us to scroll forever. Icebreaker is built for the opposite — meeting people who are actually near you, actually live, actually open.',
   ),
   _SlideData(
     index: 1,
+    accentColor: AppColors.brandPink,
+    tag: 'GO LIVE',
+    headline: 'Go live where\nyou already are.',
+    body:
+        'Tap Go Live for 60 minutes so others nearby know you\'re open to meeting. The room is live.',
+  ),
+  _SlideData(
+    index: 2,
     accentColor: AppColors.brandPurple,
     tag: 'NEARBY',
     headline: 'See who\'s around\nyou right now.',
     body:
-        'Browse people nearby who are also open to meeting in real life.',
-  ),
-  _SlideData(
-    index: 2,
-    accentColor: AppColors.brandCyan,
-    tag: 'ICEBREAKER',
-    headline: 'Make the first move\nwith an Icebreaker.',
-    body:
-        'Send a quick Icebreaker to someone you want to meet.',
+        'Only live people, only nearby. No endless profiles. No matches from across the country.',
   ),
   _SlideData(
     index: 3,
-    accentColor: AppColors.brandPink,
-    tag: 'MUTUAL INTEREST',
-    headline: 'Only mutual interest\nmoves forward.',
+    accentColor: AppColors.brandCyan,
+    tag: 'ICEBREAKER',
+    headline: 'Send one icebreaker.\nMake it count.',
     body:
-        'If they accept, you\'ll both know the interest is real before the approach happens.',
+        'One short message. If they accept, you both move into the meetup flow together.',
   ),
   _SlideData(
     index: 4,
     accentColor: AppColors.brandPurple,
-    tag: 'FIND EACH OTHER',
-    headline: 'Find each other\nin real life.',
+    tag: 'COLOR MATCH',
+    headline: 'Find your color.\nFind your person.',
     body:
-        'Once it\'s accepted, you\'ll get a shared screen and timer to help you meet in person.',
+        'Once they accept, you both get a shared color so you can spot each other in the room without a single awkward guess.',
   ),
   _SlideData(
     index: 5,
-    accentColor: AppColors.brandCyan,
-    tag: 'CHAT',
-    headline: 'Chat unlocks after\nyou actually meet.',
+    accentColor: AppColors.brandPink,
+    tag: 'FIND EACH OTHER',
+    headline: 'Real chemistry happens\nin person.',
     body:
-        'Icebreaker is built to get people off the screen and into real conversations first.',
+        'You have 5 minutes to meet face to face. No DMs, no filters — just walk over and say hello.',
   ),
   _SlideData(
     index: 6,
     accentColor: AppColors.success,
-    tag: 'SAFETY',
-    headline: 'Built with\nsafety in mind.',
+    tag: 'TALK FIRST',
+    headline: 'Chat unlocks\nafter chemistry.',
     body:
-        'Live verification, real-time intent, and shared flow help create a safer, more respectful experience.',
+        'You get 10 minutes to talk in person. Chat only opens if you both want to keep going. No ghosting. No purgatory.',
+  ),
+  _SlideData(
+    index: 7,
+    accentColor: AppColors.success,
+    tag: 'SAFETY',
+    headline: 'A safer way\nto say hello.',
+    body:
+        'Mutual interest before contact. Live verification. Block, report, and Do Not Disturb always one tap away.',
+  ),
+  _SlideData(
+    index: 8,
+    accentColor: AppColors.brandPink,
+    tag: "LET'S GO",
+    headline: 'Break the ice.',
+    body:
+        'Less scrolling. More sparks. Go live when you\'re ready to meet someone in real life.',
   ),
 ];
 
@@ -253,18 +290,21 @@ const _slides = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 class _SlideView extends StatelessWidget {
-  const _SlideView({required this.data});
+  const _SlideView({required this.data, required this.isActive});
 
   final _SlideData data;
+  final bool isActive;
 
   Widget _buildMock() => switch (data.index) {
-        0 => const _GoLiveMock(),
-        1 => const _NearbyMock(),
-        2 => const _SendIcebreakerMock(),
-        3 => const _MutualInterestMock(),
-        4 => const _FindEachOtherMock(),
-        5 => const _ChatUnlocksMock(),
-        6 => const _SafetyMock(),
+        0 => _ProblemMock(isActive: isActive),
+        1 => _GoLiveMock(isActive: isActive),
+        2 => _NearbyMock(isActive: isActive),
+        3 => _SendIcebreakerMock(isActive: isActive),
+        4 => _ColorMatchMock(isActive: isActive),
+        5 => _FindEachOtherMock(isActive: isActive),
+        6 => _TalkFirstMock(isActive: isActive),
+        7 => _SafetyMock(isActive: isActive),
+        8 => _FinaleMock(isActive: isActive),
         _ => const SizedBox.shrink(),
       };
 
@@ -325,14 +365,259 @@ class _SlideView extends StatelessWidget {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// MOCK PANELS — each mirrors the corresponding real app screen
+// MOCK PANELS — each mirrors the corresponding real app screen + animates
 // ─────────────────────────────────────────────────────────────────────────────
 
-// ── Slide 0: Go Live ─────────────────────────────────────────────────────────
-// Mirrors: HomeScreen offline state (logo + GO LIVE button + stat pills)
+// ── Slide 0: The Problem ─────────────────────────────────────────────────────
+// "Stop swiping. Start meeting." — three swipe-cards stack, the top one
+// flicks off-screen to the left, the next slides up, then the brand heart
+// fades in centered with a glow — visualises the *replacement* of swipe
+// behaviour with presence.
 
-class _GoLiveMock extends StatelessWidget {
-  const _GoLiveMock();
+class _ProblemMock extends StatefulWidget {
+  const _ProblemMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_ProblemMock> createState() => _ProblemMockState();
+}
+
+class _ProblemMockState extends State<_ProblemMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ProblemMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _MockCard(
+      accentColor: AppColors.brandPink,
+      overrideBackground: true,
+      child: SizedBox(
+        height: 280,
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, _) {
+            // Three phases over t∈[0,1]:
+            //   0.00–0.35: swipe-card flicks off
+            //   0.35–0.70: card stack collapses, heart starts fading in
+            //   0.70–1.00: heart sits centered with a slow glow pulse
+            final t = _ctrl.value;
+            final swipeT = (t / 0.35).clamp(0.0, 1.0);
+            final heartIn = ((t - 0.35) / 0.35).clamp(0.0, 1.0);
+            final pulse = ((t - 0.70) / 0.30).clamp(0.0, 1.0);
+
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                // Bottom card (peeks)
+                Transform.translate(
+                  offset: Offset(0, 14 - 8 * heartIn),
+                  child: Opacity(
+                    opacity: (1 - heartIn) * 0.45,
+                    child: _SwipeCardShell(
+                      colors: [
+                        AppColors.brandCyan.withValues(alpha: 0.25),
+                        AppColors.brandPurple.withValues(alpha: 0.25),
+                      ],
+                      width: 180,
+                      height: 230,
+                    ),
+                  ),
+                ),
+                // Middle card (peeks more)
+                Transform.translate(
+                  offset: Offset(0, 7 - 5 * heartIn),
+                  child: Opacity(
+                    opacity: (1 - heartIn) * 0.7,
+                    child: _SwipeCardShell(
+                      colors: [
+                        AppColors.brandPurple.withValues(alpha: 0.35),
+                        AppColors.brandPink.withValues(alpha: 0.35),
+                      ],
+                      width: 195,
+                      height: 240,
+                    ),
+                  ),
+                ),
+                // Top card — flicks off-screen left + rotates as it goes
+                Transform.translate(
+                  offset: Offset(-220 * Curves.easeIn.transform(swipeT), 0),
+                  child: Transform.rotate(
+                    angle: -0.35 * swipeT,
+                    child: Opacity(
+                      opacity: 1 - swipeT,
+                      child: _SwipeCardShell(
+                        colors: [
+                          AppColors.brandPink.withValues(alpha: 0.85),
+                          AppColors.brandPurple.withValues(alpha: 0.85),
+                        ],
+                        width: 210,
+                        height: 250,
+                        showCross: swipeT > 0.15,
+                      ),
+                    ),
+                  ),
+                ),
+                // Replacement: the brand heart fades in centered
+                Opacity(
+                  opacity: heartIn,
+                  child: Transform.scale(
+                    scale: 0.85 + 0.15 * heartIn,
+                    child: Container(
+                      width: 120,
+                      height: 120,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        gradient: AppColors.brandGradient,
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.brandPink.withValues(
+                                alpha: 0.40 + 0.25 * pulse),
+                            blurRadius: 32 + 18 * pulse,
+                            spreadRadius: 2 + 4 * pulse,
+                          ),
+                        ],
+                      ),
+                      alignment: Alignment.center,
+                      child: const Icon(
+                        Icons.favorite_rounded,
+                        color: Colors.white,
+                        size: 56,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+/// Card-shaped placeholder used by _ProblemMock to depict a "swipe app" card
+/// without showing any real user photo (we don't want to imply any specific
+/// competitor or sample a real face).
+class _SwipeCardShell extends StatelessWidget {
+  const _SwipeCardShell({
+    required this.colors,
+    required this.width,
+    required this.height,
+    this.showCross = false,
+  });
+
+  final List<Color> colors;
+  final double width;
+  final double height;
+  final bool showCross;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: width,
+      height: height,
+      decoration: BoxDecoration(
+        borderRadius: BorderRadius.circular(18),
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: colors,
+        ),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.18)),
+      ),
+      alignment: Alignment.center,
+      child: showCross
+          ? Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.black.withValues(alpha: 0.25),
+                border:
+                    Border.all(color: AppColors.danger.withValues(alpha: 0.85)),
+              ),
+              child: const Icon(Icons.close_rounded,
+                  color: AppColors.danger, size: 28),
+            )
+          : null,
+    );
+  }
+}
+
+// ── Slide 1: Go Live ─────────────────────────────────────────────────────────
+// Mirrors HomeScreen offline state.  Animation: the heart logo runs the
+// real heartbeat pulse (forcePulse=true bypasses LiveSessionScope), the
+// GO LIVE pill gets a slow gradient shimmer to read as "active and
+// pressable", and a small "+1 SESSION" counter pops once near the end
+// to imply that tapping starts a session.
+
+class _GoLiveMock extends StatefulWidget {
+  const _GoLiveMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_GoLiveMock> createState() => _GoLiveMockState();
+}
+
+class _GoLiveMockState extends State<_GoLiveMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    );
+    if (widget.isActive) _ctrl.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _GoLiveMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl.repeat();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -341,32 +626,32 @@ class _GoLiveMock extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Mini app bar
+          // Mini app bar with green live dot, mirroring HomeScreen
           const _MockAppBar(
             title: 'icebreaker •',
             trailing: _MiniShopPill(),
           ),
           _divider(),
 
-          // Stat pills row (mirrors HomeScreen _StatusPill)
+          // Stat pills row — mirrors HomeScreen _StatusPill
           Padding(
             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
             child: Row(
               children: [
                 Expanded(
                   child: _StatPill(
-                    icon: Icons.bolt_rounded,
-                    label: 'SESSIONS',
-                    value: '1',
+                    icon: Icons.favorite_rounded,
+                    label: 'ICEBREAKERS',
+                    value: '3',
                     iconColor: AppColors.brandPink,
                   ),
                 ),
                 const SizedBox(width: 8),
                 Expanded(
                   child: _StatPill(
-                    icon: Icons.ac_unit_rounded,
-                    label: 'ICEBREAKERS',
-                    value: '3',
+                    icon: Icons.bolt_rounded,
+                    label: 'SESSIONS',
+                    value: '1',
                     iconColor: AppColors.brandCyan,
                   ),
                 ),
@@ -379,38 +664,73 @@ class _GoLiveMock extends StatelessWidget {
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
             child: Column(
               children: [
+                // Real brand logo running its real heartbeat — forcePulse
+                // bypasses the LiveSessionScope check, so it pulses inside
+                // onboarding even though the user hasn't gone live yet.
                 IcebreakerLogo(
-                  size: 64,
-                  showGlow: false,
+                  size: 76,
+                  showGlow: true,
                   ambientGlow: 0.75,
+                  forcePulse: widget.isActive,
                 ),
                 const SizedBox(height: 14),
-                // GO LIVE gradient pill
-                Container(
-                  height: 44,
-                  decoration: BoxDecoration(
-                    gradient: AppColors.brandGradient,
-                    borderRadius: BorderRadius.circular(22),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.brandPink.withValues(alpha: 0.40),
-                        blurRadius: 12,
-                        offset: const Offset(0, 4),
+                // GO LIVE gradient pill with a slow shimmer band sliding
+                // across it to read as "tappable, alive".
+                AnimatedBuilder(
+                  animation: _ctrl,
+                  builder: (_, _) {
+                    return Container(
+                      height: 44,
+                      decoration: BoxDecoration(
+                        gradient: AppColors.brandGradient,
+                        borderRadius: BorderRadius.circular(22),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.brandPink.withValues(alpha: 0.40),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
                       ),
-                    ],
-                  ),
-                  alignment: Alignment.center,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.bolt_rounded,
-                          color: Colors.white, size: 16),
-                      const SizedBox(width: 6),
-                      Text('GO LIVE',
-                          style: AppTextStyles.button.copyWith(
-                              letterSpacing: 1.2)),
-                    ],
-                  ),
+                      clipBehavior: Clip.hardEdge,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          // Shimmer band
+                          Positioned(
+                            left: -80 + 320 * _ctrl.value,
+                            top: 0,
+                            bottom: 0,
+                            width: 80,
+                            child: Container(
+                              decoration: BoxDecoration(
+                                gradient: LinearGradient(
+                                  begin: Alignment.centerLeft,
+                                  end: Alignment.centerRight,
+                                  colors: [
+                                    Colors.white.withValues(alpha: 0),
+                                    Colors.white.withValues(alpha: 0.28),
+                                    Colors.white.withValues(alpha: 0),
+                                  ],
+                                ),
+                              ),
+                            ),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              const Icon(Icons.bolt_rounded,
+                                  color: Colors.white, size: 16),
+                              const SizedBox(width: 6),
+                              Text('GO LIVE',
+                                  style: AppTextStyles.button
+                                      .copyWith(letterSpacing: 1.2)),
+                            ],
+                          ),
+                        ],
+                      ),
+                    );
+                  },
                 ),
               ],
             ),
@@ -421,14 +741,69 @@ class _GoLiveMock extends StatelessWidget {
   }
 }
 
-// ── Slide 1: Nearby Discovery ─────────────────────────────────────────────────
-// Mirrors: NearbyScreen — app bar + discovery card with send button
+// ── Slide 2: Nearby Discovery ─────────────────────────────────────────────────
+// Mirrors NearbyScreen.  Animation: three discovery cards slide up from the
+// bottom in stagger, each fading in as it reaches its resting position —
+// the "the room filled in around me" feel.
 
-class _NearbyMock extends StatelessWidget {
-  const _NearbyMock();
+class _NearbyMock extends StatefulWidget {
+  const _NearbyMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_NearbyMock> createState() => _NearbyMockState();
+}
+
+class _NearbyMockState extends State<_NearbyMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1600),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _NearbyMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  /// Per-card stagger.  Card 0 plays from t=0.00→0.45, card 1 from
+  /// 0.20→0.65, card 2 from 0.40→0.85.  Each card's local progress is
+  /// fed through Curves.easeOut so it lands soft rather than mechanical.
+  double _cardT(int i) {
+    final start = i * 0.20;
+    final end = start + 0.45;
+    return ((_ctrl.value - start) / (end - start)).clamp(0.0, 1.0);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final cards = [
+      ('A', 'Alex, 24', '12m away', 'Up for spontaneous adventures'),
+      ('J', 'Jordan, 26', '24m away', 'Coffee and good music'),
+      ('S', 'Sam, 23', '38m away', 'Loves trivia nights'),
+    ];
+
     return _MockCard(
       accentColor: AppColors.brandPurple,
       child: Column(
@@ -440,75 +815,33 @@ class _NearbyMock extends StatelessWidget {
                 color: AppColors.textSecondary, size: 16),
           ),
           _divider(),
-
           Padding(
-            padding: const EdgeInsets.all(12),
-            child: Container(
-              decoration: BoxDecoration(
-                color: AppColors.bgElevated,
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(
-                    color: AppColors.brandPurple.withValues(alpha: 0.30)),
-              ),
-              padding: const EdgeInsets.all(12),
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Avatar
-                  _MockAvatar(
-                    initial: 'A',
-                    size: 52,
-                    colors: [AppColors.brandPurple, AppColors.brandPink],
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Row(
-                          children: [
-                            Text('Alex, 24',
-                                style: AppTextStyles.body.copyWith(
-                                    fontWeight: FontWeight.w700)),
-                            const Spacer(),
-                            Text('12m away',
-                                style: AppTextStyles.caption.copyWith(
-                                    color: AppColors.brandPurple)),
-                          ],
-                        ),
-                        const SizedBox(height: 3),
-                        Text(
-                          'Up for spontaneous adventures',
-                          style: AppTextStyles.bodyS,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                        ),
-                        const SizedBox(height: 8),
-                        // Send Icebreaker button (cyan, mirrors real button)
-                        Container(
-                          height: 30,
-                          decoration: BoxDecoration(
-                            color: AppColors.brandCyan.withValues(alpha: 0.12),
-                            borderRadius: BorderRadius.circular(15),
-                            border: Border.all(
-                                color:
-                                    AppColors.brandCyan.withValues(alpha: 0.5),
-                                width: 1),
-                          ),
-                          alignment: Alignment.center,
-                          child: Text(
-                            'Send Icebreaker 🧊',
-                            style: AppTextStyles.caption.copyWith(
-                              color: AppColors.brandCyan,
-                              fontWeight: FontWeight.w700,
-                            ),
+            padding: const EdgeInsets.all(10),
+            child: AnimatedBuilder(
+              animation: _ctrl,
+              builder: (_, _) {
+                return Column(
+                  children: List.generate(cards.length, (i) {
+                    final c = cards[i];
+                    final t = Curves.easeOut.transform(_cardT(i));
+                    return Opacity(
+                      opacity: t,
+                      child: Transform.translate(
+                        offset: Offset(0, 24 * (1 - t)),
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 4),
+                          child: _NearbyCardRow(
+                            initial: c.$1,
+                            nameAge: c.$2,
+                            distance: c.$3,
+                            bio: c.$4,
                           ),
                         ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
+                      ),
+                    );
+                  }),
+                );
+              },
             ),
           ),
         ],
@@ -517,234 +850,565 @@ class _NearbyMock extends StatelessWidget {
   }
 }
 
-// ── Slide 2: Send Icebreaker ──────────────────────────────────────────────────
-// Mirrors: SendIcebreakerScreen — dark bg, cyan-bordered input, Send button
+class _NearbyCardRow extends StatelessWidget {
+  const _NearbyCardRow({
+    required this.initial,
+    required this.nameAge,
+    required this.distance,
+    required this.bio,
+  });
 
-class _SendIcebreakerMock extends StatelessWidget {
-  const _SendIcebreakerMock();
+  final String initial;
+  final String nameAge;
+  final String distance;
+  final String bio;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.bgElevated,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+            color: AppColors.brandPurple.withValues(alpha: 0.30)),
+      ),
+      padding: const EdgeInsets.all(10),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _MockAvatar(
+            initial: initial,
+            size: 42,
+            colors: const [AppColors.brandPurple, AppColors.brandPink],
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(nameAge,
+                        style: AppTextStyles.bodyS.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.textPrimary)),
+                    const Spacer(),
+                    Text(distance,
+                        style: AppTextStyles.caption
+                            .copyWith(color: AppColors.brandPurple)),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text(bio,
+                    style: AppTextStyles.caption,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis),
+                const SizedBox(height: 6),
+                Container(
+                  height: 26,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: AppColors.brandCyan.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(13),
+                    border: Border.all(
+                        color: AppColors.brandCyan.withValues(alpha: 0.5),
+                        width: 1),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    'Send Icebreaker 🧊',
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.brandCyan,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ── Slide 3: Send Icebreaker ──────────────────────────────────────────────────
+// Mirrors SendIcebreakerScreen.  Animation: the message types itself
+// (typewriter), the Send button pulses once the message is complete,
+// then a small "✓ Delivered" badge fades in below.
+
+class _SendIcebreakerMock extends StatefulWidget {
+  const _SendIcebreakerMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_SendIcebreakerMock> createState() => _SendIcebreakerMockState();
+}
+
+class _SendIcebreakerMockState extends State<_SendIcebreakerMock>
+    with SingleTickerProviderStateMixin {
+  static const _full = "Hey, thought I'd break the ice with you! 🧊";
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3200),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SendIcebreakerMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return _MockCard(
       accentColor: AppColors.brandCyan,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          // Header with close icon (mirrors real screen top)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
-            child: Row(
-              children: [
-                Icon(Icons.close_rounded,
-                    color: Colors.white.withValues(alpha: 0.5), size: 18),
-                const Spacer(),
-                _MockAvatar(
-                  initial: 'J',
-                  size: 36,
-                  colors: [AppColors.brandCyan, AppColors.brandPurple],
-                ),
-                const SizedBox(width: 8),
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (_, _) {
+          // Phases:
+          //   0.00–0.65: typewriter typing
+          //   0.65–0.80: send button pulse
+          //   0.80–1.00: delivered badge fade-in
+          final t = _ctrl.value;
+          final typeT = (t / 0.65).clamp(0.0, 1.0);
+          final pulseT = ((t - 0.65) / 0.15).clamp(0.0, 1.0);
+          final deliveredT = ((t - 0.80) / 0.20).clamp(0.0, 1.0);
+
+          final shown = (_full.length * typeT).round();
+          final text = _full.substring(0, shown);
+          final showCursor = typeT < 1.0 && (t * 8).floor().isEven;
+
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(14, 12, 14, 0),
+                child: Row(
                   children: [
-                    Text('Jordan, 26',
-                        style: AppTextStyles.bodyS.copyWith(
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.textPrimary)),
-                    Text('One message · Make it count',
-                        style: AppTextStyles.caption),
+                    Icon(Icons.close_rounded,
+                        color: Colors.white.withValues(alpha: 0.5), size: 18),
+                    const Spacer(),
+                    _MockAvatar(
+                      initial: 'J',
+                      size: 36,
+                      colors: const [AppColors.brandCyan, AppColors.brandPurple],
+                    ),
+                    const SizedBox(width: 8),
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Jordan, 26',
+                            style: AppTextStyles.bodyS.copyWith(
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textPrimary)),
+                        Text('One message · Make it count',
+                            style: AppTextStyles.caption),
+                      ],
+                    ),
+                    const Spacer(),
                   ],
                 ),
-                const Spacer(),
-              ],
-            ),
-          ),
+              ),
+              const SizedBox(height: 10),
+              _divider(),
+              const SizedBox(height: 10),
 
-          const SizedBox(height: 10),
-          _divider(),
-          const SizedBox(height: 10),
-
-          // Message input (mirrors SendIcebreakerScreen textarea)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              decoration: BoxDecoration(
-                color: Colors.black.withValues(alpha: 0.55),
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: AppColors.brandCyan.withValues(alpha: 0.45),
-                  width: 1.5,
+              // Message input (typewriter)
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Container(
+                  height: 64,
+                  padding: const EdgeInsets.symmetric(
+                      horizontal: 12, vertical: 10),
+                  decoration: BoxDecoration(
+                    color: Colors.black.withValues(alpha: 0.55),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(
+                      color: AppColors.brandCyan.withValues(alpha: 0.45),
+                      width: 1.5,
+                    ),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  child: RichText(
+                    text: TextSpan(
+                      children: [
+                        TextSpan(
+                          text: text,
+                          style: AppTextStyles.bodyS
+                              .copyWith(color: AppColors.textPrimary),
+                        ),
+                        if (showCursor)
+                          TextSpan(
+                            text: '▍',
+                            style: AppTextStyles.bodyS.copyWith(
+                              color: AppColors.brandCyan,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
                 ),
               ),
-              child: Text(
-                'Hey, thought I\'d break the ice with you! 🧊',
-                style: AppTextStyles.bodyS
-                    .copyWith(color: AppColors.textPrimary),
-              ),
-            ),
-          ),
 
-          const SizedBox(height: 10),
+              const SizedBox(height: 10),
 
-          // Cyan Send button (mirrors SendIcebreakerScreen CTA)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
-            child: Container(
-              height: 40,
-              decoration: BoxDecoration(
-                color: AppColors.brandCyan,
-                borderRadius: BorderRadius.circular(20),
+              // Cyan Send button with pulse
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 0, 12, 14),
+                child: Transform.scale(
+                  scale: 1.0 + 0.08 * math.sin(pulseT * math.pi),
+                  child: Container(
+                    height: 40,
+                    decoration: BoxDecoration(
+                      color: AppColors.brandCyan,
+                      borderRadius: BorderRadius.circular(20),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppColors.brandCyan
+                              .withValues(alpha: 0.25 + 0.40 * pulseT),
+                          blurRadius: 12 + 12 * pulseT,
+                          spreadRadius: pulseT * 2,
+                        ),
+                      ],
+                    ),
+                    alignment: Alignment.center,
+                    child: Text(
+                      'Send 🧊',
+                      style: AppTextStyles.button
+                          .copyWith(color: AppColors.textInverse),
+                    ),
+                  ),
+                ),
               ),
-              alignment: Alignment.center,
-              child: Text(
-                'Send 🧊',
-                style: AppTextStyles.button
-                    .copyWith(color: AppColors.textInverse),
+
+              // Delivered confirmation
+              Padding(
+                padding: const EdgeInsets.only(bottom: 12),
+                child: Opacity(
+                  opacity: deliveredT,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: AppColors.success.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                          color: AppColors.success.withValues(alpha: 0.4)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.check_rounded,
+                            size: 12, color: AppColors.success),
+                        const SizedBox(width: 4),
+                        Text('Delivered',
+                            style: AppTextStyles.caption.copyWith(
+                              color: AppColors.success,
+                              fontWeight: FontWeight.w700,
+                            )),
+                      ],
+                    ),
+                  ),
+                ),
               ),
-            ),
-          ),
-        ],
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-// ── Slide 3: Mutual Interest ──────────────────────────────────────────────────
-// Mirrors: IcebreakerReceivedScreen — gradient hero, profile pair, message, Pass/Accept
+// ── Slide 4: Color Match (NEW) ────────────────────────────────────────────────
+// Mirrors ColorMatchScreen's "shared match color" concept.  Animation:
+// two avatars hover side by side; the rings cycle through the brand
+// palette, then both lock onto the same color simultaneously while a
+// "COLOR MATCH!" label fades in centered above them.
 
-class _MutualInterestMock extends StatelessWidget {
-  const _MutualInterestMock();
+class _ColorMatchMock extends StatefulWidget {
+  const _ColorMatchMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_ColorMatchMock> createState() => _ColorMatchMockState();
+}
+
+class _ColorMatchMockState extends State<_ColorMatchMock>
+    with SingleTickerProviderStateMixin {
+  static const _palette = [
+    AppColors.brandPink,
+    AppColors.brandCyan,
+    AppColors.brandPurple,
+    AppColors.warning,
+    AppColors.success,
+  ];
+  // The color they "land on" — picked once per cycle.  Same color on
+  // both sides is the whole point of the slide.
+  static const Color _lockColor = AppColors.brandPink;
+
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 3400),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _ColorMatchMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  Color _ringColor(double t) {
+    // For t < 0.70 we cycle quickly through the palette.  At t >= 0.70
+    // we lock onto _lockColor — the visual "found a shared color".
+    if (t >= 0.70) return _lockColor;
+    final idx = (t * _palette.length * 4).floor() % _palette.length;
+    return _palette[idx];
+  }
 
   @override
   Widget build(BuildContext context) {
     return _MockCard(
-      accentColor: AppColors.brandPink,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // "New Icebreaker 🧊" gradient text (mirrors IcebreakerReceivedScreen hero)
-            ShaderMask(
-              shaderCallback: (bounds) =>
-                  AppColors.brandGradient.createShader(bounds),
-              child: Text(
-                'New Icebreaker 🧊',
-                style: AppTextStyles.h3.copyWith(color: Colors.white),
-              ),
-            ),
-            Text(
-              'Respond before time runs out.',
-              style: AppTextStyles.caption,
-            ),
+      accentColor: AppColors.brandPurple,
+      overrideBackground: true,
+      child: SizedBox(
+        height: 270,
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, _) {
+            final t = _ctrl.value;
+            final lockT = ((t - 0.70) / 0.30).clamp(0.0, 1.0);
+            final ringColor = _ringColor(t);
 
-            const SizedBox(height: 14),
-
-            // Profile pair with heart connector (mirrors IcebreakerReceivedScreen)
-            _MockProfilePair(
-              leftInitial: 'A',
-              rightInitial: 'J',
-              connector: Container(
-                width: 28,
-                height: 28,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  gradient: AppColors.brandGradient,
-                ),
-                child: const Icon(Icons.favorite_rounded,
-                    color: Colors.white, size: 13),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Message bubble (mirrors IcebreakerReceivedScreen message card)
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              decoration: BoxDecoration(
-                color: AppColors.bgElevated,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppColors.divider),
-              ),
-              child: Row(
-                children: [
-                  Text('Jordan: ',
-                      style: AppTextStyles.bodyS.copyWith(
-                          color: AppColors.brandCyan,
-                          fontWeight: FontWeight.w600)),
-                  Expanded(
-                    child: Text(
-                      'Hey, thought I\'d break the ice! 🧊',
-                      style: AppTextStyles.bodyS,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 10),
-
-            // Pass / Accept buttons (mirrors IcebreakerReceivedScreen)
-            Row(
+            return Stack(
               children: [
-                Expanded(
-                  child: Container(
-                    height: 36,
+                // Ambient color wash from the lock color
+                Positioned.fill(
+                  child: DecoratedBox(
                     decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(18),
-                      border: Border.all(
-                          color: AppColors.danger.withValues(alpha: 0.6)),
-                      color: AppColors.danger.withValues(alpha: 0.07),
+                      borderRadius: BorderRadius.circular(20),
+                      gradient: RadialGradient(
+                        center: Alignment.center,
+                        radius: 1.2,
+                        colors: [
+                          ringColor.withValues(alpha: 0.18 + 0.18 * lockT),
+                          AppColors.bgBase,
+                        ],
+                      ),
                     ),
-                    alignment: Alignment.center,
-                    child: Text('Pass',
-                        style: AppTextStyles.buttonS
-                            .copyWith(color: AppColors.danger)),
                   ),
                 ),
-                const SizedBox(width: 8),
-                Expanded(
-                  child: Container(
-                    height: 36,
-                    decoration: BoxDecoration(
-                      gradient: AppColors.brandGradient,
-                      borderRadius: BorderRadius.circular(18),
-                    ),
-                    alignment: Alignment.center,
-                    child:
-                        Text('Accept 🧊', style: AppTextStyles.buttonS),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(14, 18, 14, 14),
+                  child: Column(
+                    children: [
+                      // COLOR MATCH! label appears at lock time
+                      Opacity(
+                        opacity: lockT,
+                        child: Transform.translate(
+                          offset: Offset(0, 6 * (1 - lockT)),
+                          child: ShaderMask(
+                            shaderCallback: (b) => LinearGradient(
+                              colors: [ringColor, AppColors.brandPink],
+                            ).createShader(b),
+                            child: Text(
+                              'COLOR MATCH!',
+                              style: AppTextStyles.h3.copyWith(
+                                color: Colors.white,
+                                letterSpacing: 2.0,
+                                fontWeight: FontWeight.w800,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      // Two avatars side by side, both ringed in the
+                      // currently-cycling (or locked) color.
+                      Expanded(
+                        child: Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            _RingedAvatar(
+                              initial: 'A',
+                              ringColor: ringColor,
+                              pulse: lockT,
+                            ),
+                            _RingedAvatar(
+                              initial: 'J',
+                              ringColor: ringColor,
+                              pulse: lockT,
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      Text(
+                        lockT > 0.5
+                            ? 'Look for $_colorNameFor at the bar'
+                            : 'Cycling through colors…',
+                        style: AppTextStyles.caption,
+                      ),
+                    ],
                   ),
                 ),
               ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // _lockColor is brandPink — name it for the caption line.
+  String get _colorNameFor => 'pink';
+}
+
+class _RingedAvatar extends StatelessWidget {
+  const _RingedAvatar({
+    required this.initial,
+    required this.ringColor,
+    required this.pulse,
+  });
+
+  final String initial;
+  final Color ringColor;
+  // 0..1 — controls a small post-lock breath
+  final double pulse;
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = 1.0 + 0.05 * math.sin(pulse * math.pi);
+    return Transform.scale(
+      scale: scale,
+      child: Container(
+        padding: const EdgeInsets.all(4),
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: LinearGradient(
+            colors: [ringColor, ringColor.withValues(alpha: 0.5)],
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: ringColor.withValues(alpha: 0.45 * pulse),
+              blurRadius: 18,
+              spreadRadius: 1 + 2 * pulse,
             ),
           ],
+        ),
+        child: _MockAvatar(
+          initial: initial,
+          size: 64,
+          colors: const [AppColors.brandPink, AppColors.brandPurple],
         ),
       ),
     );
   }
 }
 
-// ── Slide 4: Find Each Other ──────────────────────────────────────────────────
-// Mirrors: MatchedScreen — colored ambient bg, profile pair, countdown, "I found them"
+// ── Slide 5: Find Each Other ──────────────────────────────────────────────────
+// Mirrors MatchedScreen.  Animation: the 5:00 countdown actually ticks
+// down on the second, and the photo pair "pulses" gently in the lock
+// color while the timer runs.
 
-class _FindEachOtherMock extends StatelessWidget {
-  const _FindEachOtherMock();
+class _FindEachOtherMock extends StatefulWidget {
+  const _FindEachOtherMock({required this.isActive});
 
-  static const _matchColor = AppColors.brandPurple;
+  final bool isActive;
+
+  @override
+  State<_FindEachOtherMock> createState() => _FindEachOtherMockState();
+}
+
+class _FindEachOtherMockState extends State<_FindEachOtherMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    // 4 seconds of motion → fake clock counts from 5:00 down by 4s.
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 4000),
+    );
+    if (widget.isActive) _ctrl.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FindEachOtherMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl.repeat();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  String _timeFor(double t) {
+    // Counts from 5:00 down 4s over the cycle, then snaps back.
+    final totalSeconds = 300 - (t * 4).floor();
+    final mm = (totalSeconds ~/ 60).toString();
+    final ss = (totalSeconds % 60).toString().padLeft(2, '0');
+    return '$mm:$ss';
+  }
 
   @override
   Widget build(BuildContext context) {
+    const matchColor = AppColors.brandPink;
     return _MockCard(
-      accentColor: _matchColor,
+      accentColor: matchColor,
       overrideBackground: true,
       child: Stack(
         children: [
-          // Ambient radial gradient background (mirrors MatchedScreen)
           Positioned.fill(
             child: Container(
               decoration: BoxDecoration(
@@ -753,14 +1417,13 @@ class _FindEachOtherMock extends StatelessWidget {
                   center: Alignment.topCenter,
                   radius: 1.3,
                   colors: [
-                    _matchColor.withValues(alpha: 0.22),
+                    matchColor.withValues(alpha: 0.22),
                     AppColors.bgBase.withValues(alpha: 0.0),
                   ],
                 ),
               ),
             ),
           ),
-
           Padding(
             padding: const EdgeInsets.fromLTRB(14, 14, 14, 14),
             child: Column(
@@ -775,64 +1438,92 @@ class _FindEachOtherMock extends StatelessWidget {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  'You have 5 minutes to meet in person',
+                  '5 minutes to meet in person',
                   style: AppTextStyles.caption,
-                ),
-
-                const SizedBox(height: 14),
-
-                // Profile pair with gradient line (mirrors MatchedScreen)
-                _MockProfilePair(
-                  leftInitial: 'A',
-                  rightInitial: 'J',
-                  connector: Container(
-                    width: 40,
-                    height: 2,
-                    decoration: BoxDecoration(
-                      gradient: LinearGradient(colors: [
-                        _matchColor,
-                        _matchColor.withValues(alpha: 0.3),
-                      ]),
-                    ),
-                  ),
-                  borderColor: _matchColor,
                 ),
 
                 const SizedBox(height: 12),
 
-                // Large countdown timer (mirrors MatchedScreen timer display)
-                ShaderMask(
-                  shaderCallback: (b) => LinearGradient(
-                    colors: [_matchColor, AppColors.brandPink],
-                  ).createShader(b),
-                  child: Text(
-                    '5:00',
-                    style: AppTextStyles.display
-                        .copyWith(color: Colors.white),
-                  ),
+                AnimatedBuilder(
+                  animation: _ctrl,
+                  builder: (_, _) {
+                    final pulse = 1.0 + 0.04 * math.sin(_ctrl.value * math.pi * 2);
+                    return Transform.scale(
+                      scale: pulse,
+                      child: _MockProfilePair(
+                        leftInitial: 'A',
+                        rightInitial: 'J',
+                        borderColor: matchColor,
+                        connector: Container(
+                          width: 40,
+                          height: 2,
+                          decoration: BoxDecoration(
+                            gradient: LinearGradient(colors: [
+                              matchColor,
+                              matchColor.withValues(alpha: 0.3),
+                            ]),
+                          ),
+                        ),
+                      ),
+                    );
+                  },
                 ),
-                Text('to find each other',
-                    style: AppTextStyles.caption),
+
+                const SizedBox(height: 12),
+
+                // Live ticking countdown
+                AnimatedBuilder(
+                  animation: _ctrl,
+                  builder: (_, _) {
+                    return ShaderMask(
+                      shaderCallback: (b) => const LinearGradient(
+                        colors: [matchColor, AppColors.brandPurple],
+                      ).createShader(b),
+                      child: Text(
+                        _timeFor(_ctrl.value),
+                        style: AppTextStyles.h1.copyWith(
+                          color: Colors.white,
+                          fontSize: 36,
+                          letterSpacing: 2,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                Text('to find each other', style: AppTextStyles.caption),
 
                 const SizedBox(height: 10),
 
-                // "I found them" button (mirrors MatchedScreen primary CTA)
+                // Swipe-to-confirm pill (static visual, mirrors real screen)
                 Container(
-                  height: 36,
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
                   decoration: BoxDecoration(
-                    gradient: AppColors.brandGradient,
-                    borderRadius: BorderRadius.circular(18),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppColors.brandPink.withValues(alpha: 0.35),
-                        blurRadius: 8,
-                        offset: const Offset(0, 3),
+                    color: Colors.black.withValues(alpha: 0.45),
+                    borderRadius: BorderRadius.circular(19),
+                    border: Border.all(
+                        color: Colors.white.withValues(alpha: 0.18)),
+                  ),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 30,
+                        height: 30,
+                        decoration: const BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: Colors.white,
+                        ),
+                        child: Icon(Icons.chevron_right_rounded,
+                            color: matchColor, size: 20),
                       ),
+                      const SizedBox(width: 10),
+                      Text('Swipe — I found Jordan',
+                          style: AppTextStyles.caption.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w700,
+                          )),
                     ],
                   ),
-                  alignment: Alignment.center,
-                  child: Text('I found them ✓',
-                      style: AppTextStyles.buttonS),
                 ),
               ],
             ),
@@ -843,133 +1534,301 @@ class _FindEachOtherMock extends StatelessWidget {
   }
 }
 
-// ── Slide 5: Chat Unlocks ─────────────────────────────────────────────────────
-// Mirrors: MessagesScreen — app bar, chat list entry, then two chat bubbles
+// ── Slide 6: Talk First (NEW) ─────────────────────────────────────────────────
+// Mirrors ColorMatchScreen's talking phase + the post-meet decision +
+// the moment chat unlocks.  Animation:
+//   1. 10:00 timer ticks down (showing "talk timer running")
+//   2. A "How did it go?" overlay slides up at the end
+//   3. A lock icon flips to unlocked and a chat bubble appears, communicating
+//      "chat opens only after both say yes"
 
-class _ChatUnlocksMock extends StatelessWidget {
-  const _ChatUnlocksMock();
+class _TalkFirstMock extends StatefulWidget {
+  const _TalkFirstMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_TalkFirstMock> createState() => _TalkFirstMockState();
+}
+
+class _TalkFirstMockState extends State<_TalkFirstMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 4200),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TalkFirstMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return _MockCard(
-      accentColor: AppColors.brandCyan,
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const _MockAppBar(title: 'Messages'),
-          _divider(),
+      accentColor: AppColors.success,
+      child: AnimatedBuilder(
+        animation: _ctrl,
+        builder: (_, _) {
+          // Phases:
+          //   0.00–0.45: talk timer counts down from 10:00 visibly
+          //   0.45–0.65: "Stay in touch?" overlay slides up
+          //   0.65–1.00: lock unlocks + chat bubble fades in
+          final t = _ctrl.value;
+          final timerT = (t / 0.45).clamp(0.0, 1.0);
+          final overlayT = ((t - 0.45) / 0.20).clamp(0.0, 1.0);
+          final chatT = ((t - 0.65) / 0.35).clamp(0.0, 1.0);
 
-          // Unlocked chat entry (mirrors MessagesScreen MessageListCard)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-            child: Row(
-              children: [
-                _MockAvatar(
-                  initial: 'J',
-                  size: 40,
-                  colors: [AppColors.brandCyan, AppColors.brandPurple],
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Row(
-                        children: [
-                          Text('Jordan',
-                              style: AppTextStyles.bodyS.copyWith(
-                                  fontWeight: FontWeight.w700,
-                                  color: AppColors.textPrimary)),
-                          const SizedBox(width: 5),
-                          Icon(Icons.lock_open_rounded,
-                              size: 12, color: AppColors.success),
-                        ],
-                      ),
-                      Text(
-                        'Chat unlocked · Say something!',
-                        style: AppTextStyles.caption.copyWith(
-                            color: AppColors.success),
-                      ),
-                    ],
-                  ),
-                ),
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: const BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: AppColors.brandPink,
-                  ),
-                ),
-              ],
-            ),
-          ),
+          final secondsLeft = (600 - 8 * (timerT * 60)).round();
+          final mm = (secondsLeft ~/ 60).toString();
+          final ss = (secondsLeft % 60).toString().padLeft(2, '0');
 
-          _divider(),
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const _MockAppBar(title: "You're talking 💬"),
+              _divider(),
 
-          // Chat bubbles (mirrors a simple chat conversation)
-          Padding(
-            padding:
-                const EdgeInsets.fromLTRB(12, 10, 12, 14),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // Received bubble
-                Align(
-                  alignment: Alignment.centerLeft,
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 200),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      color: AppColors.bgElevated,
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(14),
-                        topRight: Radius.circular(14),
-                        bottomRight: Radius.circular(14),
-                        bottomLeft: Radius.circular(4),
-                      ),
-                      border: Border.all(color: AppColors.divider),
-                    ),
-                    child: Text('That was so fun 😊',
-                        style: AppTextStyles.bodyS),
-                  ),
-                ),
-                const SizedBox(height: 6),
-                // Sent bubble
-                Align(
-                  alignment: Alignment.centerRight,
-                  child: Container(
-                    constraints: const BoxConstraints(maxWidth: 200),
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 12, vertical: 8),
-                    decoration: BoxDecoration(
-                      gradient: AppColors.brandGradient,
-                      borderRadius: const BorderRadius.only(
-                        topLeft: Radius.circular(14),
-                        topRight: Radius.circular(14),
-                        bottomLeft: Radius.circular(14),
-                        bottomRight: Radius.circular(4),
+              // Talk timer + profile pair
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 12, 12, 8),
+                child: Stack(
+                  alignment: Alignment.center,
+                  children: [
+                    _MockProfilePair(
+                      leftInitial: 'A',
+                      rightInitial: 'J',
+                      borderColor: AppColors.success,
+                      connector: Container(
+                        width: 50,
+                        alignment: Alignment.center,
+                        child: ShaderMask(
+                          shaderCallback: (b) => LinearGradient(
+                            colors: [
+                              AppColors.success,
+                              AppColors.brandCyan,
+                            ],
+                          ).createShader(b),
+                          child: Text(
+                            '$mm:$ss',
+                            style: AppTextStyles.h3.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                    child: Text('Right? Let\'s do this again! 🧊',
-                        style: AppTextStyles.bodyS),
-                  ),
+                    // Decision overlay slides up over the bottom half
+                    if (overlayT > 0)
+                      Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: -20 + 40 * overlayT,
+                        child: Opacity(
+                          opacity: overlayT,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                                horizontal: 14, vertical: 10),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(14),
+                              border: Border.all(
+                                color: Colors.white.withValues(alpha: 0.22),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Text('Stay in touch?',
+                                    style: AppTextStyles.bodyS.copyWith(
+                                        fontWeight: FontWeight.w700)),
+                                const Spacer(),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                      horizontal: 10, vertical: 4),
+                                  decoration: BoxDecoration(
+                                    color: AppColors.success
+                                        .withValues(alpha: 0.20),
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  child: Text('Yes 💚',
+                                      style: AppTextStyles.caption.copyWith(
+                                        color: AppColors.success,
+                                        fontWeight: FontWeight.w700,
+                                      )),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ],
+              ),
+
+              _divider(),
+
+              // Chat-unlock row + first message
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Row(
+                      children: [
+                        // Lock → unlock transition
+                        Container(
+                          width: 22,
+                          height: 22,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            color: chatT > 0.3
+                                ? AppColors.success.withValues(alpha: 0.18)
+                                : Colors.white.withValues(alpha: 0.08),
+                            border: Border.all(
+                              color: chatT > 0.3
+                                  ? AppColors.success
+                                  : AppColors.textMuted,
+                            ),
+                          ),
+                          alignment: Alignment.center,
+                          child: Icon(
+                            chatT > 0.3
+                                ? Icons.lock_open_rounded
+                                : Icons.lock_rounded,
+                            size: 12,
+                            color: chatT > 0.3
+                                ? AppColors.success
+                                : AppColors.textMuted,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          chatT > 0.3
+                              ? 'Chat unlocked'
+                              : 'Chat is locked',
+                          style: AppTextStyles.caption.copyWith(
+                            color: chatT > 0.3
+                                ? AppColors.success
+                                : AppColors.textMuted,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    // First chat bubble fades in once unlocked
+                    Opacity(
+                      opacity: chatT.clamp(0.0, 1.0),
+                      child: Align(
+                        alignment: Alignment.centerRight,
+                        child: Container(
+                          constraints: const BoxConstraints(maxWidth: 220),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 12, vertical: 8),
+                          decoration: BoxDecoration(
+                            gradient: AppColors.brandGradient,
+                            borderRadius: const BorderRadius.only(
+                              topLeft: Radius.circular(14),
+                              topRight: Radius.circular(14),
+                              bottomLeft: Radius.circular(14),
+                              bottomRight: Radius.circular(4),
+                            ),
+                          ),
+                          child: Text("That was so fun 😊",
+                              style: AppTextStyles.bodyS),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          );
+        },
       ),
     );
   }
 }
 
-// ── Slide 6: Safety & Verification ───────────────────────────────────────────
-// Mirrors: LiveVerificationScreen — gradient-bordered frame, verified state
+// ── Slide 7: Safety ──────────────────────────────────────────────────────────
+// Mirrors LiveVerificationScreen + Settings safety controls.  Animation:
+// Verified frame fades in first, then three trust bullets check in one
+// at a time.
 
-class _SafetyMock extends StatelessWidget {
-  const _SafetyMock();
+class _SafetyMock extends StatefulWidget {
+  const _SafetyMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_SafetyMock> createState() => _SafetyMockState();
+}
+
+class _SafetyMockState extends State<_SafetyMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  static const _bullets = [
+    (Icons.bolt_rounded, 'Live verification required'),
+    (Icons.handshake_rounded, 'Mutual consent before contact'),
+    (Icons.shield_rounded, 'Block & report always one tap away'),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2400),
+    );
+    if (widget.isActive) _ctrl.forward();
+  }
+
+  @override
+  void didUpdateWidget(covariant _SafetyMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl
+        ..reset()
+        ..forward();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.reset();
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  double _bulletT(int i) {
+    // First bullet starts at t=0.40, each subsequent +0.15
+    final start = 0.40 + i * 0.15;
+    final end = start + 0.20;
+    return ((_ctrl.value - start) / (end - start)).clamp(0.0, 1.0);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -982,73 +1841,191 @@ class _SafetyMock extends StatelessWidget {
           borderRadius: BorderRadius.circular(20),
         ),
         padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Gradient-bordered selfie frame (mirrors LiveVerificationScreen frame)
-            Center(
-              child: _GradientBorderFrame(
-                size: 88,
-                child: Icon(
-                  Icons.check_rounded,
-                  color: AppColors.success,
-                  size: 36,
-                ),
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Verified badge (mirrors LiveVerificationScreen verified state)
-            Container(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 14, vertical: 5),
-              decoration: BoxDecoration(
-                color: AppColors.success.withValues(alpha: 0.12),
-                borderRadius: BorderRadius.circular(20),
-                border: Border.all(
-                    color: AppColors.success.withValues(alpha: 0.45)),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(Icons.verified_rounded,
-                      color: AppColors.success, size: 13),
-                  const SizedBox(width: 5),
-                  Text('Verified',
-                      style: AppTextStyles.caption.copyWith(
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, _) {
+            final frameT = (_ctrl.value / 0.40).clamp(0.0, 1.0);
+            return Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Opacity(
+                  opacity: frameT,
+                  child: Transform.scale(
+                    scale: 0.9 + 0.1 * frameT,
+                    child: Center(
+                      child: _GradientBorderFrame(
+                        size: 88,
+                        child: Icon(
+                          Icons.check_rounded,
                           color: AppColors.success,
-                          fontWeight: FontWeight.w700)),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 14),
-            _divider(),
-            const SizedBox(height: 10),
-
-            // Trust bullets
-            ...[
-              (Icons.bolt_rounded, 'Live verification required'),
-              (Icons.location_off_rounded, 'Location never shared with others'),
-              (Icons.shield_rounded, 'Safety tools always one tap away'),
-            ].map(
-              (item) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 4),
-                child: Row(
-                  children: [
-                    Icon(item.$1,
-                        size: 13,
-                        color: AppColors.success.withValues(alpha: 0.8)),
-                    const SizedBox(width: 8),
-                    Text(item.$2,
-                        style: AppTextStyles.caption.copyWith(
-                            color: AppColors.textSecondary)),
-                  ],
+                          size: 36,
+                        ),
+                      ),
+                    ),
+                  ),
                 ),
-              ),
-            ),
-          ],
+
+                const SizedBox(height: 12),
+
+                Opacity(
+                  opacity: frameT,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 5),
+                    decoration: BoxDecoration(
+                      color: AppColors.success.withValues(alpha: 0.12),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                          color: AppColors.success.withValues(alpha: 0.45)),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Icon(Icons.verified_rounded,
+                            color: AppColors.success, size: 13),
+                        const SizedBox(width: 5),
+                        Text('Verified',
+                            style: AppTextStyles.caption.copyWith(
+                                color: AppColors.success,
+                                fontWeight: FontWeight.w700)),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 14),
+                _divider(),
+                const SizedBox(height: 10),
+
+                // Trust bullets check in one at a time
+                ...List.generate(_bullets.length, (i) {
+                  final t = _bulletT(i);
+                  final item = _bullets[i];
+                  return Opacity(
+                    opacity: t,
+                    child: Transform.translate(
+                      offset: Offset(-10 * (1 - t), 0),
+                      child: Padding(
+                        padding: const EdgeInsets.symmetric(vertical: 4),
+                        child: Row(
+                          children: [
+                            Icon(
+                              t > 0.6
+                                  ? Icons.check_circle_rounded
+                                  : item.$1,
+                              size: 14,
+                              color: AppColors.success
+                                  .withValues(alpha: 0.85),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Text(
+                                item.$2,
+                                style: AppTextStyles.caption.copyWith(
+                                    color: AppColors.textSecondary),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  );
+                }),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+// ── Slide 8: Finale / Let's Go ───────────────────────────────────────────────
+// Closing CTA.  Animation: the brand heart logo runs the real pulse with
+// a soft expanding ring of color behind it — the "we're open for
+// business" beat.
+
+class _FinaleMock extends StatefulWidget {
+  const _FinaleMock({required this.isActive});
+
+  final bool isActive;
+
+  @override
+  State<_FinaleMock> createState() => _FinaleMockState();
+}
+
+class _FinaleMockState extends State<_FinaleMock>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _ctrl;
+
+  @override
+  void initState() {
+    super.initState();
+    _ctrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2600),
+    );
+    if (widget.isActive) _ctrl.repeat();
+  }
+
+  @override
+  void didUpdateWidget(covariant _FinaleMock old) {
+    super.didUpdateWidget(old);
+    if (widget.isActive && !old.isActive) {
+      _ctrl.repeat();
+    } else if (!widget.isActive && old.isActive) {
+      _ctrl.stop();
+      _ctrl.value = 0;
+    }
+  }
+
+  @override
+  void dispose() {
+    _ctrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return _MockCard(
+      accentColor: AppColors.brandPink,
+      overrideBackground: true,
+      child: SizedBox(
+        height: 260,
+        child: AnimatedBuilder(
+          animation: _ctrl,
+          builder: (_, _) {
+            final t = _ctrl.value;
+            return Stack(
+              alignment: Alignment.center,
+              children: [
+                // Expanding ring (single ring slowly fades out as it grows)
+                ...List.generate(2, (i) {
+                  final phase = (t + i * 0.5) % 1.0;
+                  final size = 90 + 130 * phase;
+                  final opacity = (1 - phase) * 0.5;
+                  return Container(
+                    width: size,
+                    height: size,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: AppColors.brandPink.withValues(alpha: opacity),
+                        width: 1.5,
+                      ),
+                    ),
+                  );
+                }),
+                // The logo running its real heartbeat
+                IcebreakerLogo(
+                  size: 120,
+                  showGlow: true,
+                  ambientGlow: 0.85,
+                  forcePulse: widget.isActive,
+                ),
+              ],
+            );
+          },
         ),
       ),
     );
@@ -1060,8 +2037,6 @@ class _SafetyMock extends StatelessWidget {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /// Base card container used by all mock panels.
-/// [overrideBackground] = true means the child handles its own background
-/// (for slides with ambient gradient fills).
 class _MockCard extends StatelessWidget {
   const _MockCard({
     required this.accentColor,
@@ -1161,7 +2136,6 @@ class _MockAvatar extends StatelessWidget {
 }
 
 /// Two avatars side by side with a connector widget between them.
-/// Used in MutualInterest (heart) and FindEachOther (gradient line) slides.
 class _MockProfilePair extends StatelessWidget {
   const _MockProfilePair({
     required this.leftInitial,
@@ -1178,7 +2152,7 @@ class _MockProfilePair extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     Widget avatar(String initial) {
-      final colors = [AppColors.brandPink, AppColors.brandPurple];
+      const colors = [AppColors.brandPink, AppColors.brandPurple];
       final inner = _MockAvatar(initial: initial, size: 40, colors: colors);
       if (borderColor == null) return inner;
       return Container(
