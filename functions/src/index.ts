@@ -43,6 +43,100 @@ function pickMeetupRenderPhoto(
   return typeof profilePhotoUrl === 'string' ? profilePhotoUrl : '';
 }
 
+type NotificationPreferenceKey =
+  | 'notifIcebreakers'
+  | 'notifMessages'
+  | 'notifMatchConfirmed'
+  | 'notifSession'
+  | 'notifReminders';
+
+type PreferenceGatedPush = {
+  userId: string;
+  preferenceKey: NotificationPreferenceKey;
+  logTag: string;
+  title: string;
+  body: string;
+  data: Record<string, string>;
+  channelId: string;
+  respectDoNotDisturb?: boolean;
+  userData?: FirebaseFirestore.DocumentData;
+};
+
+async function sendPreferenceGatedPush({
+  userId,
+  preferenceKey,
+  logTag,
+  title,
+  body,
+  data,
+  channelId,
+  respectDoNotDisturb = false,
+  userData,
+}: PreferenceGatedPush): Promise<void> {
+  const userRef = db.collection('users').doc(userId);
+  let resolvedUserData = userData;
+  if (!resolvedUserData) {
+    const userSnap = await userRef.get();
+    if (!userSnap.exists) {
+      console.warn(`[${logTag}] recipient ${userId} not found`);
+      return;
+    }
+    resolvedUserData = userSnap.data();
+  }
+
+  if (!resolvedUserData) {
+    console.warn(`[${logTag}] recipient ${userId} missing user data`);
+    return;
+  }
+
+  const preferenceEnabled = (resolvedUserData[preferenceKey] as boolean | undefined) ?? true;
+  if (!preferenceEnabled) {
+    console.log(`[${logTag}] suppressed for ${userId}: ${preferenceKey}=false`);
+    return;
+  }
+
+  const isLive = (resolvedUserData.isLive as boolean | undefined) ?? false;
+  const doNotDisturb = (resolvedUserData.doNotDisturb as boolean | undefined) ?? false;
+  if (respectDoNotDisturb && !isLive && doNotDisturb) {
+    console.log(
+      `[${logTag}] suppressed for ${userId}: ` +
+        `isLive=${isLive} doNotDisturb=${doNotDisturb}`,
+    );
+    return;
+  }
+
+  const fcmToken = resolvedUserData.fcmToken as string | undefined;
+  if (!fcmToken) {
+    console.log(`[${logTag}] no FCM token for ${userId} — skipping`);
+    return;
+  }
+
+  try {
+    await getMessaging().send({
+      token: fcmToken,
+      notification: { title, body },
+      data,
+      apns: {
+        payload: { aps: { sound: 'default', badge: 1 } },
+      },
+      android: {
+        notification: { sound: 'default', channelId },
+      },
+    });
+    console.log(`[${logTag}] sent to ${userId}`);
+  } catch (err: unknown) {
+    const code = (err as { code?: string }).code;
+    if (code === 'messaging/registration-token-not-registered') {
+      console.log(`[${logTag}] stale token for ${userId} — clearing`);
+      await userRef
+        .update({ fcmToken: FieldValue.delete() })
+        .catch((e) => console.error(`[${logTag}] token clear failed:`, e));
+      return;
+    }
+    console.error(`[${logTag}] FCM send failed:`, err);
+  }
+}
+
 /**
  * Mutual unlock: create the conversation when both meetup participants
  * submit a "we_got_this" post-meet decision.
@@ -209,6 +303,46 @@ export const onMeetupDecisionWritten = onDocumentWritten(
       .update({ status: 'matched', matchedAt: FieldValue.serverTimestamp() })
       .catch((err) => console.error('[unlock] meetup status update failed:', err));
 
+    const [user1Snap, user2Snap] = await Promise.all([
+      db.collection('users').doc(uid1).get(),
+      db.collection('users').doc(uid2).get(),
+    ]);
+    const user1 = user1Snap.data();
+    const user2 = user2Snap.data();
+
+    await Promise.allSettled([
+      sendPreferenceGatedPush({
+        userId: uid1,
+        preferenceKey: 'notifMatchConfirmed',
+        logTag: 'match-notif',
+        title: "It's a match!",
+        body: `You and ${(names[uid2] ?? 'your match').trim() || 'your match'} can start chatting now.`,
+        data: {
+          type: 'match_confirmed',
+          meetupId,
+          conversationId,
+          otherUserId: uid2,
+        },
+        channelId: 'match_confirmed',
+        userData: user1,
+      }),
+      sendPreferenceGatedPush({
+        userId: uid2,
+        preferenceKey: 'notifMatchConfirmed',
+        logTag: 'match-notif',
+        title: "It's a match!",
+        body: `You and ${(names[uid1] ?? 'your match').trim() || 'your match'} can start chatting now.`,
+        data: {
+          type: 'match_confirmed',
+          meetupId,
+          conversationId,
+          otherUserId: uid1,
+        },
+        channelId: 'match_confirmed',
+        userData: user2,
+      }),
+    ]);
+
     console.log(`[unlock] match record + status flip done for meetup ${meetupId}`);
   },
 );
@@ -342,6 +476,49 @@ export const onReportedByCreated = onDocumentCreated(
   },
 );
 
+export const onIcebreakerCreated = onDocumentCreated(
+  'icebreakers/{icebreakerId}',
+  async (event) => {
+    const icebreakerId = event.params.icebreakerId;
+    const icebreaker = event.data?.data();
+    if (!icebreaker) return;
+
+    const status = (icebreaker.status as string | undefined) ?? '';
+    if (status !== 'sent') return;
+
+    const recipientId = icebreaker.recipientId as string | undefined;
+    const senderId = icebreaker.senderId as string | undefined;
+    if (!recipientId || !senderId) {
+      console.warn(`[icebreaker-notif] ${icebreakerId} missing recipientId or senderId`);
+      return;
+    }
+
+    const senderFirstName =
+      ((icebreaker.senderFirstName as string | undefined) ?? '').trim() || 'Someone';
+    const message = ((icebreaker.message as string | undefined) ?? '').trim();
+    const body =
+      message.length > 0
+        ? `${senderFirstName}: ${
+            message.length > 100 ? `${message.substring(0, 100)}\u2026` : message
+          }`
+        : `${senderFirstName} sent you an Icebreaker`;
+
+    await sendPreferenceGatedPush({
+      userId: recipientId,
+      preferenceKey: 'notifIcebreakers',
+      logTag: 'icebreaker-notif',
+      title: 'New Icebreaker',
+      body,
+      data: {
+        type: 'icebreaker_received',
+        icebreakerId,
+        senderId,
+      },
+      channelId: 'icebreakers',
+    });
+  },
+);
+
 export const onNewChatMessage = onDocumentCreated(
   'conversations/{conversationId}/messages/{messageId}',
   async (event) => {
@@ -372,82 +549,32 @@ export const onNewChatMessage = onDocumentCreated(
     }
 
     // ── 3. Load recipient user doc ─────────────────────────────────────────────
-    const recipientRef = db.collection('users').doc(recipientId);
-    const recipientSnap = await recipientRef.get();
+    const recipientSnap = await db.collection('users').doc(recipientId).get();
     if (!recipientSnap.exists) {
       console.warn(`[chat-notif] recipient ${recipientId} not found`);
       return;
     }
 
     const recipient = recipientSnap.data()!;
-    const isLive: boolean = (recipient.isLive as boolean) ?? false;
-    const doNotDisturb: boolean = (recipient.doNotDisturb as boolean) ?? false;
-    const notifMessages: boolean = (recipient.notifMessages as boolean) ?? true;
-    const fcmToken: string | undefined = recipient.fcmToken as string | undefined;
-
-    // ── 4. Preference gates ────────────────────────────────────────────────────
-
-    // Gate 4a — notifMessages: hard opt-out from all chat push notifications.
-    // This is an absolute suppress regardless of live state or DND.
-    if (!notifMessages) {
-      console.log(`[chat-notif] suppressed for ${recipientId}: notifMessages=false`);
-      return;
-    }
-
-    // Gate 4b — DND: conditional suppress while user is not live.
-    // Being live overrides DND (user is present and expects notifications).
-    if (!isLive && doNotDisturb) {
-      console.log(
-        `[chat-notif] suppressed for ${recipientId}: ` +
-        `isLive=${isLive} doNotDisturb=${doNotDisturb}`,
-      );
-      return;
-    }
-
-    // ── 5. FCM token guard ─────────────────────────────────────────────────────
-    if (!fcmToken) {
-      // Normal until the client has registered a token.
-      console.log(`[chat-notif] no FCM token for ${recipientId} — skipping`);
-      return;
-    }
-
-    // ── 6. Send ────────────────────────────────────────────────────────────────
     const participantNames = (conv.participantNames as Record<string, string>) ?? {};
     const senderName = participantNames[senderId] ?? 'Someone';
     const body = text.length > 100 ? `${text.substring(0, 100)}\u2026` : text;
 
-    try {
-      await getMessaging().send({
-        token: fcmToken,
-        notification: {
-          title: senderName,
-          body: body || 'New message',
-        },
-        data: {
-          type: 'chat_message',
-          conversationId,
-          senderId,
-        },
-        apns: {
-          payload: { aps: { sound: 'default', badge: 1 } },
-        },
-        android: {
-          notification: { sound: 'default', channelId: 'chat_messages' },
-        },
-      });
-      console.log(`[chat-notif] sent to ${recipientId} in ${conversationId}`);
-    } catch (err: unknown) {
-      // Stale token: remove it so future sends don't retry a dead token.
-      const code = (err as { code?: string }).code;
-      if (code === 'messaging/registration-token-not-registered') {
-        console.log(`[chat-notif] stale token for ${recipientId} — clearing`);
-        await recipientRef
-          .update({ fcmToken: FieldValue.delete() })
-          .catch((e) => console.error('[chat-notif] token clear failed:', e));
-      } else {
-        console.error('[chat-notif] FCM send failed:', err);
-      }
-    }
+    await sendPreferenceGatedPush({
+      userId: recipientId,
+      preferenceKey: 'notifMessages',
+      logTag: 'chat-notif',
+      title: senderName,
+      body: body || 'New message',
+      data: {
+        type: 'chat_message',
+        conversationId,
+        senderId,
+      },
+      channelId: 'chat_messages',
+      respectDoNotDisturb: true,
+      userData: recipient,
+    });
   },
 );
 
@@ -905,6 +1032,94 @@ export const onIcebreakerExpired = onSchedule('every 1 minutes', async () => {
 });
 
 /**
+ * onIcebreakerExpiringSoon — sends one reminder during the last minute before a
+ * still-pending icebreaker expires.
+ *
+ * We intentionally phrase this as "expires soon" rather than promising an
+ * exact 60-second warning because the scheduler runs every minute.
+ */
+export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () => {
+  const nowMs = Date.now();
+  const now = Timestamp.fromMillis(nowMs);
+  const threshold = Timestamp.fromMillis(nowMs + 60 * 1000);
+  const snap = await db
+    .collection('icebreakers')
+    .where('status', '==', 'sent')
+    .where('expiresAt', '>', now)
+    .where('expiresAt', '<=', threshold)
+    .limit(100)
+    .get();
+
+  if (snap.empty) return;
+
+  let reminded = 0;
+  for (const doc of snap.docs) {
+    const data = doc.data();
+    if (data.icebreakerExpiryReminderSentAt) continue;
+
+    const senderId = data.senderId as string | undefined;
+    const recipientId = data.recipientId as string | undefined;
+    if (!senderId || !recipientId) continue;
+
+    const senderFirstName = ((data.senderFirstName as string | undefined) ?? '').trim();
+    const recipientFirstName =
+      ((data.recipientFirstName as string | undefined) ?? '').trim();
+
+    await doc.ref.update({
+      icebreakerExpiryReminderSentAt: FieldValue.serverTimestamp(),
+    });
+
+    const [senderSnap, recipientSnap] = await Promise.all([
+      db.collection('users').doc(senderId).get(),
+      db.collection('users').doc(recipientId).get(),
+    ]);
+
+    await Promise.allSettled([
+      sendPreferenceGatedPush({
+        userId: senderId,
+        preferenceKey: 'notifReminders',
+        logTag: 'icebreaker-reminder',
+        title: 'Icebreaker expires soon',
+        body: `${
+          recipientFirstName.length > 0 ? recipientFirstName : 'They'
+        } haven’t answered yet.`,
+        data: {
+          type: 'icebreaker_expiring_soon',
+          icebreakerId: doc.id,
+          role: 'sender',
+          otherUserId: recipientId,
+        },
+        channelId: 'icebreaker_reminders',
+        userData: senderSnap.data(),
+      }),
+      sendPreferenceGatedPush({
+        userId: recipientId,
+        preferenceKey: 'notifReminders',
+        logTag: 'icebreaker-reminder',
+        title: 'Icebreaker expires soon',
+        body: `${
+          senderFirstName.length > 0 ? senderFirstName : 'Someone'
+        } is still waiting for your answer.`,
+        data: {
+          type: 'icebreaker_expiring_soon',
+          icebreakerId: doc.id,
+          role: 'recipient',
+          otherUserId: senderId,
+        },
+        channelId: 'icebreaker_reminders',
+        userData: recipientSnap.data(),
+      }),
+    ]);
+
+    reminded += 1;
+  }
+
+  if (reminded > 0) {
+    console.log(`[icebreaker-reminder] sent reminder(s) for ${reminded} icebreaker(s)`);
+  }
+});
+
+/**
  * onMeetupCreated — fires on the freshly-written meetup doc and:
  *   1. Stamps findExpiresAt = now + FIND_TIMER_SECONDS.  Clients never write
  *      this field; the rule layer (allow update only on foundConfirmedBy)
@@ -935,6 +1150,50 @@ export const onMeetupCreated = onDocumentCreated(
       db.collection('users').doc(participants[0]).update({ currentMeetupId: snap.id }),
       db.collection('users').doc(participants[1]).update({ currentMeetupId: snap.id }),
     ]);
+
+    const participantNames = (data.participantNames as Record<string, string> | undefined) ?? {};
+    const [user1Snap, user2Snap] = await Promise.all([
+      db.collection('users').doc(participants[0]).get(),
+      db.collection('users').doc(participants[1]).get(),
+    ]);
+    const user1 = user1Snap.data();
+    const user2 = user2Snap.data();
+
+    await Promise.allSettled([
+      sendPreferenceGatedPush({
+        userId: participants[0],
+        preferenceKey: 'notifSession',
+        logTag: 'session-notif',
+        title: 'Session starting',
+        body: `You and ${(
+          participantNames[participants[1]] ?? 'your match'
+        ).trim() || 'your match'} have 5 minutes to find each other.`,
+        data: {
+          type: 'session_start',
+          meetupId: snap.id,
+          otherUserId: participants[1],
+        },
+        channelId: 'session_start',
+        userData: user1,
+      }),
+      sendPreferenceGatedPush({
+        userId: participants[1],
+        preferenceKey: 'notifSession',
+        logTag: 'session-notif',
+        title: 'Session starting',
+        body: `You and ${(
+          participantNames[participants[0]] ?? 'your match'
+        ).trim() || 'your match'} have 5 minutes to find each other.`,
+        data: {
+          type: 'session_start',
+          meetupId: snap.id,
+          otherUserId: participants[0],
+        },
+        channelId: 'session_start',
+        userData: user2,
+      }),
+    ]);
+
     console.log(
       `[meetup-created] ${snap.id} stamped findExpiresAt + currentMeetupId on [${participants.join(', ')}]`,
     );
