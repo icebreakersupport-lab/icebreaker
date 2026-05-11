@@ -1,12 +1,57 @@
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 
-/// GPS coordinate reading, geohash encoding, and Haversine distance.
+/// Unified, app-wide location permission state.
+///
+/// Every screen that needs to check or act on location permission goes through
+/// this enum — it collapses the underlying [LocationPermission] values plus
+/// the device-wide services-enabled bit into the four cases the UI actually
+/// has to render different branches for.
+///
+/// The distinction between [requestable] and [blockedForever] is what makes
+/// the iOS "Open Settings dead-end" go away: when permission has never been
+/// asked for (cold-launch state on iOS, where `Geolocator.checkPermission`
+/// returns `denied` rather than `deniedForever`), the system Settings page
+/// has no Location row yet.  The right action is to call
+/// [LocationService.requestIfNeeded] so the OS dialog actually presents.
+/// Punting straight to system Settings would land the user on a page with
+/// nothing to toggle.
+enum LocationStatus {
+  /// Permission is granted (whileInUse or always).  Safe to read GPS.
+  granted,
+
+  /// Permission has not yet been granted but can still be requested in-app.
+  /// First-launch state on iOS/Android (the OS dialog has not been shown
+  /// yet), and on Android also the post-tap-Deny state where the OS still
+  /// allows another prompt.  UI: offer "Allow Location".
+  requestable,
+
+  /// The user has permanently denied permission (iOS "Don't Allow", or
+  /// Android "Don't ask again").  Re-prompting silently fails — the OS will
+  /// not present the dialog.  Recovery requires a trip to system Settings.
+  /// UI: offer "Open Settings".
+  blockedForever,
+
+  /// The device-wide Location Services switch is off.  Per-app permission
+  /// state is irrelevant until the user toggles it back on in system
+  /// Settings.  UI: offer "Open Settings" with copy that points at the
+  /// services switch, not the per-app permission row.
+  servicesDisabled,
+}
+
+/// GPS coordinate reading, location-permission state machine, geohash
+/// encoding, and Haversine distance.
 ///
 /// Used by LiveSession.goLive() to write the user's position to Firestore
 /// and by NearbyScreen to filter discovery results by exact distance.
+///
+/// Permission API:
+///   [currentStatus]       — non-prompting read of [LocationStatus]
+///   [requestIfNeeded]     — prompts the OS only when state is [requestable]
+///   [openSettings]        — sends the user to per-app system Settings
 ///
 /// Geohash strategy:
 ///   Precision 7 cells are ~76 m × 76 m, small enough to bound a 30 m
@@ -14,40 +59,96 @@ import 'package:geolocator/geolocator.dart';
 ///   precision 7 in Firestore and query by prefix to get a rough bounding
 ///   box, then filter client-side with exact Haversine distance.
 abstract final class LocationService {
-  // ── GPS ──────────────────────────────────────────────────────────────────────
+  // ── Permission state machine ─────────────────────────────────────────────
 
-  /// Returns the device's current position, or null if:
-  ///   - permission is denied
-  ///   - location services are disabled
-  ///   - any other platform error occurs
+  /// True on iOS / Android.  Used to skip the services-enabled gate on
+  /// web/desktop where [Geolocator.isLocationServiceEnabled] is unreliable
+  /// (it returns true on the macOS simulator regardless of actual state).
+  static bool get _isMobile =>
+      !kIsWeb && (Platform.isIOS || Platform.isAndroid);
+
+  /// Returns the current permission status without prompting.
   ///
-  /// Non-fatal on all platforms.  macOS / web fall back gracefully.
+  /// Order matters: the device-wide services switch is checked first so a
+  /// user who has explicitly turned Location Services off doesn't get an
+  /// "Allow Location" button that will never resolve to granted.
+  static Future<LocationStatus> currentStatus() async {
+    try {
+      if (_isMobile) {
+        final servicesOn = await Geolocator.isLocationServiceEnabled();
+        if (!servicesOn) return LocationStatus.servicesDisabled;
+      }
+      final perm = await Geolocator.checkPermission();
+      return _mapPermission(perm);
+    } catch (e) {
+      debugPrint('[Location] currentStatus failed (non-fatal): $e');
+      // Treat unknown errors as requestable — better to let the user try the
+      // OS dialog than to dead-end them in Settings.
+      return LocationStatus.requestable;
+    }
+  }
+
+  /// Reads [currentStatus]; if it's [LocationStatus.requestable], presents
+  /// the OS permission dialog and remaps to the resulting status.  Otherwise
+  /// returns the current status unchanged (no-op for granted, blockedForever,
+  /// or servicesDisabled — these states cannot be moved by an in-app prompt).
+  ///
+  /// This is the single entry point screens should use when the user has
+  /// just signaled intent to grant permission ("Allow Location" tap, Go Live
+  /// tap, retry-after-failure).
+  static Future<LocationStatus> requestIfNeeded() async {
+    final status = await currentStatus();
+    if (status != LocationStatus.requestable) return status;
+    try {
+      final perm = await Geolocator.requestPermission();
+      // After a request, re-check the services bit too — the user may have
+      // toggled it off in Settings between currentStatus() and now.
+      if (_isMobile) {
+        final servicesOn = await Geolocator.isLocationServiceEnabled();
+        if (!servicesOn) return LocationStatus.servicesDisabled;
+      }
+      return _mapPermission(perm);
+    } catch (e) {
+      debugPrint('[Location] requestIfNeeded failed (non-fatal): $e');
+      return status;
+    }
+  }
+
+  /// Maps the geolocator-level enum to our [LocationStatus] without touching
+  /// the services-enabled bit (caller does that gate).
+  static LocationStatus _mapPermission(LocationPermission perm) {
+    switch (perm) {
+      case LocationPermission.always:
+      case LocationPermission.whileInUse:
+        return LocationStatus.granted;
+      case LocationPermission.denied:
+      case LocationPermission.unableToDetermine:
+        return LocationStatus.requestable;
+      case LocationPermission.deniedForever:
+        return LocationStatus.blockedForever;
+    }
+  }
+
+  /// Opens the platform's app-settings screen so the user can grant location
+  /// permission or toggle Location Services.  Returns true on success.
+  static Future<bool> openSettings() => Geolocator.openAppSettings();
+
+  // ── GPS ──────────────────────────────────────────────────────────────────
+
+  /// Returns the device's current position, or null if permission is not
+  /// granted, location services are disabled, or any platform error occurs.
+  ///
+  /// Routes through [requestIfNeeded] so the OS dialog presents on the very
+  /// first call — the same single source of truth that the UI uses.  Callers
+  /// that need to distinguish "permission issue" from "GPS timed out" should
+  /// call [currentStatus] after a null return.
   static Future<Position?> getPosition() async {
     try {
-      // On web/desktop, service check behaves differently — skip the disabled
-      // guard because Geolocator.isLocationServiceEnabled() may always return
-      // true even on macOS simulator.
-      if (!kIsWeb) {
-        final serviceEnabled = await Geolocator.isLocationServiceEnabled();
-        if (!serviceEnabled) {
-          debugPrint('[Location] location services disabled');
-          return null;
-        }
-      }
-
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-        if (permission == LocationPermission.denied) {
-          debugPrint('[Location] permission denied');
-          return null;
-        }
-      }
-      if (permission == LocationPermission.deniedForever) {
-        debugPrint('[Location] permission permanently denied');
+      final status = await requestIfNeeded();
+      if (status != LocationStatus.granted) {
+        debugPrint('[Location] getPosition aborted — status=$status');
         return null;
       }
-
       final pos = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -62,21 +163,6 @@ abstract final class LocationService {
       return null;
     }
   }
-
-  /// Returns the current location permission status without requesting it.
-  /// Used by callers to distinguish a permission denial from a GPS failure
-  /// after [getPosition] returns null.
-  static Future<LocationPermission> checkPermission() async {
-    try {
-      return await Geolocator.checkPermission();
-    } catch (_) {
-      return LocationPermission.denied;
-    }
-  }
-
-  /// Opens the platform's app-settings screen so the user can grant location
-  /// permission.  Returns true if the screen was opened successfully.
-  static Future<bool> openSettings() => Geolocator.openAppSettings();
 
   // ── Geohash ───────────────────────────────────────────────────────────────────
 

@@ -1,57 +1,41 @@
 import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/camera_service.dart';
+import '../../../core/services/location_service.dart';
+import '../../../core/services/notifications_permission_service.dart';
+import '../../../core/services/photos_permission_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
-import '../../../shared/widgets/pill_button.dart';
 
 // ─── Local settings model ─────────────────────────────────────────────────────
 
 /// Settings subset of users/{uid}.  All fields default to sane values so
 /// the screen is usable even on a brand-new account that has never saved
 /// preferences.
+///
+/// Discovery preferences (interestedIn / age range / max distance) are NOT
+/// modeled here — they moved to Edit Profile and the Settings Discovery
+/// section deep-links into that surface instead of editing in place.
 class _UserSettings {
   _UserSettings({
-    this.showMe = 'everyone',
-    this.ageRangeMin = 18,
-    this.ageRangeMax = 35,
-    this.maxDistanceMeters = 30,
-    this.discoverable = true,
     this.photosToMatchesOnly = false,
     this.doNotDisturb = false,
     this.subscriptionTier = 'free',
+    this.notifReminders = true,
     this.notifIcebreakers = true,
     this.notifMessages = true,
     this.notifMatchConfirmed = true,
     this.notifSession = true,
   });
-
-  // ── Discovery ──────────────────────────────────────────────────────────────
-
-  /// Firestore field: showMe. 'everyone' | 'men' | 'women' | 'non_binary'
-  String showMe;
-
-  /// Firestore fields: ageRangeMin, ageRangeMax.
-  int ageRangeMin;
-  int ageRangeMax;
-
-  /// Firestore field: maxDistanceMeters.
-  /// Range: 30–60 m.  Lower end matches the physical detection radius; upper
-  /// end lets users see further when conditions allow.
-  int maxDistanceMeters;
-
-  /// Firestore field: discoverable.
-  /// When false, the user is hidden from all Nearby discovery results even
-  /// while live.  Defaults to true.  Does not prevent the user from going
-  /// live or receiving icebreakers from people who already know their UID.
-  bool discoverable;
 
   // ── Privacy ────────────────────────────────────────────────────────────────
 
@@ -71,11 +55,9 @@ class _UserSettings {
   String subscriptionTier;
 
   // ── Notifications ──────────────────────────────────────────────────────────
-  // Firestore fields: notifIcebreakers, notifMessages, notifMatchConfirmed,
-  // notifSession.
-  // TODO: FCM token topic subscription/unsubscription needed for these to
-  // actually suppress push notifications.  Preferences are persisted now so
-  // the Cloud Function can gate sends once FCM is wired.
+  // Firestore fields: notifReminders, notifIcebreakers, notifMessages,
+  // notifMatchConfirmed, notifSession.
+  bool notifReminders;
   bool notifIcebreakers;
   bool notifMessages;
   bool notifMatchConfirmed;
@@ -83,15 +65,10 @@ class _UserSettings {
 
   factory _UserSettings.fromFirestore(Map<String, dynamic> data) {
     return _UserSettings(
-      showMe: (data['showMe'] as String?) ?? 'everyone',
-      ageRangeMin: (data['ageRangeMin'] as num?)?.toInt() ?? 18,
-      ageRangeMax: (data['ageRangeMax'] as num?)?.toInt() ?? 35,
-      maxDistanceMeters:
-          ((data['maxDistanceMeters'] as num?)?.toInt() ?? 30).clamp(30, 60),
-      discoverable: (data['discoverable'] as bool?) ?? true,
       photosToMatchesOnly: (data['photosToMatchesOnly'] as bool?) ?? false,
       doNotDisturb: (data['doNotDisturb'] as bool?) ?? false,
       subscriptionTier: (data['plan'] as String?) ?? 'free',
+      notifReminders: (data['notifReminders'] as bool?) ?? true,
       notifIcebreakers: (data['notifIcebreakers'] as bool?) ?? true,
       notifMessages: (data['notifMessages'] as bool?) ?? true,
       notifMatchConfirmed: (data['notifMatchConfirmed'] as bool?) ?? true,
@@ -102,12 +79,6 @@ class _UserSettings {
 
 // ─── Label / colour helpers ───────────────────────────────────────────────────
 
-String _showMeLabel(String v) => switch (v) {
-      'men' => 'Men',
-      'women' => 'Women',
-      'non_binary' => 'Non-binary',
-      _ => 'Everyone',
-    };
 
 String _tierLabel(String tier) => switch (tier) {
       'plus' => 'Plus',
@@ -148,11 +119,38 @@ class _SettingsScreenState extends State<SettingsScreen>
   int _emailCooldownSeconds = 0;
   Timer? _cooldownTimer;
 
+  /// Current OS-level location permission status, refreshed on screen open
+  /// and on app resume so the chip stays in sync with what the user toggled
+  /// in system Settings.  Null while the very first read is in flight.
+  LocationStatus? _locationStatus;
+
+  /// Same shape as [_locationStatus] but for camera permission.  Mirrors the
+  /// LocationService pattern so the chip and tap behaviour stay consistent
+  /// with what live verification does.
+  CameraStatus? _cameraStatus;
+
+  /// Photo-library permission status.  Drives the Photos row chip; updated
+  /// on screen open and on app resume so it stays in sync with system
+  /// Settings.  Null while the very first read is in flight.
+  PhotosStatus? _photosStatus;
+
+  /// Notifications permission status.  Drives the Notifications row chip;
+  /// updated on screen open and on app resume.  Null while the very first
+  /// read is in flight.
+  NotificationsStatus? _notificationsStatus;
+
+  /// True while the server-owned account deletion callable is running.
+  bool _deletingAccount = false;
+
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _loadSettings();
+    _refreshLocationStatus();
+    _refreshCameraStatus();
+    _refreshPhotosStatus();
+    _refreshNotificationsStatus();
   }
 
   @override
@@ -190,6 +188,12 @@ class _SettingsScreenState extends State<SettingsScreen>
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
+      // Re-read every permission status — the user may have just come back
+      // from system Settings where they toggled any of them.
+      _refreshLocationStatus();
+      _refreshCameraStatus();
+      _refreshPhotosStatus();
+      _refreshNotificationsStatus();
       final beforeVerified =
           FirebaseAuth.instance.currentUser?.emailVerified ?? false;
       FirebaseAuth.instance.currentUser
@@ -288,6 +292,141 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
+  // ── Permissions ────────────────────────────────────────────────────────────
+
+  /// Reads the unified [LocationStatus] and stores it in [_locationStatus].
+  /// Fire-and-forget — the chip renders "Checking…" until the first read
+  /// completes, then updates reactively.
+  Future<void> _refreshLocationStatus() async {
+    final status = await LocationService.currentStatus();
+    if (!mounted) return;
+    setState(() => _locationStatus = status);
+  }
+
+  /// Tap action on the Location row.  Three branches:
+  ///
+  ///   • [LocationStatus.requestable]      — present the OS prompt in-app.
+  ///                                         This is the path that avoids the
+  ///                                         iOS Settings dead-end where the
+  ///                                         per-app Location row doesn't yet
+  ///                                         exist.
+  ///   • [LocationStatus.blockedForever]
+  ///   • [LocationStatus.servicesDisabled] — open system Settings.  Recovery
+  ///                                         from these states is not
+  ///                                         possible from inside the app.
+  ///   • [LocationStatus.granted]          — already on; tap is a no-op
+  ///                                         (row is non-tappable in this
+  ///                                         state — see _buildLocationRow).
+  Future<void> _onLocationRowTap() async {
+    final status = _locationStatus;
+    if (status == null) return;
+    switch (status) {
+      case LocationStatus.requestable:
+        final next = await LocationService.requestIfNeeded();
+        if (!mounted) return;
+        setState(() => _locationStatus = next);
+      case LocationStatus.blockedForever:
+      case LocationStatus.servicesDisabled:
+        await LocationService.openSettings();
+      case LocationStatus.granted:
+        break;
+    }
+  }
+
+  /// Reads the unified [CameraStatus] and stores it in [_cameraStatus].
+  /// Same fire-and-forget pattern as [_refreshLocationStatus].
+  Future<void> _refreshCameraStatus() async {
+    final status = await CameraPermissionService.currentStatus();
+    if (!mounted) return;
+    setState(() => _cameraStatus = status);
+  }
+
+  /// Tap action on the Camera row.  Mirrors [_onLocationRowTap]:
+  ///
+  ///   • [CameraStatus.requestable]    — present the OS prompt in-app, same
+  ///                                     dead-end fix as Location.
+  ///   • [CameraStatus.blockedForever] — open system Settings.
+  ///   • [CameraStatus.granted]        — no-op (row non-tappable).
+  ///   • [CameraStatus.unavailable]    — no-op (row non-tappable; the chip
+  ///                                     just communicates that camera APIs
+  ///                                     don't apply on this platform).
+  Future<void> _onCameraRowTap() async {
+    final status = _cameraStatus;
+    if (status == null) return;
+    switch (status) {
+      case CameraStatus.requestable:
+        final next = await CameraPermissionService.requestIfNeeded();
+        if (!mounted) return;
+        setState(() => _cameraStatus = next);
+      case CameraStatus.blockedForever:
+        await CameraPermissionService.openSettings();
+      case CameraStatus.granted:
+      case CameraStatus.unavailable:
+        break;
+    }
+  }
+
+  /// Reads the unified [PhotosStatus] and stores it in [_photosStatus].
+  Future<void> _refreshPhotosStatus() async {
+    final status = await PhotosPermissionService.currentStatus();
+    if (!mounted) return;
+    setState(() => _photosStatus = status);
+  }
+
+  /// Tap action on the Photos row.
+  ///
+  ///   • [PhotosStatus.requestable]    — present the OS prompt in-app.
+  ///   • [PhotosStatus.limited]
+  ///   • [PhotosStatus.blockedForever] — open system Settings.  iOS does
+  ///                                     not let an app re-prompt to lift
+  ///                                     a "Selected Photos" choice or a
+  ///                                     denial; system Settings is the
+  ///                                     only path forward.
+  ///   • [PhotosStatus.granted]
+  ///   • [PhotosStatus.unavailable]    — non-tappable (handled at the row
+  ///                                     level via tappable=false).
+  Future<void> _onPhotosRowTap() async {
+    final status = _photosStatus;
+    if (status == null) return;
+    switch (status) {
+      case PhotosStatus.requestable:
+        final next = await PhotosPermissionService.requestIfNeeded();
+        if (!mounted) return;
+        setState(() => _photosStatus = next);
+      case PhotosStatus.limited:
+      case PhotosStatus.blockedForever:
+        await PhotosPermissionService.openSettings();
+      case PhotosStatus.granted:
+      case PhotosStatus.unavailable:
+        break;
+    }
+  }
+
+  /// Reads the unified [NotificationsStatus] and stores it in
+  /// [_notificationsStatus].
+  Future<void> _refreshNotificationsStatus() async {
+    final status = await NotificationsPermissionService.currentStatus();
+    if (!mounted) return;
+    setState(() => _notificationsStatus = status);
+  }
+
+  /// Tap action on the Notifications row.  Same branching as Camera.
+  Future<void> _onNotificationsRowTap() async {
+    final status = _notificationsStatus;
+    if (status == null) return;
+    switch (status) {
+      case NotificationsStatus.requestable:
+        final next = await NotificationsPermissionService.requestIfNeeded();
+        if (!mounted) return;
+        setState(() => _notificationsStatus = next);
+      case NotificationsStatus.blockedForever:
+        await NotificationsPermissionService.openSettings();
+      case NotificationsStatus.granted:
+      case NotificationsStatus.unavailable:
+        break;
+    }
+  }
+
   /// Optimistic single-field persist.  Shows a snackbar only on write failure.
   void _save(String field, dynamic value) {
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -297,23 +436,6 @@ class _SettingsScreenState extends State<SettingsScreen>
         .doc(uid)
         .update({field: value}).catchError((Object e) {
       debugPrint('[Settings] save $field failed: $e');
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Failed to save. Please try again.')),
-        );
-      }
-    });
-  }
-
-  /// Optimistic multi-field persist.
-  void _saveAll(Map<String, dynamic> fields) {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    FirebaseFirestore.instance
-        .collection('users')
-        .doc(uid)
-        .update(fields).catchError((Object e) {
-      debugPrint('[Settings] saveAll failed: $e');
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Failed to save. Please try again.')),
@@ -437,66 +559,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     }
   }
 
-  // ── Pickers ────────────────────────────────────────────────────────────────
-
-  void _showShowMePicker() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.bgSurface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => _ShowMePicker(
-        current: _settings!.showMe,
-        onSelected: (value) {
-          // Picker closes itself before calling this.
-          setState(() => _settings!.showMe = value);
-          _save('showMe', value);
-        },
-      ),
-    );
-  }
-
-  void _showAgeRangePicker() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.bgSurface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => _AgeRangePicker(
-        initialMin: _settings!.ageRangeMin.toDouble(),
-        initialMax: _settings!.ageRangeMax.toDouble(),
-        onSaved: (min, max) {
-          // Picker closes itself before calling this.
-          setState(() {
-            _settings!.ageRangeMin = min.round();
-            _settings!.ageRangeMax = max.round();
-          });
-          _saveAll({'ageRangeMin': min.round(), 'ageRangeMax': max.round()});
-        },
-      ),
-    );
-  }
-
-  void _showMaxDistancePicker() {
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.bgSurface,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => _MaxDistancePicker(
-        initialValue: _settings!.maxDistanceMeters.toDouble(),
-        onSaved: (value) {
-          // Picker closes itself before calling this.
-          setState(() => _settings!.maxDistanceMeters = value.round());
-          _save('maxDistanceMeters', value.round());
-        },
-      ),
-    );
-  }
-
   // ── Auth dialogs ───────────────────────────────────────────────────────────
 
   Future<void> _confirmSignOut() async {
@@ -535,6 +597,8 @@ class _SettingsScreenState extends State<SettingsScreen>
   }
 
   Future<void> _confirmDeleteAccount() async {
+    if (_deletingAccount) return;
+
     // Step 1 — explain consequences.
     final step1 = await showDialog<bool>(
       context: context,
@@ -543,8 +607,9 @@ class _SettingsScreenState extends State<SettingsScreen>
         title: Text('Delete account?',
             style: AppTextStyles.h3.copyWith(color: AppColors.danger)),
         content: Text(
-          'This permanently deletes your profile, photos, matches, and messages. '
-          'Your data will be removed within 30 days. '
+          'This permanently deletes your profile, photos, live verification '
+          'selfies, messages, matches, meetup history, and account data from '
+          'Icebreaker. '
           'This cannot be undone.',
           style: AppTextStyles.bodyS,
         ),
@@ -595,34 +660,55 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
     if (step2 != true) return;
 
-    // Mark the user as offline in Firestore before deleting Auth so they
-    // immediately disappear from discovery and other users' feeds.
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null) {
-      await FirebaseFirestore.instance.collection('users').doc(uid).update({
-        'isLive': false,
-        'deleted': true,
-        'deletedAt': FieldValue.serverTimestamp(),
-      }).catchError((Object e) {
-        debugPrint('[Settings] pre-delete Firestore update failed (non-fatal): $e');
-      });
-    }
-
     try {
-      await FirebaseAuth.instance.currentUser?.delete();
-    } on FirebaseAuthException catch (e) {
-      debugPrint('[Settings] delete account failed: ${e.code}');
       if (mounted) {
-        final msg = e.code == 'requires-recent-login'
-            ? 'For security, please sign out and sign back in before deleting your account.'
-            : 'Could not delete account (${e.code}). Please try again.';
+        setState(() => _deletingAccount = true);
+      }
+
+      debugPrint('[Settings] delete account: calling deleteMyAccount');
+      await FirebaseFunctions.instance
+          .httpsCallable('deleteMyAccount')
+          .call();
+      debugPrint('[Settings] delete account: deleteMyAccount succeeded');
+
+      await FirebaseAuth.instance.signOut().catchError((Object e) {
+        debugPrint('[Settings] signOut after delete failed (non-fatal): $e');
+      });
+
+      if (!mounted) return;
+      context.go(AppRoutes.signIn);
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('[Settings] delete account callable failed: ${e.code} ${e.message}');
+      if (mounted) {
+        setState(() => _deletingAccount = false);
+      }
+      if (!mounted) return;
+      final msg = switch (e.code) {
+        'unauthenticated' => 'Please sign in again before deleting your account.',
+        'deadline-exceeded' =>
+          'Deletion is taking longer than expected. Please try again in a minute.',
+        _ => e.message ?? 'Could not delete account right now. Please try again.',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(msg)),
+      );
+      return;
+    } on FirebaseAuthException catch (e) {
+      debugPrint('[Settings] signOut after delete failed: ${e.code}');
+      if (mounted) {
+        setState(() => _deletingAccount = false);
+      }
+      if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(msg)),
+          SnackBar(content: Text('Account deleted, but sign-out failed (${e.code}).')),
         );
       }
       return;
     } catch (e) {
       debugPrint('[Settings] delete account unexpected error: $e');
+      if (mounted) {
+        setState(() => _deletingAccount = false);
+      }
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -632,7 +718,6 @@ class _SettingsScreenState extends State<SettingsScreen>
       }
       return;
     }
-    if (mounted) context.go(AppRoutes.signIn);
   }
 
   // ── URL launcher ───────────────────────────────────────────────────────────
@@ -671,6 +756,222 @@ class _SettingsScreenState extends State<SettingsScreen>
     );
   }
 
+  /// Renders the Location row in the Permissions section.  The chip and tap
+  /// behaviour both branch on [_locationStatus]:
+  ///
+  ///   granted          → "Granted" (success), row non-tappable
+  ///   requestable      → "Not granted" (danger), tap → in-app OS prompt
+  ///   blockedForever   → "Blocked" (danger), tap → system Settings
+  ///   servicesDisabled → "Services off" (warning), tap → system Settings
+  ///   null (in-flight) → "Checking…" (muted), row non-tappable
+  Widget _buildLocationRow() {
+    final status = _locationStatus;
+    final (chipLabel, chipColor, subtitle, tappable) = switch (status) {
+      LocationStatus.granted => (
+          'Granted',
+          AppColors.success,
+          'Used to find people nearby while you\'re live',
+          false,
+        ),
+      LocationStatus.requestable => (
+          'Not granted',
+          AppColors.danger,
+          'Tap to allow Icebreaker to use your location',
+          true,
+        ),
+      LocationStatus.blockedForever => (
+          'Blocked',
+          AppColors.danger,
+          'Tap to open system Settings and re-enable',
+          true,
+        ),
+      LocationStatus.servicesDisabled => (
+          'Services off',
+          AppColors.warning,
+          'Location Services are off device-wide. Tap to open Settings',
+          true,
+        ),
+      null => ('Checking…', AppColors.textMuted, null, false),
+    };
+
+    return _SettingsRow(
+      icon: Icons.location_on_outlined,
+      iconColor: status == LocationStatus.granted
+          ? AppColors.success
+          : AppColors.brandCyan,
+      label: 'Location',
+      subtitle: subtitle,
+      onTap: tappable ? _onLocationRowTap : null,
+      showChevron: tappable,
+      trailing: _ValueChip(label: chipLabel, labelColor: chipColor),
+    );
+  }
+
+  /// Renders the Camera row.  Same chip / tap branching as [_buildLocationRow]:
+  ///
+  ///   granted        → "Granted" (success), row non-tappable
+  ///   requestable    → "Not granted" (danger), tap → in-app OS prompt
+  ///   blockedForever → "Blocked" (danger), tap → system Settings
+  ///   unavailable    → "Unavailable" (muted), row non-tappable.  Non-mobile
+  ///                    platforms (web, macOS, Linux, Windows) — there is no
+  ///                    permission to grant; live verification falls back to
+  ///                    a photo-library path on macOS for the support account.
+  ///   null           → "Checking…" (muted), row non-tappable.
+  Widget _buildCameraRow() {
+    final status = _cameraStatus;
+    final (chipLabel, chipColor, subtitle, tappable) = switch (status) {
+      CameraStatus.granted => (
+          'Granted',
+          AppColors.success,
+          'Used for Live Verification selfies',
+          false,
+        ),
+      CameraStatus.requestable => (
+          'Not granted',
+          AppColors.danger,
+          'Tap to allow Icebreaker to use your camera',
+          true,
+        ),
+      CameraStatus.blockedForever => (
+          'Blocked',
+          AppColors.danger,
+          'Tap to open system Settings and re-enable',
+          true,
+        ),
+      CameraStatus.unavailable => (
+          'Unavailable',
+          AppColors.textMuted,
+          'Camera is not available on this platform',
+          false,
+        ),
+      null => ('Checking…', AppColors.textMuted, null, false),
+    };
+
+    return _SettingsRow(
+      icon: Icons.photo_camera_outlined,
+      iconColor: status == CameraStatus.granted
+          ? AppColors.success
+          : AppColors.brandCyan,
+      label: 'Camera',
+      subtitle: subtitle,
+      onTap: tappable ? _onCameraRowTap : null,
+      showChevron: tappable,
+      trailing: _ValueChip(label: chipLabel, labelColor: chipColor),
+    );
+  }
+
+  /// Renders the Photos row.  Same chip / tap branching as
+  /// [_buildLocationRow], with an extra [PhotosStatus.limited] tier:
+  ///
+  ///   granted        → "Granted" (success), row non-tappable
+  ///   limited        → "Limited" (warning), tap → system Settings
+  ///                    (iOS-only state; the user has shared a subset of
+  ///                    their library and the only way to lift it is via
+  ///                    system Settings)
+  ///   requestable    → "Not granted" (danger), tap → in-app OS prompt
+  ///   blockedForever → "Blocked" (danger), tap → system Settings
+  ///   unavailable    → "Unavailable" (muted), row non-tappable
+  ///   null           → "Checking…" (muted), row non-tappable
+  Widget _buildPhotosRow() {
+    final status = _photosStatus;
+    final (chipLabel, chipColor, subtitle, tappable) = switch (status) {
+      PhotosStatus.granted => (
+          'Granted',
+          AppColors.success,
+          'Used when you pick photos for your profile',
+          false,
+        ),
+      PhotosStatus.limited => (
+          'Limited',
+          AppColors.warning,
+          'You shared a subset of your library. Tap to change in Settings',
+          true,
+        ),
+      PhotosStatus.requestable => (
+          'Not granted',
+          AppColors.danger,
+          'Tap to allow access to your photo library',
+          true,
+        ),
+      PhotosStatus.blockedForever => (
+          'Blocked',
+          AppColors.danger,
+          'Tap to open system Settings and re-enable',
+          true,
+        ),
+      PhotosStatus.unavailable => (
+          'Unavailable',
+          AppColors.textMuted,
+          'Photo library is not available on this platform',
+          false,
+        ),
+      null => ('Checking…', AppColors.textMuted, null, false),
+    };
+
+    return _SettingsRow(
+      icon: Icons.photo_library_outlined,
+      iconColor: status == PhotosStatus.granted
+          ? AppColors.success
+          : AppColors.brandCyan,
+      label: 'Photos',
+      subtitle: subtitle,
+      onTap: tappable ? _onPhotosRowTap : null,
+      showChevron: tappable,
+      trailing: _ValueChip(label: chipLabel, labelColor: chipColor),
+    );
+  }
+
+  /// Renders the Notifications row.  Same chip / tap branching as
+  /// [_buildCameraRow]:
+  ///
+  ///   granted        → "Granted" (success), row non-tappable
+  ///   requestable    → "Not granted" (danger), tap → in-app OS prompt
+  ///   blockedForever → "Blocked" (danger), tap → system Settings
+  ///   unavailable    → "Unavailable" (muted), row non-tappable
+  ///   null           → "Checking…" (muted), row non-tappable
+  Widget _buildNotificationsRow() {
+    final status = _notificationsStatus;
+    final (chipLabel, chipColor, subtitle, tappable) = switch (status) {
+      NotificationsStatus.granted => (
+          'Granted',
+          AppColors.success,
+          'Used for icebreakers, messages, and session alerts',
+          false,
+        ),
+      NotificationsStatus.requestable => (
+          'Not granted',
+          AppColors.danger,
+          'Tap to allow Icebreaker to send notifications',
+          true,
+        ),
+      NotificationsStatus.blockedForever => (
+          'Blocked',
+          AppColors.danger,
+          'Tap to open system Settings and re-enable',
+          true,
+        ),
+      NotificationsStatus.unavailable => (
+          'Unavailable',
+          AppColors.textMuted,
+          'Notifications are not available on this platform',
+          false,
+        ),
+      null => ('Checking…', AppColors.textMuted, null, false),
+    };
+
+    return _SettingsRow(
+      icon: Icons.notifications_active_outlined,
+      iconColor: status == NotificationsStatus.granted
+          ? AppColors.success
+          : AppColors.brandCyan,
+      label: 'Notifications',
+      subtitle: subtitle,
+      onTap: tappable ? _onNotificationsRowTap : null,
+      showChevron: tappable,
+      trailing: _ValueChip(label: chipLabel, labelColor: chipColor),
+    );
+  }
+
   Widget _buildBody() {
     if (_loadError) {
       return Center(
@@ -704,12 +1005,6 @@ class _SettingsScreenState extends State<SettingsScreen>
     // Verification status from FirebaseAuth — read-only, cannot be forged.
     final currentUser = FirebaseAuth.instance.currentUser;
     final emailVerified = currentUser?.emailVerified ?? false;
-    final phone = currentUser?.phoneNumber;
-    final phoneVerified = phone != null && phone.isNotEmpty;
-    final maskedPhone = (phone == null || phone.isEmpty)
-        ? null
-        : (phone.length <= 4 ? phone : '••••${phone.substring(phone.length - 4)}');
-
     return ListView(
       padding: const EdgeInsets.fromLTRB(20, 8, 20, 48),
       children: [
@@ -775,59 +1070,29 @@ class _SettingsScreenState extends State<SettingsScreen>
                         emailVerified ? AppColors.success : AppColors.danger,
                   ),
           ),
-          // Phone Verification: display-only until the OTP flow is built.
-          // A phone number stored in Firebase Auth is always OTP-verified,
-          // so presence == verified.
-          _SettingsRow(
-            icon: Icons.phone_outlined,
-            iconColor:
-                phoneVerified ? AppColors.success : AppColors.textSecondary,
-            label: 'Phone Verification',
-            subtitle: phoneVerified ? maskedPhone : 'Coming soon',
-            onTap: null,
-            showChevron: false,
-            trailing: _ValueChip(
-              label: phoneVerified ? 'Verified' : 'Coming soon',
-              labelColor: phoneVerified ? AppColors.success : AppColors.textMuted,
-            ),
-          ),
         ]),
         const SizedBox(height: 24),
 
         // ── Discovery ────────────────────────────────────────────────────────
+        // The discovery preference set (interestedIn, age range, max distance)
+        // is now owned end-to-end by Edit Profile so there is exactly one
+        // canonical surface for editing them.  This row is a deep-link into
+        // that surface — taps land on the Preferences section.
         const _SectionHeader(title: 'Discovery'),
         _SettingsCard(items: [
           _SettingsRow(
-            icon: Icons.explore_outlined,
+            icon: Icons.tune_rounded,
             iconColor: AppColors.brandPurple,
-            label: 'Show Me',
-            onTap: _showShowMePicker,
-            trailing: _ValueChip(label: _showMeLabel(s.showMe)),
-          ),
-          _SettingsRow(
-            icon: Icons.cake_outlined,
-            iconColor: AppColors.brandPink,
-            label: 'Age Range',
-            onTap: _showAgeRangePicker,
-            trailing: _ValueChip(label: '${s.ageRangeMin} – ${s.ageRangeMax}'),
-          ),
-          _SettingsRow(
-            icon: Icons.location_on_outlined,
-            iconColor: AppColors.brandCyan,
-            label: 'Max Distance',
-            onTap: _showMaxDistancePicker,
-            trailing: _ValueChip(label: '${s.maxDistanceMeters} m'),
-          ),
-          _SettingsToggleRow(
-            icon: Icons.travel_explore_rounded,
-            iconColor: AppColors.brandPurple,
-            label: 'Discoverable',
-            subtitle: 'Show me to people nearby while live',
-            value: s.discoverable,
-            onChanged: (v) {
-              setState(() => s.discoverable = v);
-              _save('discoverable', v);
-            },
+            label: 'Dating preferences',
+            subtitle: 'Edit who you see and who sees you',
+            onTap: () => context.push(
+              AppRoutes.editProfile,
+              extra: 'preferences',
+            ),
+            trailing: const Icon(
+              Icons.chevron_right_rounded,
+              color: AppColors.textMuted,
+            ),
           ),
         ]),
         const SizedBox(height: 24),
@@ -860,10 +1125,27 @@ class _SettingsScreenState extends State<SettingsScreen>
         ]),
         const SizedBox(height: 24),
 
+        // ── Permissions ──────────────────────────────────────────────────────
+        // Surfaces OS-level permission state directly so the user can see at
+        // a glance whether the app has what it needs, and recover from a
+        // denial without hunting through system Settings menus.  Each row
+        // resolves through its own service (LocationService /
+        // CameraPermissionService / PhotosPermissionService /
+        // NotificationsPermissionService) so the chip stays consistent with
+        // every other prompt the app surfaces.
+        const _SectionHeader(title: 'Permissions'),
+        _SettingsCard(items: [
+          _buildLocationRow(),
+          _buildCameraRow(),
+          _buildPhotosRow(),
+          _buildNotificationsRow(),
+        ]),
+        const SizedBox(height: 24),
+
         // ── Notifications ─────────────────────────────────────────────────────
-        // Values are persisted to Firestore immediately.
-        // TODO: FCM topic subscribe/unsubscribe needed for these to suppress
-        // push notifications.  Cloud Function must read these fields before sending.
+        // Values are persisted to Firestore immediately and enforced by the
+        // backend push senders for reminders, icebreakers, messages,
+        // match-confirmed, and session-start alerts.
         const _SectionHeader(title: 'Notifications'),
         _SettingsCard(items: [
           // Do Not Disturb: silences chat/message push notifications while the
@@ -880,6 +1162,17 @@ class _SettingsScreenState extends State<SettingsScreen>
             onChanged: (v) {
               setState(() => s.doNotDisturb = v);
               _save('doNotDisturb', v);
+            },
+          ),
+          _SettingsToggleRow(
+            icon: Icons.alarm_on_outlined,
+            iconColor: AppColors.warning,
+            label: 'Reminders',
+            subtitle: 'Time-sensitive nudges before things expire',
+            value: s.notifReminders,
+            onChanged: (v) {
+              setState(() => s.notifReminders = v);
+              _save('notifReminders', v);
             },
           ),
           _SettingsToggleRow(
@@ -947,6 +1240,12 @@ class _SettingsScreenState extends State<SettingsScreen>
             onTap: () => _launchUrl('https://icebreakerlive.com/terms.html'),
           ),
           _SettingsRow(
+            icon: Icons.delete_forever_outlined,
+            iconColor: AppColors.danger,
+            label: 'Account Deletion Help',
+            onTap: () => _launchUrl('https://icebreakerlive.com/delete-account.html'),
+          ),
+          _SettingsRow(
             icon: Icons.info_outline_rounded,
             iconColor: AppColors.textMuted,
             label: 'App Version',
@@ -969,258 +1268,13 @@ class _SettingsScreenState extends State<SettingsScreen>
           _SettingsRow(
             icon: Icons.delete_outline_rounded,
             iconColor: AppColors.danger,
-            label: 'Delete Account',
+            label: _deletingAccount ? 'Deleting Account…' : 'Delete Account',
             labelColor: AppColors.danger,
-            onTap: _confirmDeleteAccount,
+            onTap: _deletingAccount ? null : _confirmDeleteAccount,
             showChevron: false,
           ),
         ]),
       ],
-    );
-  }
-}
-
-// ─── Bottom sheet pickers ─────────────────────────────────────────────────────
-
-class _ShowMePicker extends StatelessWidget {
-  const _ShowMePicker({required this.current, required this.onSelected});
-
-  final String current;
-  final ValueChanged<String> onSelected;
-
-  static const List<(String, String)> _options = [
-    ('everyone', 'Everyone'),
-    ('men', 'Men'),
-    ('women', 'Women'),
-    ('non_binary', 'Non-binary'),
-  ];
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const _PickerHandle(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 16),
-          child: Text('Show Me', style: AppTextStyles.h3),
-        ),
-        for (int i = 0; i < _options.length; i++) ...[
-          ListTile(
-            contentPadding: const EdgeInsets.symmetric(horizontal: 20),
-            title: Text(
-              _options[i].$2,
-              style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w600),
-            ),
-            trailing: current == _options[i].$1
-                ? const Icon(Icons.check_rounded, color: AppColors.brandPink)
-                : null,
-            onTap: () {
-              Navigator.of(context).pop();
-              onSelected(_options[i].$1);
-            },
-          ),
-          if (i < _options.length - 1)
-            const Divider(
-                height: 1,
-                color: AppColors.divider,
-                indent: 20,
-                endIndent: 20),
-        ],
-        const SizedBox(height: 24),
-      ],
-    );
-  }
-}
-
-class _AgeRangePicker extends StatefulWidget {
-  const _AgeRangePicker({
-    required this.initialMin,
-    required this.initialMax,
-    required this.onSaved,
-  });
-
-  final double initialMin;
-  final double initialMax;
-  final void Function(double min, double max) onSaved;
-
-  @override
-  State<_AgeRangePicker> createState() => _AgeRangePickerState();
-}
-
-class _AgeRangePickerState extends State<_AgeRangePicker> {
-  late RangeValues _range;
-
-  @override
-  void initState() {
-    super.initState();
-    _range = RangeValues(widget.initialMin, widget.initialMax);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _PickerHandle(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Age Range', style: AppTextStyles.h3),
-              Text(
-                '${_range.start.round()} – ${_range.end.round()}',
-                style:
-                    AppTextStyles.h3.copyWith(color: AppColors.brandPink),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: RangeSlider(
-            values: _range,
-            min: 18,
-            max: 65,
-            divisions: 47,
-            activeColor: AppColors.brandPink,
-            inactiveColor: AppColors.divider,
-            onChanged: (v) => setState(() => _range = v),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('18', style: AppTextStyles.caption),
-              Text('65', style: AppTextStyles.caption),
-            ],
-          ),
-        ),
-        const SizedBox(height: 24),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: PillButton.primary(
-            label: 'Save',
-            width: double.infinity,
-            height: 52,
-            onTap: () {
-              Navigator.of(context).pop();
-              widget.onSaved(_range.start, _range.end);
-            },
-          ),
-        ),
-        const SizedBox(height: 24),
-      ],
-    );
-  }
-}
-
-class _MaxDistancePicker extends StatefulWidget {
-  const _MaxDistancePicker({
-    required this.initialValue,
-    required this.onSaved,
-  });
-
-  final double initialValue;
-  final ValueChanged<double> onSaved;
-
-  @override
-  State<_MaxDistancePicker> createState() => _MaxDistancePickerState();
-}
-
-class _MaxDistancePickerState extends State<_MaxDistancePicker> {
-  late double _value;
-
-  @override
-  void initState() {
-    super.initState();
-    // Clamp to the new 30–60 m range, migrating any legacy value.
-    _value = widget.initialValue.clamp(30.0, 60.0);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const _PickerHandle(),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('Max Distance', style: AppTextStyles.h3),
-              Text(
-                '${_value.round()} m',
-                style:
-                    AppTextStyles.h3.copyWith(color: AppColors.brandCyan),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 8),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Slider(
-            value: _value,
-            min: 30,
-            max: 60,
-            // 3 divisions → stops at 30, 40, 50, 60 m
-            divisions: 3,
-            activeColor: AppColors.brandCyan,
-            inactiveColor: AppColors.divider,
-            onChanged: (v) => setState(() => _value = v),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('30 m', style: AppTextStyles.caption),
-              Text('60 m', style: AppTextStyles.caption),
-            ],
-          ),
-        ),
-        const SizedBox(height: 24),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 20),
-          child: PillButton.cyan(
-            label: 'Save',
-            width: double.infinity,
-            height: 52,
-            onTap: () {
-              Navigator.of(context).pop();
-              widget.onSaved(_value);
-            },
-          ),
-        ),
-        const SizedBox(height: 24),
-      ],
-    );
-  }
-}
-
-class _PickerHandle extends StatelessWidget {
-  const _PickerHandle();
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Container(
-        width: 40,
-        height: 4,
-        margin: const EdgeInsets.only(top: 12, bottom: 20),
-        decoration: BoxDecoration(
-          color: AppColors.divider,
-          borderRadius: BorderRadius.circular(2),
-        ),
-      ),
     );
   }
 }
