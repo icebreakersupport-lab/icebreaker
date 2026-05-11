@@ -65,6 +65,10 @@ dependencies:
   # server-side dedupe + crediting.
   in_app_purchase: ^3.2.0
 
+  # Image decode + center-crop for the live verification avatar pipeline
+  # (deriveSquareAvatar).  Pure Dart, no native deps.
+  image: ^4.5.4
+
 
 dev_dependencies:
   flutter_test:

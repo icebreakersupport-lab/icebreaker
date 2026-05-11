@@ -63,22 +63,20 @@ class LiveSessionRepository {
     required String uid,
     required LiveVerificationMethod verificationMethod,
     required int maxDistanceMetersSnapshot,
-    required bool discoverableSnapshot,
-    required String showMeSnapshot,
+    required String interestedInSnapshot,
     required int ageRangeMinSnapshot,
     required int ageRangeMaxSnapshot,
     required int liveCreditsAtStart,
+    required int remainingLiveCredits,
+    String? liveSelfieUrl,
   }) async {
     final now = DateTime.now();
     final expires = now.add(const Duration(hours: 1));
 
-    // visibilityState IS the discovery/read gate: only 'discoverable' permits
-    // cross-user reads at the security-rules layer.  When the owner opts out
-    // of discovery we write 'discovery_disabled' so the session is structurally
-    // unreachable through Nearby — it never relies on client-side filtering.
-    final initialVisibility = discoverableSnapshot
-        ? LiveSessionVisibility.discoverable
-        : LiveSessionVisibility.discoveryDisabled;
+    // Going Live is always discoverable — there is no user-controlled opt-out.
+    // Other visibility states (hidden_in_meetup) flip via writeMeetupVisibility
+    // later in the session.
+    const initialVisibility = LiveSessionVisibility.discoverable;
 
     final batch = _db.batch();
     batch.set(_liveDoc(uid), {
@@ -90,6 +88,7 @@ class LiveSessionRepository {
       'endedAt': null,
       'verificationMethod': liveVerificationMethodName(verificationMethod),
       'verificationCompletedAt': FieldValue.serverTimestamp(),
+      'verificationRedoCount': 0,
       'currentMeetupId': null,
       'visibilityState': liveSessionVisibilityName(initialVisibility),
       // Position is nulled at start; populated by [writePosition] once GPS
@@ -99,11 +98,11 @@ class LiveSessionRepository {
       'geohash': null,
       'locationUpdatedAt': null,
       'maxDistanceMetersSnapshot': maxDistanceMetersSnapshot,
-      'discoverableSnapshot': discoverableSnapshot,
-      'showMeSnapshot': showMeSnapshot,
+      'interestedInSnapshot': interestedInSnapshot,
       'ageRangeMinSnapshot': ageRangeMinSnapshot,
       'ageRangeMaxSnapshot': ageRangeMaxSnapshot,
       'liveCreditsAtStart': liveCreditsAtStart,
+      'liveSelfieUrl': liveSelfieUrl,
       'platform': _platformString,
       'schemaVersion': kLiveSessionSchemaVersion,
       'createdAt': FieldValue.serverTimestamp(),
@@ -112,6 +111,7 @@ class LiveSessionRepository {
     batch.update(_userDoc(uid), {
       'isLive': true,
       'doNotDisturb': false,
+      'liveSessionCredits': remainingLiveCredits,
     });
     await batch.commit();
   }
@@ -217,28 +217,92 @@ class LiveSessionRepository {
   /// written by the Cloud Function.  Phase 2 replaces this with a direct
   /// Cloud Function write to `live_sessions/{uid}`.
   ///
-  /// [discoverableSnapshot] is the value frozen onto the session at Go Live.
-  /// When the user is *leaving* a meetup (currentMeetupId becomes null) we
-  /// must restore the right visibility for them — `discoverable` only when
-  /// they originally opted in, `discovery_disabled` otherwise.  Without this
-  /// the previous implementation would have re-opened a non-discoverable
-  /// session to cross-user reads on every meetup exit.
+  /// Sessions are always discoverable when not in a meetup (the user-opt-out
+  /// was removed), so leaving a meetup always flips back to 'discoverable'.
   Future<void> writeMeetupVisibility({
     required String uid,
     required String? currentMeetupId,
-    required bool discoverableSnapshot,
   }) {
     final visibility = currentMeetupId != null
         ? LiveSessionVisibility.hiddenInMeetup
-        : (discoverableSnapshot
-            ? LiveSessionVisibility.discoverable
-            : LiveSessionVisibility.discoveryDisabled);
+        : LiveSessionVisibility.discoverable;
     return _liveDoc(uid).update({
       'currentMeetupId': currentMeetupId,
       'visibilityState': liveSessionVisibilityName(visibility),
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
+
+  /// Bumps just `locationUpdatedAt` on the active session doc to keep the
+  /// session "fresh" when GPS isn't available (background, indoors, perm
+  /// glitch).  Other users' Nearby feeds drop sessions whose location is
+  /// older than the stale threshold — a heartbeat keeps the user visible at
+  /// their last known position.
+  Future<void> heartbeatPosition({required String uid}) {
+    return _liveDoc(uid).update({
+      'locationUpdatedAt': FieldValue.serverTimestamp(),
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Patches `live_sessions/{uid}.liveSelfieUrl` to [url] after a redo
+  /// upload completes.  Single-field write — does NOT mirror anywhere else.
+  /// When the session ends, the selfie URL is cleared by [markEnded] /
+  /// [markExpired]; the user's persistent profile photo is the gallery main
+  /// they chose, not the live selfie.
+  Future<void> setLiveSelfieUrl({
+    required String uid,
+    required String url,
+  }) {
+    return _liveDoc(uid).update({
+      'liveSelfieUrl': url,
+      'updatedAt': FieldValue.serverTimestamp(),
+    });
+  }
+
+  /// Records that the user re-took their live verification selfie during
+  /// the active session.  Bumps `verificationRedoCount`, updates
+  /// `verificationMethod`, and stamps a fresh `verificationCompletedAt`.
+  /// Throws [LiveSessionRedoLimitException] once the cap is reached — the
+  /// session is allowed at most 3 redos per Q3 of the launch-readiness
+  /// product spec.
+  Future<void> recordPhotoVerificationRedo({
+    required String uid,
+    required LiveVerificationMethod verificationMethod,
+  }) async {
+    await _db.runTransaction((tx) async {
+      final snap = await tx.get(_liveDoc(uid));
+      if (!snap.exists) {
+        throw StateError('cannot record redo: live_sessions/$uid missing');
+      }
+      final current = (snap.data()?['verificationRedoCount'] as num?)?.toInt() ?? 0;
+      if (current >= kMaxLiveVerificationRedos) {
+        throw const LiveSessionRedoLimitException();
+      }
+      tx.update(_liveDoc(uid), {
+        'verificationRedoCount': current + 1,
+        'verificationMethod':
+            liveVerificationMethodName(verificationMethod),
+        'verificationCompletedAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+    });
+  }
+}
+
+/// Maximum number of times a user can re-capture their live verification
+/// selfie during a single session.  Matches the Q3 product decision.
+const int kMaxLiveVerificationRedos = 3;
+
+/// Thrown by [LiveSessionRepository.recordPhotoVerificationRedo] when the
+/// user has already redone the maximum number of times allowed in this
+/// session.  Caller should surface a "you've used all your redos this
+/// session" message and prevent further captures until the session ends.
+class LiveSessionRedoLimitException implements Exception {
+  const LiveSessionRedoLimitException();
+  @override
+  String toString() =>
+      'LiveSessionRedoLimitException: redo cap of $kMaxLiveVerificationRedos reached';
 }
 
 String get _platformString {

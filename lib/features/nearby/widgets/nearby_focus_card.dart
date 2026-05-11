@@ -3,6 +3,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/pill_button.dart';
 import '../../reports/widgets/report_sheet.dart';
+import '../models/nearby_image.dart';
 
 /// The hero profile card shown in the Nearby discovery carousel.
 ///
@@ -24,7 +25,8 @@ class NearbyFocusCard extends StatelessWidget {
     required this.recipientId,
     required this.firstName,
     required this.age,
-    required this.photoUrl,
+    this.photoUrl,
+    this.images = const [],
     this.isGold = false,
     this.isActive = true,
     required this.onSendIcebreaker,
@@ -34,7 +36,17 @@ class NearbyFocusCard extends StatelessWidget {
   final String recipientId;
   final String firstName;
   final int age;
-  final String photoUrl;
+
+  /// Single-photo fallback used when [images] is empty.  Old callers passed
+  /// this directly; new callers should pass [images] instead.  The widget
+  /// prefers the first entry in [images] when available.
+  final String? photoUrl;
+
+  /// Ordered image rail to display.  When non-empty, the first entry is
+  /// shown as the hero photo (live selfie typically appears first).  Future
+  /// versions will render a swipeable rail; v1 just shows index 0.
+  final List<NearbyImage> images;
+
   final bool isGold;
 
   /// True when this card is the centred, focused card in the carousel.
@@ -44,6 +56,11 @@ class NearbyFocusCard extends StatelessWidget {
 
   /// Called after the user confirms a block action for this card.
   final VoidCallback onBlock;
+
+  String get _effectivePhotoUrl {
+    if (images.isNotEmpty) return images.first.url;
+    return photoUrl ?? '';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -64,7 +81,7 @@ class NearbyFocusCard extends StatelessWidget {
               fit: StackFit.expand,
               children: [
                 // ── Photo ─────────────────────────────────────────────────────
-                _Photo(url: photoUrl),
+                _Photo(url: _effectivePhotoUrl),
 
                 // ── Bottom scrim ──────────────────────────────────────────────
                 const _BottomScrim(),

@@ -72,11 +72,11 @@ class LiveSessionModel {
     this.geohash,
     this.locationUpdatedAt,
     required this.maxDistanceMetersSnapshot,
-    required this.discoverableSnapshot,
-    required this.showMeSnapshot,
+    required this.interestedInSnapshot,
     required this.ageRangeMinSnapshot,
     required this.ageRangeMaxSnapshot,
     required this.liveCreditsAtStart,
+    this.liveSelfieUrl,
     required this.platform,
     required this.schemaVersion,
     required this.createdAt,
@@ -98,11 +98,23 @@ class LiveSessionModel {
   final String? geohash;
   final DateTime? locationUpdatedAt;
   final int maxDistanceMetersSnapshot;
-  final bool discoverableSnapshot;
-  final String showMeSnapshot;
+
+  /// Snapshot of the user's "open to" preference at Go Live: one of
+  /// 'men', 'women', or 'everyone' (matches `users/{uid}.interestedIn`).
+  /// Frozen onto the session doc so the discovery query is stable for the
+  /// full session even if the user changes their preference mid-session.
+  final String interestedInSnapshot;
+
   final int ageRangeMinSnapshot;
   final int ageRangeMaxSnapshot;
   final int liveCreditsAtStart;
+
+  /// Current live verification selfie URL — written by
+  /// [LiveSessionRepository.setLiveSelfieUrl] after the upload completes.
+  /// Cleared (null) when the session ends; Nearby reads this to render the
+  /// fresh proof-of-life selfie on other users' radars.
+  final String? liveSelfieUrl;
+
   final String platform;
   final int schemaVersion;
   final DateTime createdAt;
@@ -142,11 +154,15 @@ class LiveSessionModel {
       locationUpdatedAt: _tsOrNull(d['locationUpdatedAt']),
       maxDistanceMetersSnapshot:
           (d['maxDistanceMetersSnapshot'] as num?)?.toInt() ?? 30,
-      discoverableSnapshot: (d['discoverableSnapshot'] as bool?) ?? true,
-      showMeSnapshot: (d['showMeSnapshot'] as String?) ?? 'everyone',
+      // Falls back to the legacy `showMeSnapshot` key for any session doc
+      // written before the schema cutover.
+      interestedInSnapshot: (d['interestedInSnapshot'] as String?) ??
+          (d['showMeSnapshot'] as String?) ??
+          'everyone',
       ageRangeMinSnapshot: (d['ageRangeMinSnapshot'] as num?)?.toInt() ?? 18,
       ageRangeMaxSnapshot: (d['ageRangeMaxSnapshot'] as num?)?.toInt() ?? 99,
       liveCreditsAtStart: (d['liveCreditsAtStart'] as num?)?.toInt() ?? 0,
+      liveSelfieUrl: d['liveSelfieUrl'] as String?,
       platform: (d['platform'] as String?) ?? 'unknown',
       schemaVersion: (d['schemaVersion'] as num?)?.toInt() ?? 1,
       createdAt: _ts(d['createdAt']),

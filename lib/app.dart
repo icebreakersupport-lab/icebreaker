@@ -237,7 +237,10 @@ class _IcebreakerAppState extends State<IcebreakerApp>
     if (!hydratedFromProfiles) {
       try {
         final created =
-            await ProfileRepository().ensureExists(uid, fallback: usersData);
+            await ProfileRepository().ensureExists(
+              uid,
+              fallback: usersData ?? const <String, dynamic>{},
+            );
         if (created) {
           debugPrint('[App] profiles/$uid materialised from users fallback');
         }
