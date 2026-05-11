@@ -83,6 +83,8 @@ abstract final class AppRoutes {
   static const String gallery = '/profile/gallery';
   static const String profileChecklist = '/profile/checklist';
   static const String settings = '/profile/settings';
+  static const String blockedUsers = '/profile/settings/blocked';
+  static const String reportingAndBlocking = '/profile/settings/reporting-help';
 }
 
 // ─── Gender / Orientation enums ───────────────────────────────────────────────

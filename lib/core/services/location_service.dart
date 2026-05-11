@@ -1,7 +1,30 @@
+import 'dart:io' show Platform;
 import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+
+/// Coarse permission state used by the onboarding location screen to pick
+/// which UI branch to render (prompt, blocked-with-retry, blocked-forever,
+/// or services-off).  This is a deliberately small surface — internal callers
+/// that need fine-grained values use [LocationService.checkPermission]
+/// directly.
+enum LocationStatus {
+  /// Permission has been granted (whileInUse or always).
+  granted,
+
+  /// Permission has been denied permanently — only the system Settings can
+  /// recover.
+  blockedForever,
+
+  /// Location services are disabled at the device level.  User must enable
+  /// them in Settings.
+  servicesDisabled,
+
+  /// Permission has not been determined yet, or was denied non-permanently.
+  /// Caller may re-prompt.
+  requestable,
+}
 
 /// GPS coordinate reading, geohash encoding, and Haversine distance.
 ///
@@ -77,6 +100,58 @@ abstract final class LocationService {
   /// Opens the platform's app-settings screen so the user can grant location
   /// permission.  Returns true if the screen was opened successfully.
   static Future<bool> openSettings() => Geolocator.openAppSettings();
+
+  /// Returns the current permission state mapped to the coarse
+  /// [LocationStatus] the onboarding UI consumes.  Does NOT prompt — used to
+  /// resync after the user returns from system Settings.
+  static Future<LocationStatus> currentStatus() async {
+    if (!_isMobile) return LocationStatus.granted;
+    try {
+      final servicesOn = await Geolocator.isLocationServiceEnabled();
+      if (!servicesOn) return LocationStatus.servicesDisabled;
+      final perm = await Geolocator.checkPermission();
+      return _mapPermission(perm);
+    } catch (e) {
+      debugPrint('[Location] currentStatus failed: $e');
+      return LocationStatus.requestable;
+    }
+  }
+
+  /// Prompts for permission if not yet decided, otherwise returns the current
+  /// status without re-prompting.  On non-mobile platforms (web/macOS/Linux/
+  /// Windows) returns [LocationStatus.granted] so callers can proceed without
+  /// a UI branch.
+  static Future<LocationStatus> requestIfNeeded() async {
+    if (!_isMobile) return LocationStatus.granted;
+    try {
+      final servicesOn = await Geolocator.isLocationServiceEnabled();
+      if (!servicesOn) return LocationStatus.servicesDisabled;
+      var perm = await Geolocator.checkPermission();
+      if (perm == LocationPermission.denied) {
+        perm = await Geolocator.requestPermission();
+      }
+      return _mapPermission(perm);
+    } catch (e) {
+      debugPrint('[Location] requestIfNeeded failed: $e');
+      return LocationStatus.requestable;
+    }
+  }
+
+  static bool get _isMobile =>
+      !kIsWeb && (Platform.isIOS || Platform.isAndroid);
+
+  static LocationStatus _mapPermission(LocationPermission p) {
+    switch (p) {
+      case LocationPermission.always:
+      case LocationPermission.whileInUse:
+        return LocationStatus.granted;
+      case LocationPermission.deniedForever:
+        return LocationStatus.blockedForever;
+      case LocationPermission.denied:
+      case LocationPermission.unableToDetermine:
+        return LocationStatus.requestable;
+    }
+  }
 
   // ── Geohash ───────────────────────────────────────────────────────────────────
 
