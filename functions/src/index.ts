@@ -2059,12 +2059,18 @@ export const grantAdReward = onCall(async (request) => {
       (typeBucket.towardCredit as number | undefined) ?? 0;
     const newTowardCredit = towardCredit + 1;
 
-    const updates: Record<string, unknown> = {
-      [`adProgress.${type}.lastWatchedAt`]: FieldValue.serverTimestamp(),
+    // Firestore set({merge:true}) does NOT interpret dot-notation keys as
+    // nested paths (that's a tx.update() behavior).  With set+merge we
+    // must build a real nested object so the per-type fields land inside
+    // adProgress.{type} rather than as flat literal-dot keys.
+    const typeUpdate: Record<string, unknown> = {
+      lastWatchedAt: FieldValue.serverTimestamp(),
     };
 
     let granted = false;
     let recordedProgress = newTowardCredit;
+
+    const updates: Record<string, unknown> = {};
 
     if (newTowardCredit >= required) {
       granted = true;
@@ -2076,12 +2082,13 @@ export const grantAdReward = onCall(async (request) => {
         const cur = (userData.liveCredits as number | undefined) ?? 0;
         updates.liveCredits = cur + 1;
       }
-      updates[`adProgress.${type}.towardCredit`] = 0;
-      updates[`adProgress.${type}.lastGrantedAt`] =
-        FieldValue.serverTimestamp();
+      typeUpdate.towardCredit = 0;
+      typeUpdate.lastGrantedAt = FieldValue.serverTimestamp();
     } else {
-      updates[`adProgress.${type}.towardCredit`] = newTowardCredit;
+      typeUpdate.towardCredit = newTowardCredit;
     }
+
+    updates.adProgress = { [type]: typeUpdate };
 
     tx.set(userRef, updates, { merge: true });
     tx.set(dedupeRef, {

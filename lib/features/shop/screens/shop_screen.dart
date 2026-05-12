@@ -157,10 +157,7 @@ class _ShopScreenState extends State<ShopScreen> {
       switch (result.status) {
         case AdShowStatus.success:
           if (result.granted) {
-            final label = type == RewardType.icebreaker
-                ? '1 Icebreaker'
-                : '1 Live Session';
-            _showSnack('$label added to your account.');
+            await _showRewardCelebration(type);
           } else {
             final p = result.progress ?? 0;
             final r = result.required ?? 2;
@@ -189,6 +186,40 @@ class _ShopScreenState extends State<ShopScreen> {
     } finally {
       if (mounted) setState(() => _watchingType = null);
     }
+  }
+
+  /// Shows the animated "reward earned" overlay after a successful grant.
+  /// The card itself flips to CLAIMED TODAY via the user-doc stream; this
+  /// overlay marks the moment of redemption so the user gets visceral
+  /// feedback before the card state changes underneath them.
+  Future<void> _showRewardCelebration(RewardType type) async {
+    if (!mounted) return;
+    final isLive = type == RewardType.liveSession;
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: 'Reward earned',
+      barrierColor: Colors.black.withValues(alpha: 0.62),
+      transitionDuration: const Duration(milliseconds: 320),
+      pageBuilder: (_, a, b) => const SizedBox.shrink(),
+      transitionBuilder: (ctx, anim, a, b) {
+        final scale = Tween<double>(begin: 0.85, end: 1).animate(
+          CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
+        );
+        return Opacity(
+          opacity: anim.value.clamp(0.0, 1.0),
+          child: ScaleTransition(
+            scale: scale,
+            child: _RewardEarnedDialog(
+              icon: isLive ? Icons.bolt_rounded : Icons.favorite_rounded,
+              accentColor:
+                  isLive ? AppColors.brandCyan : AppColors.brandPink,
+              rewardLabel: isLive ? 'Live Session' : 'Icebreaker',
+            ),
+          ),
+        );
+      },
+    );
   }
 
   void _mockSubscribe(BuildContext context, String plan) {
@@ -662,6 +693,167 @@ class _StepDot extends StatelessWidget {
           ),
         ),
       );
+}
+
+// ── Reward earned overlay ─────────────────────────────────────────────────────
+
+/// Animated celebration shown the moment a rewarded-ad grant succeeds.
+///
+/// Lifecycle: appears via showGeneralDialog with a scale-from-0.85 + fade
+/// transition.  The check mark scales in on a slight delay so the eye reads
+/// "icon → checkmark → confirmation copy."  Auto-dismisses after 2.4s; tap
+/// anywhere on the barrier closes it early.
+class _RewardEarnedDialog extends StatefulWidget {
+  const _RewardEarnedDialog({
+    required this.icon,
+    required this.accentColor,
+    required this.rewardLabel,
+  });
+
+  final IconData icon;
+  final Color accentColor;
+  final String rewardLabel;
+
+  @override
+  State<_RewardEarnedDialog> createState() => _RewardEarnedDialogState();
+}
+
+class _RewardEarnedDialogState extends State<_RewardEarnedDialog>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _checkCtrl;
+  late final Animation<double> _checkScale;
+  Timer? _autoCloseTimer;
+
+  @override
+  void initState() {
+    super.initState();
+    _checkCtrl = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 420),
+    );
+    _checkScale = CurvedAnimation(
+      parent: _checkCtrl,
+      curve: Curves.elasticOut,
+    );
+    // Slight delay so the dialog scale-in lands first, then the check pops.
+    Future<void>.delayed(const Duration(milliseconds: 220), () {
+      if (mounted) _checkCtrl.forward();
+    });
+    _autoCloseTimer = Timer(const Duration(milliseconds: 2400), () {
+      if (mounted && Navigator.of(context, rootNavigator: true).canPop()) {
+        Navigator.of(context, rootNavigator: true).pop();
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _autoCloseTimer?.cancel();
+    _checkCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Container(
+        margin: const EdgeInsets.symmetric(horizontal: 32),
+        padding: const EdgeInsets.fromLTRB(28, 28, 28, 24),
+        decoration: BoxDecoration(
+          color: AppColors.bgSurface,
+          borderRadius: BorderRadius.circular(24),
+          border: Border.all(
+            color: widget.accentColor.withValues(alpha: 0.45),
+            width: 1.4,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: widget.accentColor.withValues(alpha: 0.22),
+              blurRadius: 38,
+              spreadRadius: 2,
+            ),
+          ],
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Reward icon with check overlay
+            SizedBox(
+              width: 88,
+              height: 88,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  Container(
+                    width: 88,
+                    height: 88,
+                    decoration: BoxDecoration(
+                      color: widget.accentColor.withValues(alpha: 0.16),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: widget.accentColor.withValues(alpha: 0.45),
+                        width: 1.4,
+                      ),
+                    ),
+                    child: Icon(widget.icon, color: widget.accentColor, size: 44),
+                  ),
+                  Positioned(
+                    right: -2,
+                    bottom: -2,
+                    child: ScaleTransition(
+                      scale: _checkScale,
+                      child: Container(
+                        width: 34,
+                        height: 34,
+                        decoration: BoxDecoration(
+                          color: AppColors.bgSurface,
+                          shape: BoxShape.circle,
+                          border: Border.all(
+                            color: AppColors.bgSurface,
+                            width: 2,
+                          ),
+                        ),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            color: widget.accentColor,
+                            shape: BoxShape.circle,
+                          ),
+                          child: const Icon(
+                            Icons.check_rounded,
+                            color: Colors.white,
+                            size: 22,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              '1 ${widget.rewardLabel} Earned!',
+              style: AppTextStyles.h3.copyWith(
+                color: AppColors.textPrimary,
+                fontWeight: FontWeight.w800,
+              ),
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              "You've claimed your free ${widget.rewardLabel.toLowerCase()} "
+              'for today. Come back in 24 hours to earn another.',
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textMuted,
+                height: 1.45,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
 }
 
 // ── Pack row ──────────────────────────────────────────────────────────────────
