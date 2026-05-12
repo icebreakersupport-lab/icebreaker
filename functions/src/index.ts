@@ -1135,6 +1135,220 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
 });
 
 /**
+ * onSessionEndingSoon — sends a one-shot push during the last 5 minutes of an
+ * active live session so the user can decide whether to wrap up or extend.
+ *
+ * Scans live_sessions where status='active' and expiresAt is within the next
+ * 5 minutes.  Dedupes via sessionEndingReminderSentAt on the live_sessions
+ * doc so the scheduler running every minute does not re-send the warning.
+ */
+export const onSessionEndingSoon = onSchedule('every 1 minutes', async () => {
+  const nowMs = Date.now();
+  const now = Timestamp.fromMillis(nowMs);
+  const threshold = Timestamp.fromMillis(nowMs + 5 * 60 * 1000);
+  const snap = await db
+    .collection('live_sessions')
+    .where('status', '==', 'active')
+    .where('expiresAt', '>', now)
+    .where('expiresAt', '<=', threshold)
+    .limit(100)
+    .get();
+
+  if (snap.empty) return;
+
+  let reminded = 0;
+  for (const doc of snap.docs) {
+    const data = doc.data();
+    if (data.sessionEndingReminderSentAt) continue;
+
+    const uid = (data.uid as string | undefined) ?? doc.id;
+    if (!uid) continue;
+
+    await doc.ref.update({
+      sessionEndingReminderSentAt: FieldValue.serverTimestamp(),
+    });
+
+    await sendPreferenceGatedPush({
+      userId: uid,
+      preferenceKey: 'notifSession',
+      logTag: 'session-ending',
+      title: 'Session ending soon',
+      body: 'Your live session ends in 5 minutes.',
+      data: {
+        type: 'session_ending_soon',
+        sessionId: uid,
+      },
+      channelId: 'session_reminders',
+    });
+
+    reminded += 1;
+  }
+
+  if (reminded > 0) {
+    console.log(`[session-ending] sent reminder(s) for ${reminded} session(s)`);
+  }
+});
+
+/**
+ * onIcebreakerCreditsRefreshed — nudges users back to the app when their
+ * 24-hour free-icebreaker window rolls over and they have less than the free
+ * floor of credits.
+ *
+ * The actual top-up to FREE_ICEBREAKER_CREDITS is performed lazily inside
+ * respondToIcebreaker (line 940-ish) the next time the user accepts an
+ * icebreaker, so this CF only sends the notification — it does not mutate
+ * icebreakerCredits.  Dedupe is per-window: we record
+ * icebreakerCreditsRefreshNotifiedForMs = resetAt.toMillis() and skip on
+ * subsequent runs if the stored value matches the current resetAt.
+ *
+ * The query uses a 15-minute lookback so users still get notified within ~5
+ * minutes of the cron firing even if the CF is briefly delayed.
+ */
+export const onIcebreakerCreditsRefreshed = onSchedule(
+  'every 5 minutes',
+  async () => {
+    const nowMs = Date.now();
+    const now = Timestamp.fromMillis(nowMs);
+    const lookback = Timestamp.fromMillis(nowMs - 15 * 60 * 1000);
+    const snap = await db
+      .collection('users')
+      .where('icebreakerCreditsResetAt', '>', lookback)
+      .where('icebreakerCreditsResetAt', '<=', now)
+      .limit(200)
+      .get();
+
+    if (snap.empty) return;
+
+    let notified = 0;
+    for (const doc of snap.docs) {
+      const data = doc.data();
+      const credits =
+        (data.icebreakerCredits as number | undefined) ?? FREE_ICEBREAKER_CREDITS;
+      if (credits >= FREE_ICEBREAKER_CREDITS) continue;
+
+      const resetAt = data.icebreakerCreditsResetAt as Timestamp | undefined;
+      if (!resetAt) continue;
+      const resetAtMs = resetAt.toMillis();
+      const lastNotifiedForMs =
+        (data.icebreakerCreditsRefreshNotifiedForMs as number | undefined) ?? 0;
+      if (lastNotifiedForMs === resetAtMs) continue;
+
+      await doc.ref.update({
+        icebreakerCreditsRefreshNotifiedAt: FieldValue.serverTimestamp(),
+        icebreakerCreditsRefreshNotifiedForMs: resetAtMs,
+      });
+
+      await sendPreferenceGatedPush({
+        userId: doc.id,
+        preferenceKey: 'notifReminders',
+        logTag: 'credits-refreshed',
+        title: 'Your icebreakers refreshed',
+        body: `You have ${FREE_ICEBREAKER_CREDITS} fresh icebreakers ready to send.`,
+        data: {
+          type: 'icebreaker_credits_refreshed',
+        },
+        channelId: 'icebreaker_reminders',
+        userData: data,
+      });
+
+      notified += 1;
+    }
+
+    if (notified > 0) {
+      console.log(`[credits-refreshed] notified ${notified} user(s)`);
+    }
+  },
+);
+
+/**
+ * onMatchNoMessages — nudges both participants of a fresh match if neither
+ * has sent a message within 24 hours.  Pure momentum push: keeps a match
+ * from going cold.
+ *
+ * "No messages yet" is detected via conversation.lastSenderId === '' (the
+ * unlock CF seeds the conversation with empty lastSenderId/lastMessage; the
+ * first real message overwrites both in [onNewChatMessage]).
+ *
+ * Dedupe via noMessageReminderSentAt on the conversation doc.  The query
+ * window is bounded so we don't repeatedly scan ancient empty conversations;
+ * once the 24h-25h window passes without a message, the conversation is
+ * considered "gone cold" and we move on.
+ */
+export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
+  const nowMs = Date.now();
+  const windowStart = Timestamp.fromMillis(nowMs - 25 * 60 * 60 * 1000);
+  const windowEnd = Timestamp.fromMillis(nowMs - 24 * 60 * 60 * 1000);
+  const snap = await db
+    .collection('conversations')
+    .where('status', '==', 'active')
+    .where('createdAt', '>=', windowStart)
+    .where('createdAt', '<=', windowEnd)
+    .limit(100)
+    .get();
+
+  if (snap.empty) return;
+
+  let nudged = 0;
+  for (const doc of snap.docs) {
+    const data = doc.data();
+    if (data.noMessageReminderSentAt) continue;
+    const lastSenderId = (data.lastSenderId as string | undefined) ?? '';
+    if (lastSenderId.length > 0) continue;
+
+    const participants = (data.participants as string[] | undefined) ?? [];
+    if (participants.length !== 2) continue;
+    const [uid1, uid2] = participants;
+    const names = (data.participantNames as Record<string, string> | undefined) ?? {};
+
+    await doc.ref.update({
+      noMessageReminderSentAt: FieldValue.serverTimestamp(),
+    });
+
+    const [u1Snap, u2Snap] = await Promise.all([
+      db.collection('users').doc(uid1).get(),
+      db.collection('users').doc(uid2).get(),
+    ]);
+
+    await Promise.allSettled([
+      sendPreferenceGatedPush({
+        userId: uid1,
+        preferenceKey: 'notifReminders',
+        logTag: 'match-no-messages',
+        title: 'Say hi before this goes cold',
+        body: `${(names[uid2] ?? 'Your match').trim() || 'Your match'} is one message away.`,
+        data: {
+          type: 'match_no_messages',
+          conversationId: doc.id,
+          otherUserId: uid2,
+        },
+        channelId: 'match_reminders',
+        userData: u1Snap.data(),
+      }),
+      sendPreferenceGatedPush({
+        userId: uid2,
+        preferenceKey: 'notifReminders',
+        logTag: 'match-no-messages',
+        title: 'Say hi before this goes cold',
+        body: `${(names[uid1] ?? 'Your match').trim() || 'Your match'} is one message away.`,
+        data: {
+          type: 'match_no_messages',
+          conversationId: doc.id,
+          otherUserId: uid1,
+        },
+        channelId: 'match_reminders',
+        userData: u2Snap.data(),
+      }),
+    ]);
+
+    nudged += 1;
+  }
+
+  if (nudged > 0) {
+    console.log(`[match-no-messages] nudged ${nudged} conversation(s)`);
+  }
+});
+
+/**
  * onMeetupCreated — fires on the freshly-written meetup doc and:
  *   1. Stamps findExpiresAt = now + FIND_TIMER_SECONDS.  Clients never write
  *      this field; the rule layer (allow update only on foundConfirmedBy)
