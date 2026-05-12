@@ -158,4 +158,4 @@ extension SubscriptionLabel on SubscriptionTier {
 // under "buttons that don't do what they imply."  Flipping these flags to
 // true re-enables the sections once the real billing / ads SDK is wired.
 const bool kSubscriptionsEnabled = false;
-const bool kRewardedAdsEnabled = false;
+const bool kRewardedAdsEnabled = true;

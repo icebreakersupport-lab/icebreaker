@@ -1959,3 +1959,149 @@ export const redeemPurchase = onCall(async (request) => {
   );
   return result;
 });
+
+// ── grantAdReward ─────────────────────────────────────────────────────────────
+//
+// Called by the Flutter client (`AdService.showRewarded`) immediately after
+// AdMob fires its onUserEarnedReward callback for a rewarded ad watched in
+// the Shop's "Earn Free" section.
+//
+// Reward economics (mirrors AppConstants + reference_admob_setup.md):
+//   - 1 ad of type 'icebreaker'  → 1 icebreaker credit
+//   - 2 ads of type 'liveSession' → 1 live session credit
+//   - Daily cap of AD_WATCH_LIMIT_PER_DAY watches per user, summed across
+//     types, so a user can't farm an unlimited number of credits.
+//
+// Anti-fraud:
+//   - Each show generates a client-side nonce; the `adGrants/{uid}_{nonce}`
+//     doc dedupes retries so a single watch can't be replayed.
+//   - All state changes happen inside a Firestore transaction so concurrent
+//     callers can't race past the daily cap or the live-session threshold.
+
+const AD_WATCH_LIMIT_PER_DAY = 2; // mirrors AppConstants.adWatchLimitPerDay
+const ADS_PER_LIVE_SESSION = 2;
+
+export const grantAdReward = onCall(async (request) => {
+  if (!request.auth) {
+    throw new HttpsError('unauthenticated', 'Sign in required.');
+  }
+  const uid = request.auth.uid;
+  const data = (request.data ?? {}) as {
+    type?: unknown;
+    nonce?: unknown;
+  };
+
+  const type = data.type;
+  const nonce = data.nonce;
+
+  if (type !== 'icebreaker' && type !== 'liveSession') {
+    throw new HttpsError(
+      'invalid-argument',
+      "type must be 'icebreaker' or 'liveSession'",
+    );
+  }
+  if (
+    typeof nonce !== 'string' ||
+    nonce.length === 0 ||
+    nonce.length > 128
+  ) {
+    throw new HttpsError('invalid-argument', 'nonce required (max 128 chars)');
+  }
+
+  const required = type === 'icebreaker' ? 1 : ADS_PER_LIVE_SESSION;
+  const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+
+  const dedupeRef = db.collection('adGrants').doc(`${uid}_${nonce}`);
+  const userRef = db.collection('users').doc(uid);
+
+  const result = await db.runTransaction(async (tx) => {
+    const dedupe = await tx.get(dedupeRef);
+    if (dedupe.exists) {
+      // Same client nonce — replay or double-callback.  Return what we
+      // recorded last time so the UI stays consistent.
+      const d = dedupe.data() ?? {};
+      return {
+        ok: true,
+        granted: false,
+        dedupe: true,
+        progress: (d.recordedProgress as number | undefined) ?? 0,
+        required,
+      };
+    }
+
+    const userSnap = await tx.get(userRef);
+    const userData = userSnap.data() ?? {};
+    const adProgress =
+      (userData.adProgress as Record<string, unknown> | undefined) ?? {};
+    const daily =
+      (adProgress.daily as Record<string, unknown> | undefined) ?? {};
+    const typeBucket =
+      (adProgress[type] as Record<string, unknown> | undefined) ?? {};
+
+    const dailyDate = daily.date as string | undefined;
+    const dailyCount =
+      dailyDate === todayKey ? (daily.count as number | undefined) ?? 0 : 0;
+
+    if (dailyCount >= AD_WATCH_LIMIT_PER_DAY) {
+      throw new HttpsError(
+        'resource-exhausted',
+        'Daily ad-reward limit reached. Try again tomorrow.',
+      );
+    }
+
+    const towardCredit =
+      (typeBucket.towardCredit as number | undefined) ?? 0;
+    const newTowardCredit = towardCredit + 1;
+    const newDailyCount = dailyCount + 1;
+
+    const updates: Record<string, unknown> = {
+      [`adProgress.daily.date`]: todayKey,
+      [`adProgress.daily.count`]: newDailyCount,
+      [`adProgress.${type}.lastWatchedAt`]: FieldValue.serverTimestamp(),
+    };
+
+    let granted = false;
+    let recordedProgress = newTowardCredit;
+
+    if (newTowardCredit >= required) {
+      granted = true;
+      recordedProgress = 0;
+      if (type === 'icebreaker') {
+        const cur = (userData.icebreakerCredits as number | undefined) ?? 0;
+        updates.icebreakerCredits = cur + 1;
+      } else {
+        const cur = (userData.liveCredits as number | undefined) ?? 0;
+        updates.liveCredits = cur + 1;
+      }
+      updates[`adProgress.${type}.towardCredit`] = 0;
+    } else {
+      updates[`adProgress.${type}.towardCredit`] = newTowardCredit;
+    }
+
+    tx.set(userRef, updates, { merge: true });
+    tx.set(dedupeRef, {
+      uid,
+      type,
+      nonce,
+      granted,
+      recordedProgress,
+      createdAt: FieldValue.serverTimestamp(),
+    });
+
+    return {
+      ok: true,
+      granted,
+      dedupe: false,
+      progress: recordedProgress,
+      required,
+      dailyCount: newDailyCount,
+      dailyLimit: AD_WATCH_LIMIT_PER_DAY,
+    };
+  });
+
+  console.log(
+    `[grant-ad-reward] uid=${uid} type=${type} granted=${result.granted} ` +
+      `progress=${result.progress}/${required} dedupe=${result.dedupe}`,
+  );
+  return result;
+});

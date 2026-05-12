@@ -5,6 +5,7 @@ import 'package:in_app_purchase/in_app_purchase.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/product_catalog.dart';
+import '../../../core/services/ad_service.dart';
 import '../../../core/services/billing_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -93,8 +94,45 @@ class _ShopScreenState extends State<ShopScreen> {
     _showSnack('Checking for past purchases…');
   }
 
-  void _mockWatch(BuildContext context, String reward) {
-    _showSnack('Ad would play here → $reward (demo).');
+  /// Tracks which reward type is currently mid-watch so the UI can show a
+  /// spinner on the tapped card and ignore re-taps until the show resolves.
+  RewardType? _watchingType;
+
+  Future<void> _watchAdFor(RewardType type) async {
+    if (_watchingType != null) return; // re-tap guard
+    setState(() => _watchingType = type);
+    try {
+      final result = await AdService.instance.showRewarded(type);
+      if (!mounted) return;
+      switch (result.status) {
+        case AdShowStatus.success:
+          if (result.granted) {
+            final label = type == RewardType.icebreaker
+                ? '1 Icebreaker'
+                : '1 Live Session';
+            _showSnack('$label added to your account.');
+          } else {
+            final p = result.progress ?? 0;
+            final r = result.required ?? 2;
+            _showSnack('Watched $p of $r ads — keep going!');
+          }
+          break;
+        case AdShowStatus.dismissed:
+          _showSnack('Ad closed before reward — try again to earn credit.');
+          break;
+        case AdShowStatus.notReady:
+          _showSnack('Ad still loading. Please try again in a moment.');
+          break;
+        case AdShowStatus.failedToShow:
+          _showSnack('Ad failed to play. Try again shortly.');
+          break;
+        case AdShowStatus.error:
+          _showSnack('Reward could not be granted. Please try again.');
+          break;
+      }
+    } finally {
+      if (mounted) setState(() => _watchingType = null);
+    }
   }
 
   void _mockSubscribe(BuildContext context, String plan) {
@@ -191,7 +229,8 @@ class _ShopScreenState extends State<ShopScreen> {
                         icon: Icons.favorite_rounded,
                         reward: '1 Icebreaker',
                         adsRequired: 1,
-                        onTap: () => _mockWatch(context, '1 Icebreaker'),
+                        isLoading: _watchingType == RewardType.icebreaker,
+                        onTap: () => _watchAdFor(RewardType.icebreaker),
                       ),
                     ),
                     const SizedBox(width: 12),
@@ -201,7 +240,8 @@ class _ShopScreenState extends State<ShopScreen> {
                         icon: Icons.bolt_rounded,
                         reward: '1 Live Session',
                         adsRequired: 2,
-                        onTap: () => _mockWatch(context, '1 Live Session'),
+                        isLoading: _watchingType == RewardType.liveSession,
+                        onTap: () => _watchAdFor(RewardType.liveSession),
                       ),
                     ),
                   ],
@@ -350,6 +390,7 @@ class _EarnCard extends StatelessWidget {
     required this.reward,
     required this.adsRequired,
     required this.onTap,
+    this.isLoading = false,
   });
 
   final IconData icon;
@@ -357,6 +398,7 @@ class _EarnCard extends StatelessWidget {
   final String reward;
   final int adsRequired;
   final VoidCallback onTap;
+  final bool isLoading;
 
   @override
   Widget build(BuildContext context) {
@@ -445,26 +487,39 @@ class _EarnCard extends StatelessWidget {
 
           // WATCH button
           GestureDetector(
-            onTap: onTap,
+            onTap: isLoading ? null : onTap,
             child: Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(
-                color: AppColors.brandCyan.withValues(alpha: 0.10),
+                color: AppColors.brandCyan
+                    .withValues(alpha: isLoading ? 0.05 : 0.10),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: AppColors.brandCyan.withValues(alpha: 0.35),
+                  color: AppColors.brandCyan
+                      .withValues(alpha: isLoading ? 0.18 : 0.35),
                 ),
               ),
               alignment: Alignment.center,
-              child: Text(
-                'WATCH',
-                style: AppTextStyles.caption.copyWith(
-                  color: AppColors.brandCyan,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 1.2,
-                ),
-              ),
+              child: isLoading
+                  ? SizedBox(
+                      height: 14,
+                      width: 14,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        valueColor: AlwaysStoppedAnimation<Color>(
+                          AppColors.brandCyan,
+                        ),
+                      ),
+                    )
+                  : Text(
+                      'WATCH',
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.brandCyan,
+                        fontWeight: FontWeight.w800,
+                        letterSpacing: 1.2,
+                      ),
+                    ),
             ),
           ),
         ],
