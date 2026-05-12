@@ -14,9 +14,23 @@ import 'package:google_mobile_ads/google_mobile_ads.dart';
 /// ad per tap and forwards the result.
 enum RewardType { icebreaker, liveSession }
 
+/// Google's official rewarded-ad test unit IDs.  These ALWAYS fill, so debug
+/// builds use them to avoid the "no fill" period that hits brand-new AdMob
+/// units (Google often takes 12–24 hrs to begin serving live ads on a fresh
+/// unit).  Release builds use the real publisher units below.
+///
+/// Source: https://developers.google.com/admob/flutter/test-ads
+const String _kTestRewardedIosId = 'ca-app-pub-3940256099942544/1712485313';
+const String _kTestRewardedAndroidId = 'ca-app-pub-3940256099942544/5224354917';
+
 extension _RewardTypeAdUnit on RewardType {
   /// AdMob rewarded ad unit ID for this reward type on the current platform.
+  /// Returns Google's test ID in debug builds so the flow is exercisable
+  /// before publisher units have warmed up.
   String get adUnitId {
+    if (kDebugMode) {
+      return Platform.isIOS ? _kTestRewardedIosId : _kTestRewardedAndroidId;
+    }
     if (Platform.isIOS) {
       switch (this) {
         case RewardType.icebreaker:
@@ -135,11 +149,14 @@ class AdService {
 
     _setLoading(type, true);
 
+    final unitId = type.adUnitId;
+    debugPrint('[Ads] load(${type.name}) requesting $unitId');
     RewardedAd.load(
-      adUnitId: type.adUnitId,
+      adUnitId: unitId,
       request: const AdRequest(),
       rewardedAdLoadCallback: RewardedAdLoadCallback(
         onAdLoaded: (ad) {
+          debugPrint('[Ads] load(${type.name}) ready');
           _setLoading(type, false);
           _setCached(type, ad);
         },
