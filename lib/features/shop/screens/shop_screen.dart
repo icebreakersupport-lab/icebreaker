@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
+import '../../../core/constants/app_constants.dart';
 import '../../../core/constants/product_catalog.dart';
 import '../../../core/services/billing_service.dart';
 import '../../../core/theme/app_colors.dart';
@@ -177,42 +178,37 @@ class _ShopScreenState extends State<ShopScreen> {
             ),
 
             // ── Section 1: Earn Free ──────────────────────────────────────
-            const _SectionLabel('Earn Free'),
-            const SizedBox(height: 12),
-            IntrinsicHeight(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Icebreaker earn — 1 ad required (the cheaper pull).
-                  // Icon + color match the canonical Icebreaker treatment
-                  // used by the home stat row: pink heart.
-                  Expanded(
-                    child: _EarnCard(
-                      iconColor: AppColors.brandPink,
-                      icon: Icons.favorite_rounded,
-                      reward: '1 Icebreaker',
-                      adsRequired: 1,
-                      onTap: () => _mockWatch(context, '1 Icebreaker'),
+            if (kRewardedAdsEnabled) ...[
+              const _SectionLabel('Earn Free'),
+              const SizedBox(height: 12),
+              IntrinsicHeight(
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: _EarnCard(
+                        iconColor: AppColors.brandPink,
+                        icon: Icons.favorite_rounded,
+                        reward: '1 Icebreaker',
+                        adsRequired: 1,
+                        onTap: () => _mockWatch(context, '1 Icebreaker'),
+                      ),
                     ),
-                  ),
-                  const SizedBox(width: 12),
-                  // Live session earn — 2 ads required (the bigger reward).
-                  // Icon + color match the canonical Live Session treatment
-                  // used by the home stat row: cyan bolt.
-                  Expanded(
-                    child: _EarnCard(
-                      iconColor: AppColors.brandCyan,
-                      icon: Icons.bolt_rounded,
-                      reward: '1 Live Session',
-                      adsRequired: 2,
-                      onTap: () => _mockWatch(context, '1 Live Session'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: _EarnCard(
+                        iconColor: AppColors.brandCyan,
+                        icon: Icons.bolt_rounded,
+                        reward: '1 Live Session',
+                        adsRequired: 2,
+                        onTap: () => _mockWatch(context, '1 Live Session'),
+                      ),
                     ),
-                  ),
-                ],
+                  ],
+                ),
               ),
-            ),
-
-            const SizedBox(height: 32),
+              const SizedBox(height: 32),
+            ],
 
             // ── Section 2: One-Time Packs ─────────────────────────────────
             const _SectionLabel('One-Time Packs'),
@@ -304,13 +300,14 @@ class _ShopScreenState extends State<ShopScreen> {
             const SizedBox(height: 32),
 
             // ── Section 3: Subscriptions (auto-rotating carousel) ─────────
-            const _SectionLabel('Subscriptions'),
-            const SizedBox(height: 12),
-            _SubscriptionCarousel(
-              onSubscribe: (plan) => _mockSubscribe(context, plan),
-            ),
-
-            const SizedBox(height: 32),
+            if (kSubscriptionsEnabled) ...[
+              const _SectionLabel('Subscriptions'),
+              const SizedBox(height: 12),
+              _SubscriptionCarousel(
+                onSubscribe: (plan) => _mockSubscribe(context, plan),
+              ),
+              const SizedBox(height: 32),
+            ],
 
             // ── Section 4: Best Value Bundle ──────────────────────────────
             const _SectionLabel('Best Value'),

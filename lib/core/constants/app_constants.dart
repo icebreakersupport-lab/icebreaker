@@ -9,8 +9,17 @@ abstract final class AppConstants {
   /// Session warning notification sent at this many seconds remaining.
   static const int sessionWarningSeconds = 600;
 
-  /// Stale-location threshold: user becomes undiscoverable if no update.
-  static const int locationStaleThresholdSeconds = 120;
+  /// Discoverability grace for a live user's last known location.
+  ///
+  /// Mobile OSes can suspend timers and GPS reads when the app backgrounds,
+  /// especially on iPhone.  Nearby therefore treats the last successful live
+  /// position as pinned for the full live-session window instead of dropping
+  /// the user after a couple of minutes with a false "offline" result.
+  ///
+  /// Once the session actually ends, the session doc is terminalized and the
+  /// position fields are cleared, so the user still disappears immediately at
+  /// the real session boundary.
+  static const int locationStaleThresholdSeconds = sessionDurationSeconds;
 
   // ─── Icebreaker ───────────────────────────────────────────────────────────
 
@@ -46,7 +55,10 @@ abstract final class AppConstants {
 // ─── Route paths ──────────────────────────────────────────────────────────────
 
 abstract final class AppRoutes {
+  /// Branded loading screen ('/'). Shown on every cold launch; resolves to
+  /// welcome / home / onboarding depending on auth + profile state.
   static const String splash = '/';
+  static const String welcome = '/welcome';
   static const String signIn = '/sign-in';
   static const String signUp = '/sign-up';
   static const String verifyPhone = '/verify-phone';
@@ -70,6 +82,15 @@ abstract final class AppRoutes {
   // Nested routes
   static const String sendIcebreaker = '/nearby/send-icebreaker';
   static const String icebreakerReceived = '/icebreaker-received';
+  /// Sender's forced wait screen — full route is `/icebreaker-waiting/:id`.
+  /// Concatenate with `/{icebreakerId}` to push.  Owned by the FlowCoordinator
+  /// redirect: any screen the sender tries to navigate to while their
+  /// outgoing icebreaker is still 'sent' bounces back here.
+  static const String icebreakerWaiting = '/icebreaker-waiting';
+  /// Meetup finding screen — full route is `/meetup/matched/:meetupId`.
+  /// Concatenate with `/{meetupId}` to push.  Owned by FlowCoordinator
+  /// redirect: any participant with `currentMeetupId` set + status==finding
+  /// is bounced back here.
   static const String matched = '/meetup/matched';
   static const String colorMatch = '/meetup/color-match';
   static const String postMeet = '/meetup/post-meet';
@@ -83,6 +104,9 @@ abstract final class AppRoutes {
   static const String gallery = '/profile/gallery';
   static const String profileChecklist = '/profile/checklist';
   static const String settings = '/profile/settings';
+  static const String blockedUsers = '/profile/settings/blocked-users';
+  static const String reportingAndBlocking =
+      '/profile/settings/reporting-and-blocking';
 }
 
 // ─── Gender / Orientation enums ───────────────────────────────────────────────
@@ -91,31 +115,31 @@ enum Gender { male, female, nonBinary, other }
 
 extension GenderLabel on Gender {
   String get label => switch (this) {
-        Gender.male => 'Man',
-        Gender.female => 'Woman',
-        Gender.nonBinary => 'Non-binary',
-        Gender.other => 'Other',
-      };
+    Gender.male => 'Man',
+    Gender.female => 'Woman',
+    Gender.nonBinary => 'Non-binary',
+    Gender.other => 'Other',
+  };
 
   String get firestoreValue => switch (this) {
-        Gender.male => 'male',
-        Gender.female => 'female',
-        Gender.nonBinary => 'non_binary',
-        Gender.other => 'other',
-      };
+    Gender.male => 'male',
+    Gender.female => 'female',
+    Gender.nonBinary => 'non_binary',
+    Gender.other => 'other',
+  };
 }
 
 enum Orientation { straight, gay, lesbian, bisexual, pansexual, other }
 
 extension OrientationLabel on Orientation {
   String get label => switch (this) {
-        Orientation.straight => 'Straight',
-        Orientation.gay => 'Gay',
-        Orientation.lesbian => 'Lesbian',
-        Orientation.bisexual => 'Bisexual',
-        Orientation.pansexual => 'Pansexual',
-        Orientation.other => 'Other',
-      };
+    Orientation.straight => 'Straight',
+    Orientation.gay => 'Gay',
+    Orientation.lesbian => 'Lesbian',
+    Orientation.bisexual => 'Bisexual',
+    Orientation.pansexual => 'Pansexual',
+    Orientation.other => 'Other',
+  };
 }
 
 // ─── Subscription tiers ───────────────────────────────────────────────────────
@@ -126,3 +150,12 @@ extension SubscriptionLabel on SubscriptionTier {
   bool get isGold => this == SubscriptionTier.gold;
   bool get isPlus => this == SubscriptionTier.plus;
 }
+
+// ─── Shop feature flags ───────────────────────────────────────────────────────
+//
+// Subscriptions and rewarded ads are not shippable for v1 — the Shop UI has
+// placeholder buttons (snackbar "coming soon") that App Store review flags
+// under "buttons that don't do what they imply."  Flipping these flags to
+// true re-enables the sections once the real billing / ads SDK is wired.
+const bool kSubscriptionsEnabled = false;
+const bool kRewardedAdsEnabled = false;
