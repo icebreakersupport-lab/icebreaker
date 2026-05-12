@@ -112,6 +112,7 @@ class _IcebreakerAppState extends State<IcebreakerApp>
       _profile.clearAll();
       _hydrateProfileForUid(user.uid);
       _session.hydrateOnLaunch(user.uid);
+      _hydrateCreditsIfSignedIn();
     });
   }
 
