@@ -271,9 +271,12 @@ export const onMeetupDecisionWritten = onDocumentWritten(
         participantPhotos: photos,
         status: 'active',
         lastMessage: '',
+        lastSenderId: '',
         lastMessageAt: FieldValue.serverTimestamp(),
         [`unreadCount_${uid1}`]: 0,
         [`unreadCount_${uid2}`]: 0,
+        [`lastReadAt_${uid1}`]: FieldValue.serverTimestamp(),
+        [`lastReadAt_${uid2}`]: FieldValue.serverTimestamp(),
         createdAt: FieldValue.serverTimestamp(),
         sourceIcebreakerId,
         meetupId: meetupId,
@@ -559,6 +562,18 @@ export const onNewChatMessage = onDocumentCreated(
     const participantNames = (conv.participantNames as Record<string, string>) ?? {};
     const senderName = participantNames[senderId] ?? 'Someone';
     const body = text.length > 100 ? `${text.substring(0, 100)}\u2026` : text;
+
+    // Keep unread state authoritative on the conversation doc so both the
+    // Messages tab badge and the per-thread "new message" treatment can
+    // react instantly across devices.
+    await convRef.update({
+      lastMessage: text,
+      lastSenderId: senderId,
+      lastMessageAt: FieldValue.serverTimestamp(),
+      [`unreadCount_${recipientId}`]: FieldValue.increment(1),
+      [`unreadCount_${senderId}`]: 0,
+      [`lastReadAt_${senderId}`]: FieldValue.serverTimestamp(),
+    });
 
     await sendPreferenceGatedPush({
       userId: recipientId,
@@ -1684,8 +1699,12 @@ export const redeemPurchase = onCall(async (request) => {
     const userSnap = await tx.get(userRef);
     const currentIcebreakers =
       (userSnap.data()?.icebreakerCredits as number | undefined) ?? 0;
+    // Canonical client field is `liveCredits` (see lib/core/state/live_session.dart
+    // — that's what the LiveSession.hydrateOnLaunch + _applyUserSnapshot
+    // listeners read).  The earlier `liveSessionCredits` name was a leftover
+    // and meant Live Session purchases never landed on the client.
     const currentLive =
-      (userSnap.data()?.liveSessionCredits as number | undefined) ?? 0;
+      (userSnap.data()?.liveCredits as number | undefined) ?? 0;
 
     const userUpdate: Record<string, unknown> = {
       lastPurchaseAt: FieldValue.serverTimestamp(),
@@ -1694,7 +1713,7 @@ export const redeemPurchase = onCall(async (request) => {
       userUpdate.icebreakerCredits = currentIcebreakers + grant.icebreakers;
     }
     if (grant.liveSessions > 0) {
-      userUpdate.liveSessionCredits = currentLive + grant.liveSessions;
+      userUpdate.liveCredits = currentLive + grant.liveSessions;
     }
 
     tx.set(purchaseRef, {
