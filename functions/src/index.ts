@@ -1966,20 +1966,22 @@ export const redeemPurchase = onCall(async (request) => {
 // AdMob fires its onUserEarnedReward callback for a rewarded ad watched in
 // the Shop's "Earn Free" section.
 //
-// Reward economics (mirrors AppConstants + reference_admob_setup.md):
+// Reward economics:
 //   - 1 ad of type 'icebreaker'  → 1 icebreaker credit
 //   - 2 ads of type 'liveSession' → 1 live session credit
-//   - Daily cap of AD_WATCH_LIMIT_PER_DAY watches per user, summed across
-//     types, so a user can't farm an unlimited number of credits.
+//   - Cooldown: each reward type can be claimed at most once every 24 hours.
+//     Tracked via `adProgress.{type}.lastGrantedAt`.  The two types are
+//     independent — a user can earn 1 icebreaker AND 1 live session in the
+//     same day (3 ad watches: 1 + 2).
 //
 // Anti-fraud:
 //   - Each show generates a client-side nonce; the `adGrants/{uid}_{nonce}`
 //     doc dedupes retries so a single watch can't be replayed.
 //   - All state changes happen inside a Firestore transaction so concurrent
-//     callers can't race past the daily cap or the live-session threshold.
+//     callers can't race past the cooldown or the live-session threshold.
 
-const AD_WATCH_LIMIT_PER_DAY = 2; // mirrors AppConstants.adWatchLimitPerDay
 const ADS_PER_LIVE_SESSION = 2;
+const REWARD_COOLDOWN_MS = 24 * 60 * 60 * 1000; // 24h between grants per type
 
 export const grantAdReward = onCall(async (request) => {
   if (!request.auth) {
@@ -2009,7 +2011,7 @@ export const grantAdReward = onCall(async (request) => {
   }
 
   const required = type === 'icebreaker' ? 1 : ADS_PER_LIVE_SESSION;
-  const todayKey = new Date().toISOString().slice(0, 10); // YYYY-MM-DD UTC
+  const nowMs = Date.now();
 
   const dedupeRef = db.collection('adGrants').doc(`${uid}_${nonce}`);
   const userRef = db.collection('users').doc(uid);
@@ -2033,30 +2035,31 @@ export const grantAdReward = onCall(async (request) => {
     const userData = userSnap.data() ?? {};
     const adProgress =
       (userData.adProgress as Record<string, unknown> | undefined) ?? {};
-    const daily =
-      (adProgress.daily as Record<string, unknown> | undefined) ?? {};
     const typeBucket =
       (adProgress[type] as Record<string, unknown> | undefined) ?? {};
 
-    const dailyDate = daily.date as string | undefined;
-    const dailyCount =
-      dailyDate === todayKey ? (daily.count as number | undefined) ?? 0 : 0;
-
-    if (dailyCount >= AD_WATCH_LIMIT_PER_DAY) {
-      throw new HttpsError(
-        'resource-exhausted',
-        'Daily ad-reward limit reached. Try again tomorrow.',
-      );
+    // Cooldown — last grant of this type must be older than 24h.
+    const lastGrantedAt = typeBucket.lastGrantedAt as
+      | FirebaseFirestore.Timestamp
+      | undefined;
+    if (lastGrantedAt) {
+      const elapsed = nowMs - lastGrantedAt.toMillis();
+      if (elapsed < REWARD_COOLDOWN_MS) {
+        const remainingMs = REWARD_COOLDOWN_MS - elapsed;
+        throw new HttpsError(
+          'resource-exhausted',
+          `Reward already claimed. Try again in ${Math.ceil(
+            remainingMs / (60 * 60 * 1000),
+          )}h.`,
+        );
+      }
     }
 
     const towardCredit =
       (typeBucket.towardCredit as number | undefined) ?? 0;
     const newTowardCredit = towardCredit + 1;
-    const newDailyCount = dailyCount + 1;
 
     const updates: Record<string, unknown> = {
-      [`adProgress.daily.date`]: todayKey,
-      [`adProgress.daily.count`]: newDailyCount,
       [`adProgress.${type}.lastWatchedAt`]: FieldValue.serverTimestamp(),
     };
 
@@ -2074,6 +2077,8 @@ export const grantAdReward = onCall(async (request) => {
         updates.liveCredits = cur + 1;
       }
       updates[`adProgress.${type}.towardCredit`] = 0;
+      updates[`adProgress.${type}.lastGrantedAt`] =
+        FieldValue.serverTimestamp();
     } else {
       updates[`adProgress.${type}.towardCredit`] = newTowardCredit;
     }
@@ -2094,8 +2099,6 @@ export const grantAdReward = onCall(async (request) => {
       dedupe: false,
       progress: recordedProgress,
       required,
-      dailyCount: newDailyCount,
-      dailyLimit: AD_WATCH_LIMIT_PER_DAY,
     };
   });
 

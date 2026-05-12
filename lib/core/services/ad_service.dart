@@ -86,6 +86,9 @@ enum AdShowStatus {
   /// AdMob failed to render the cached ad.
   failedToShow,
 
+  /// Reward type is in its 24h cooldown window — user already claimed today.
+  cooldown,
+
   /// Network or Cloud Function error while granting the reward.
   error,
 }
@@ -254,6 +257,20 @@ class AdService {
         granted: data?['granted'] == true,
         progress: (data?['progress'] as num?)?.toInt(),
         required: (data?['required'] as num?)?.toInt(),
+      );
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint(
+        '[Ads] grantAdReward CF rejected for ${type.name}: ${e.code} ${e.message}',
+      );
+      if (e.code == 'resource-exhausted') {
+        return AdShowResult(
+          status: AdShowStatus.cooldown,
+          errorMessage: e.message,
+        );
+      }
+      return AdShowResult(
+        status: AdShowStatus.error,
+        errorMessage: e.message,
       );
     } catch (e) {
       debugPrint('[Ads] grantAdReward CF failed for ${type.name}: $e');

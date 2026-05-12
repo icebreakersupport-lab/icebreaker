@@ -1,5 +1,7 @@
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 
@@ -10,6 +12,8 @@ import '../../../core/services/billing_service.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
+
+const Duration _kAdRewardCooldown = Duration(hours: 24);
 
 // ── File-level gradient constants ─────────────────────────────────────────────
 
@@ -39,6 +43,13 @@ class ShopScreen extends StatefulWidget {
 class _ShopScreenState extends State<ShopScreen> {
   BillingService get _billing => BillingService.instance;
 
+  /// Server-side ad reward state, mirrored from `users/{uid}.adProgress`.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _userSub;
+  DateTime? _iceLastGrantedAt;
+  DateTime? _liveLastGrantedAt;
+  int _liveTowardCredit = 0;
+  Timer? _cooldownTicker;
+
   @override
   void initState() {
     super.initState();
@@ -49,12 +60,51 @@ class _ShopScreenState extends State<ShopScreen> {
     if (_billing.isAvailable && _billing.products.isEmpty) {
       _billing.reloadProducts();
     }
+    if (kRewardedAdsEnabled) {
+      _subscribeAdProgress();
+      // Rebuild once a minute so the "back in Xh Ym" countdown stays current
+      // without the user pulling to refresh.
+      _cooldownTicker =
+          Timer.periodic(const Duration(seconds: 30), (_) {
+        if (mounted) setState(() {});
+      });
+    }
   }
 
   @override
   void dispose() {
     _billing.removeListener(_onBillingChanged);
+    _userSub?.cancel();
+    _cooldownTicker?.cancel();
     super.dispose();
+  }
+
+  void _subscribeAdProgress() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    _userSub = FirebaseFirestore.instance
+        .collection('users')
+        .doc(uid)
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      final data = snap.data();
+      final adProgress = (data?['adProgress'] as Map?)?.cast<String, dynamic>();
+      final ice = (adProgress?['icebreaker'] as Map?)?.cast<String, dynamic>();
+      final live = (adProgress?['liveSession'] as Map?)?.cast<String, dynamic>();
+      setState(() {
+        _iceLastGrantedAt = (ice?['lastGrantedAt'] as Timestamp?)?.toDate();
+        _liveLastGrantedAt = (live?['lastGrantedAt'] as Timestamp?)?.toDate();
+        _liveTowardCredit = (live?['towardCredit'] as num?)?.toInt() ?? 0;
+      });
+    });
+  }
+
+  Duration? _cooldownRemaining(DateTime? lastGrantedAt) {
+    if (lastGrantedAt == null) return null;
+    final remaining =
+        _kAdRewardCooldown - DateTime.now().difference(lastGrantedAt);
+    return remaining.isNegative ? null : remaining;
   }
 
   void _onBillingChanged() {
@@ -114,7 +164,7 @@ class _ShopScreenState extends State<ShopScreen> {
           } else {
             final p = result.progress ?? 0;
             final r = result.required ?? 2;
-            _showSnack('Watched $p of $r ads — keep going!');
+            _showSnack('Watched $p of $r — one more ad to earn the reward.');
           }
           break;
         case AdShowStatus.dismissed:
@@ -125,6 +175,12 @@ class _ShopScreenState extends State<ShopScreen> {
           break;
         case AdShowStatus.failedToShow:
           _showSnack('Ad failed to play. Try again shortly.');
+          break;
+        case AdShowStatus.cooldown:
+          _showSnack(
+            result.errorMessage ??
+                'Already claimed today — come back tomorrow.',
+          );
           break;
         case AdShowStatus.error:
           _showSnack('Reward could not be granted. Please try again.');
@@ -227,8 +283,11 @@ class _ShopScreenState extends State<ShopScreen> {
                       child: _EarnCard(
                         iconColor: AppColors.brandPink,
                         icon: Icons.favorite_rounded,
-                        reward: '1 Icebreaker',
+                        rewardLabel: 'Icebreaker',
                         adsRequired: 1,
+                        currentStep: 0,
+                        cooldownRemaining:
+                            _cooldownRemaining(_iceLastGrantedAt),
                         isLoading: _watchingType == RewardType.icebreaker,
                         onTap: () => _watchAdFor(RewardType.icebreaker),
                       ),
@@ -238,8 +297,11 @@ class _ShopScreenState extends State<ShopScreen> {
                       child: _EarnCard(
                         iconColor: AppColors.brandCyan,
                         icon: Icons.bolt_rounded,
-                        reward: '1 Live Session',
+                        rewardLabel: 'Live Session',
                         adsRequired: 2,
+                        currentStep: _liveTowardCredit,
+                        cooldownRemaining:
+                            _cooldownRemaining(_liveLastGrantedAt),
                         isLoading: _watchingType == RewardType.liveSession,
                         onTap: () => _watchAdFor(RewardType.liveSession),
                       ),
@@ -381,29 +443,75 @@ class _SectionLabel extends StatelessWidget {
 
 // ── Earn card ─────────────────────────────────────────────────────────────────
 
-/// [adsRequired] controls the number of ad-step dots shown and the title copy.
-/// When 2, the card clearly communicates that 2 separate ads are required.
+/// Renders one rewarded-ad offer in the "Earn Free" section.
+///
+/// Drives three visual states off three inputs:
+///   - [currentStep] — ads already watched in this 24h cycle (0..adsRequired-1).
+///                     For [adsRequired]==1 this is always 0; for ==2 it lets
+///                     the card show "1 of 2 watched" mid-flow.
+///   - [cooldownRemaining] — non-null while the reward is locked out for the
+///                     current 24h window. Renders a muted "Claimed" state
+///                     with a countdown subtitle, replacing the CTA.
+///   - [isLoading]   — a watch is in flight; CTA shows a spinner.
+///
+/// Visually the card grades down (icon + content opacity) when in cooldown
+/// so the active card on the row visibly stands out.
 class _EarnCard extends StatelessWidget {
   const _EarnCard({
     required this.icon,
     required this.iconColor,
-    required this.reward,
+    required this.rewardLabel,
     required this.adsRequired,
+    required this.currentStep,
+    required this.cooldownRemaining,
     required this.onTap,
     this.isLoading = false,
   });
 
   final IconData icon;
   final Color iconColor;
-  final String reward;
+
+  /// Display name of the reward, e.g. "Icebreaker" / "Live Session".
+  final String rewardLabel;
+
+  /// How many ad watches are needed for one credit (1 or 2).
   final int adsRequired;
+
+  /// Ad watches already completed in the current 24h cycle.
+  final int currentStep;
+
+  /// If non-null, the reward is on cooldown and this Duration is how long
+  /// until the user can claim again.
+  final Duration? cooldownRemaining;
+
   final VoidCallback onTap;
   final bool isLoading;
 
+  bool get _isCooldown => cooldownRemaining != null;
+
+  String get _statusLine {
+    if (_isCooldown) return 'Available in ${_formatRemaining(cooldownRemaining!)}';
+    if (adsRequired == 1) return 'Watch 1 ad · 1 per day';
+    if (currentStep == 0) return 'Watch 2 ads · 1 per day';
+    return '1 more ad to earn';
+  }
+
+  String get _ctaLabel {
+    if (adsRequired == 1) return 'WATCH AD';
+    return 'WATCH AD ${currentStep + 1} OF $adsRequired';
+  }
+
+  static String _formatRemaining(Duration d) {
+    final h = d.inHours;
+    final m = d.inMinutes.remainder(60);
+    if (h >= 1) return '${h}h ${m}m';
+    if (m >= 1) return '${m}m';
+    return '<1m';
+  }
+
   @override
   Widget build(BuildContext context) {
-    final titleText =
-        adsRequired > 1 ? 'Watch $adsRequired Ads' : 'Watch an Ad';
+    final contentOpacity = _isCooldown ? 0.55 : 1.0;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -414,118 +522,146 @@ class _EarnCard extends StatelessWidget {
       ),
       child: Column(
         children: [
-          // Branded icon badge — rounded-square, matching the home stat
-          // tile (36×36 r10) and profile action tile (40×40 r12).  Shop
-          // sits at the upper end of the scale (52×52 r16) since the earn
-          // card is the most prominent surface in the row, but the recipe
-          // — alpha-0.14 fill, alpha-0.32 border, accent icon at the same
-          // ~1:2 ratio — keeps it in the same visual family.
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              color: iconColor.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(16),
-              border: Border.all(
-                color: iconColor.withValues(alpha: 0.32),
-                width: 1.2,
+          Opacity(
+            opacity: contentOpacity,
+            child: Container(
+              width: 52,
+              height: 52,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(
+                  color: iconColor.withValues(alpha: 0.32),
+                  width: 1.2,
+                ),
               ),
+              child: Icon(icon, color: iconColor, size: 26),
             ),
-            child: Icon(icon, color: iconColor, size: 26),
           ),
 
           const SizedBox(height: 10),
 
-          // Title — "Watch an Ad" or "Watch 2 Ads"
-          Text(
-            titleText,
-            style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700),
-            textAlign: TextAlign.center,
+          Opacity(
+            opacity: contentOpacity,
+            child: Text(
+              'Get 1 $rewardLabel',
+              style: AppTextStyles.body.copyWith(fontWeight: FontWeight.w700),
+              textAlign: TextAlign.center,
+            ),
           ),
 
-          const SizedBox(height: 3),
-
-          // Reward label
-          Text(
-            'Get $reward',
-            style: AppTextStyles.caption,
-            textAlign: TextAlign.center,
-          ),
-
-          // Ad-step dots — only shown when > 1 ad required
           if (adsRequired > 1) ...[
-            const SizedBox(height: 8),
+            const SizedBox(height: 10),
+            // Filled-dot progress: solid for watched, hollow for remaining.
+            // Clearly communicates "this is a 2-step earn flow."
             Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 for (int i = 0; i < adsRequired; i++) ...[
-                  if (i > 0) const SizedBox(width: 5),
-                  Icon(
-                    Icons.play_circle_filled_rounded,
-                    size: 14,
-                    color: AppColors.brandCyan
-                        .withValues(alpha: i == 0 ? 0.85 : 0.45),
+                  if (i > 0) const SizedBox(width: 8),
+                  _StepDot(
+                    filled: i < currentStep || _isCooldown,
+                    color: iconColor,
                   ),
                 ],
-                const SizedBox(width: 6),
-                Flexible(
-                  child: Text(
-                    '$adsRequired ads required',
-                    style: AppTextStyles.caption.copyWith(
-                      color: AppColors.textMuted,
-                      fontSize: 10,
-                    ),
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
               ],
             ),
           ],
 
+          const SizedBox(height: 8),
+          Text(
+            _statusLine,
+            style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            textAlign: TextAlign.center,
+          ),
+
           const Spacer(),
           const SizedBox(height: 14),
 
-          // WATCH button
-          GestureDetector(
-            onTap: isLoading ? null : onTap,
-            child: Container(
+          if (_isCooldown)
+            // Muted "claimed" pill — visually distinct from the active CTA
+            // so the user can tell at a glance which card is interactive.
+            Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 8),
               decoration: BoxDecoration(
-                color: AppColors.brandCyan
-                    .withValues(alpha: isLoading ? 0.05 : 0.10),
+                color: AppColors.textMuted.withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
-                  color: AppColors.brandCyan
-                      .withValues(alpha: isLoading ? 0.18 : 0.35),
+                  color: AppColors.textMuted.withValues(alpha: 0.18),
                 ),
               ),
               alignment: Alignment.center,
-              child: isLoading
-                  ? SizedBox(
-                      height: 14,
-                      width: 14,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        valueColor: AlwaysStoppedAnimation<Color>(
-                          AppColors.brandCyan,
+              child: Text(
+                'CLAIMED TODAY',
+                style: AppTextStyles.caption.copyWith(
+                  color: AppColors.textMuted,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                ),
+              ),
+            )
+          else
+            GestureDetector(
+              onTap: isLoading ? null : onTap,
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                decoration: BoxDecoration(
+                  color: AppColors.brandCyan
+                      .withValues(alpha: isLoading ? 0.05 : 0.10),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: AppColors.brandCyan
+                        .withValues(alpha: isLoading ? 0.18 : 0.35),
+                  ),
+                ),
+                alignment: Alignment.center,
+                child: isLoading
+                    ? SizedBox(
+                        height: 14,
+                        width: 14,
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          valueColor: AlwaysStoppedAnimation<Color>(
+                            AppColors.brandCyan,
+                          ),
+                        ),
+                      )
+                    : Text(
+                        _ctaLabel,
+                        style: AppTextStyles.caption.copyWith(
+                          color: AppColors.brandCyan,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
                         ),
                       ),
-                    )
-                  : Text(
-                      'WATCH',
-                      style: AppTextStyles.caption.copyWith(
-                        color: AppColors.brandCyan,
-                        fontWeight: FontWeight.w800,
-                        letterSpacing: 1.2,
-                      ),
-                    ),
+              ),
             ),
-          ),
         ],
       ),
     );
   }
+}
+
+class _StepDot extends StatelessWidget {
+  const _StepDot({required this.filled, required this.color});
+  final bool filled;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+        width: 10,
+        height: 10,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: filled ? color : Colors.transparent,
+          border: Border.all(
+            color: color.withValues(alpha: filled ? 1.0 : 0.45),
+            width: 1.5,
+          ),
+        ),
+      );
 }
 
 // ── Pack row ──────────────────────────────────────────────────────────────────
