@@ -4,17 +4,33 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../../core/services/blocks_repository.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../nearby/widgets/nearby_about_me_card.dart';
+import '../../nearby/widgets/nearby_focus_card.dart';
 import '../../reports/widgets/report_sheet.dart';
 
-/// Chat thread screen — three display modes determined by [status]:
+/// Chat thread screen — display modes:
 ///
-///  'locked'            — outgoing icebreaker, awaiting recipient response.
-///                        Shows the original message bubble + lock explanation.
-///  'expired'|'declined'— concluded history, read-only view with outcome pill.
-///  'unlocked'          — post-"We Got This" conversation; live Firestore
-///                        message stream + composer.
+///  Static (no [conversationId]):
+///    'locked'            — outgoing icebreaker, awaiting recipient response.
+///                          Original message bubble + lock explanation.
+///    'expired'|'declined'— concluded icebreaker history, read-only view with
+///                          outcome pill.
+///
+///  Conversation ([conversationId] supplied) — sub-mode is decided by a live
+///  Firestore lookup of `conversations/{conversationId}.status`, NOT by the
+///  passed [status] arg:
+///    participant + status=='active'                    → live stream + composer
+///    participant + status in {ended,expired,blocked}   → live stream, READ-ONLY
+///                                                        (no composer; status
+///                                                        footer instead)
+///    not a participant / doc missing / unknown status  → "Chat unavailable"
+///
+///  The participant + 'active' gate is what unlocks the composer; non-active
+///  conversations still allow message reads to participants (Firestore rules
+///  permit read for any participant, but only allow create when status=='active').
 ///
 /// Navigation:
 ///   AppBar avatar/name → profile preview sheet.
@@ -55,20 +71,47 @@ class ChatThreadScreen extends StatefulWidget {
   State<ChatThreadScreen> createState() => _ChatThreadScreenState();
 }
 
+/// Resolved access state for a conversation-mode chat thread.
+///
+/// Decided by [_ChatThreadScreenState._verifyConversationAccess] from the
+/// live conversation doc — NOT from the widget's [ChatThreadScreen.status]
+/// arg, which the caller may set freely.
+enum _ConvAccess {
+  /// Participant + status=='active': live stream + composer.
+  active,
+
+  /// Participant + status in {ended, expired, blocked}: live stream is
+  /// rendered read-only (composer hidden; status footer shown instead).
+  /// Firestore rules already block message creation when status != 'active',
+  /// so the read-only UI matches the rule layer.
+  history,
+
+  /// Doc missing, user not in participants, or unknown status — neutral
+  /// "Chat unavailable" landing.
+  denied,
+}
+
 class _ChatThreadScreenState extends State<ChatThreadScreen> {
   final _messageController = TextEditingController();
   final _scrollController = ScrollController();
+  final _messageFocusNode = FocusNode();
   bool _isSending = false;
+  bool _readSyncInFlight = false;
+  String? _lastReadClearedMessageId;
 
-  // Conversation verification result when conversationId is present.
-  // null  = loading (Firestore fetch in flight)
-  // true  = verified: user is a participant and conversation is active
-  // false = denied:  doc missing, user not in participants, or status != 'active'
+  // Conversation access state when conversationId is present.
+  // null = loading (Firestore fetch in flight); see [_ConvAccess] for the
+  // resolved cases.
   //
   // Unlock state is intentionally NOT derived from widget.status alone.
   // The route can pass any string argument — only a successful Firestore
   // participant check should unlock the composer and message stream.
-  bool? _convVerified;
+  _ConvAccess? _convAccess;
+
+  /// Live conversation status string (mirrors [_convAccess] but preserves the
+  /// underlying value — used to label the history footer with the specific
+  /// reason: "ended" / "expired" / "closed").
+  String? _convStatus;
 
   // Populated once _verifyConversationAccess() resolves — used by the block flow.
   String? _otherUserId;
@@ -76,38 +119,75 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
   // Live subscription on the conversation doc — detects status changes
   // (e.g. status='blocked' written by the Cloud Function when a block occurs)
-  // and flips _convVerified reactively so the composer closes without requiring
-  // a navigation event.
+  // and flips _convAccess reactively so the composer closes without requiring
+  // a navigation event.  An active→history transition keeps the stream visible
+  // but hides the composer.
   StreamSubscription<DocumentSnapshot>? _convStatusSub;
 
   bool get _isLocked => widget.status == 'locked';
 
   // Unlocked iff Firestore confirmed the user is a participant in an active
   // conversation.  A widget argument of 'unlocked' alone is NOT sufficient.
+  // Drives the AppBar online dot, the "more" menu (block/report), and the
+  // composer; read-only history mode evaluates this as false on purpose.
   bool get _isUnlocked =>
-      widget.conversationId != null && _convVerified == true;
+      widget.conversationId != null && _convAccess == _ConvAccess.active;
 
   @override
   void initState() {
     super.initState();
     if (widget.conversationId != null) {
       _verifyConversationAccess();
+    } else if (widget.icebreakerId.isNotEmpty) {
+      _resolveOtherUidFromIcebreaker();
     }
   }
 
-  /// Reads the conversation doc once to confirm:
-  ///   1. The doc exists.
-  ///   2. The authenticated user is in [participants].
-  ///   3. [status] == 'active'.
+  /// Fills [_otherUserId] from the icebreaker doc when the chat thread is
+  /// opened without a conversationId (locked / expired / declined modes).
+  /// Lets the avatar tap render the full profile sheet on these paths too,
+  /// not just on unlocked conversations.
+  Future<void> _resolveOtherUidFromIcebreaker() async {
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (myUid == null) return;
+    try {
+      final doc = await FirebaseFirestore.instance
+          .collection('icebreakers')
+          .doc(widget.icebreakerId)
+          .get();
+      if (!doc.exists || !mounted) return;
+      final data = doc.data() ?? const <String, dynamic>{};
+      final senderId = data['senderId'] as String?;
+      final recipientId = data['recipientId'] as String?;
+      final otherId = (senderId != null && senderId != myUid)
+          ? senderId
+          : (recipientId != null && recipientId != myUid)
+              ? recipientId
+              : null;
+      if (otherId != null && otherId.isNotEmpty && mounted) {
+        setState(() => _otherUserId = otherId);
+      }
+    } catch (e) {
+      debugPrint('[ChatThread] icebreaker uid lookup failed (non-fatal): $e');
+    }
+  }
+
+  /// Reads the conversation doc once to decide [_convAccess]:
   ///
-  /// This is the server-driven gate for unlocking the chat UI.
-  /// Firestore security rules enforce the same check at the network layer,
-  /// so a malicious client that forges `_convVerified = true` still cannot
-  /// read or write messages without passing the rule.
+  ///   not a participant / doc missing                   → denied
+  ///   participant + status == 'active'                  → active
+  ///   participant + status in {ended, expired, blocked} → history
+  ///   participant + any other status string             → denied
+  ///
+  /// Firestore security rules enforce the same participant requirement at the
+  /// network layer for both reads and writes — and additionally require
+  /// `status == 'active'` for message creates.  So a malicious client that
+  /// forces _convAccess to active still cannot send messages on a non-active
+  /// conversation; the rule layer rejects the write.
   Future<void> _verifyConversationAccess() async {
     final myUid = FirebaseAuth.instance.currentUser?.uid;
     if (myUid == null) {
-      if (mounted) setState(() => _convVerified = false);
+      if (mounted) setState(() => _convAccess = _ConvAccess.denied);
       return;
     }
     try {
@@ -116,7 +196,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           .doc(widget.conversationId)
           .get();
       if (!doc.exists) {
-        if (mounted) setState(() => _convVerified = false);
+        if (mounted) setState(() => _convAccess = _ConvAccess.denied);
         return;
       }
       final data = doc.data()!;
@@ -124,20 +204,25 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
           (data['participants'] as List<dynamic>?) ?? []);
       final status = data['status'] as String? ?? '';
       final isParticipant = participants.contains(myUid);
-      final isActive = status == 'active';
       final otherId =
           participants.firstWhere((p) => p != myUid, orElse: () => '');
+      final access = _resolveAccess(isParticipant, status);
       if (mounted) {
         setState(() {
-          _convVerified = isParticipant && isActive;
+          _convAccess = access;
+          _convStatus = status;
           _otherUserId = otherId.isNotEmpty ? otherId : null;
         });
       }
+      if (isParticipant) {
+        _markConversationRead();
+      }
 
       // After confirming participation, subscribe to live status changes.
-      // This ensures that if the conversation is blocked while this screen
-      // is open (e.g. the other user blocks us via the Cloud Function), the
-      // composer and stream gate close immediately without requiring a reload.
+      // This ensures that if the conversation is blocked / ended while this
+      // screen is open (e.g. the other user blocks us via the Cloud Function),
+      // the composer hides and the read-only history footer renders without
+      // requiring a navigation event.
       if (isParticipant) {
         _convStatusSub = FirebaseFirestore.instance
             .collection('conversations')
@@ -146,15 +231,55 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             .listen((snap) {
           if (!mounted) return;
           final liveStatus = snap.data()?['status'] as String? ?? '';
-          final isStillActive = liveStatus == 'active';
-          if (_convVerified != isStillActive) {
-            setState(() => _convVerified = isStillActive);
+          final liveAccess = _resolveAccess(true, liveStatus);
+          if (_convAccess != liveAccess || _convStatus != liveStatus) {
+            setState(() {
+              _convAccess = liveAccess;
+              _convStatus = liveStatus;
+            });
           }
         });
       }
     } catch (e) {
       debugPrint('[ChatThread] conversation access check failed: $e');
-      if (mounted) setState(() => _convVerified = false);
+      if (mounted) setState(() => _convAccess = _ConvAccess.denied);
+    }
+  }
+
+  static _ConvAccess _resolveAccess(bool isParticipant, String status) {
+    if (!isParticipant) return _ConvAccess.denied;
+    if (status == 'active') return _ConvAccess.active;
+    if (status == 'ended' || status == 'expired' || status == 'blocked') {
+      return _ConvAccess.history;
+    }
+    return _ConvAccess.denied;
+  }
+
+  Future<void> _markConversationRead({String? newestMessageId}) async {
+    final conversationId = widget.conversationId;
+    final myUid = FirebaseAuth.instance.currentUser?.uid;
+    if (conversationId == null || myUid == null || myUid.isEmpty) return;
+    if (newestMessageId != null && newestMessageId == _lastReadClearedMessageId) {
+      return;
+    }
+    if (_readSyncInFlight) return;
+
+    _readSyncInFlight = true;
+    try {
+      await FirebaseFirestore.instance
+          .collection('conversations')
+          .doc(conversationId)
+          .update({
+        'unreadCount_$myUid': 0,
+        'lastReadAt_$myUid': FieldValue.serverTimestamp(),
+      });
+      if (newestMessageId != null) {
+        _lastReadClearedMessageId = newestMessageId;
+      }
+    } catch (e) {
+      debugPrint('[ChatThread] mark read failed: $e');
+    } finally {
+      _readSyncInFlight = false;
     }
   }
 
@@ -162,6 +287,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   void dispose() {
     _convStatusSub?.cancel();
     _messageController.dispose();
+    _messageFocusNode.dispose();
     _scrollController.dispose();
     super.dispose();
   }
@@ -184,39 +310,46 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
     );
   }
 
-  /// Routes the conversation body through the verification result.
-  /// This is the UI-layer gate that mirrors the Firestore rule.
+  /// Routes the conversation body through [_convAccess].
+  ///
+  ///   null    → loading spinner (initial Firestore fetch in flight)
+  ///   denied  → neutral "Chat unavailable" landing
+  ///   active  → live message stream (composer rendered by _buildFooter)
+  ///   history → live message stream rendered read-only (composer hidden;
+  ///             status footer rendered by _buildFooter instead).  Read access
+  ///             is permitted by Firestore rules for any participant; create
+  ///             access is gated on status=='active' at the rule layer too,
+  ///             so the read-only UI is consistent with what the server allows.
   Widget _buildConversationBody() {
-    if (_convVerified == null) {
-      // Fetch in flight.
-      return const Center(child: CircularProgressIndicator());
-    }
-    if (_convVerified == false) {
-      // Denied — show a neutral error; don't leak why.
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(32),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              const Icon(Icons.lock_outline_rounded,
-                  color: AppColors.textMuted, size: 48),
-              const SizedBox(height: 16),
-              Text('Chat unavailable',
-                  style: AppTextStyles.h3, textAlign: TextAlign.center),
-              const SizedBox(height: 8),
-              Text(
-                'This conversation is no longer accessible.',
-                style: AppTextStyles.bodyS,
-                textAlign: TextAlign.center,
-              ),
-            ],
+    switch (_convAccess) {
+      case null:
+        return const Center(child: CircularProgressIndicator());
+      case _ConvAccess.denied:
+        return Center(
+          child: Padding(
+            padding: const EdgeInsets.all(32),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(Icons.lock_outline_rounded,
+                    color: AppColors.textMuted, size: 48),
+                const SizedBox(height: 16),
+                Text('Chat unavailable',
+                    style: AppTextStyles.h3, textAlign: TextAlign.center),
+                const SizedBox(height: 8),
+                Text(
+                  'This conversation is no longer accessible.',
+                  style: AppTextStyles.bodyS,
+                  textAlign: TextAlign.center,
+                ),
+              ],
+            ),
           ),
-        ),
-      );
+        );
+      case _ConvAccess.active:
+      case _ConvAccess.history:
+        return _buildChatStream();
     }
-    // Verified — show live stream.
-    return _buildChatStream();
   }
 
   // ── App bar ────────────────────────────────────────────────────────────────
@@ -389,6 +522,7 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         }
 
         final docs = snap.data!.docs;
+        final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
 
         // Scroll to bottom after new messages land
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -400,6 +534,14 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
               curve: Curves.easeOut,
             );
           }
+
+          if (docs.isNotEmpty) {
+            final lastData = docs.last.data() as Map<String, dynamic>;
+            final latestSenderId = lastData['senderId'] as String? ?? '';
+            if (latestSenderId.isNotEmpty && latestSenderId != myUid) {
+              _markConversationRead(newestMessageId: docs.last.id);
+            }
+          }
         });
 
         if (docs.isEmpty) {
@@ -410,9 +552,6 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
             ),
           );
         }
-
-        final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
-
         return ListView.builder(
           controller: _scrollController,
           padding:
@@ -445,15 +584,48 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   // ── Footer ─────────────────────────────────────────────────────────────────
 
   Widget _buildFooter(BuildContext context) {
-    // Conversation path: footer tracks verification state.
+    // Conversation path: footer tracks the resolved access state.
+    //   active  → composer
+    //   history → status footer (no composer; messages already rendered above)
+    //   denied / loading → no footer chrome
     if (widget.conversationId != null) {
-      if (_convVerified == true) return _buildComposer(context);
-      // Loading or denied: no footer chrome needed.
-      return const SizedBox.shrink();
+      switch (_convAccess) {
+        case _ConvAccess.active:
+          return _buildComposer(context);
+        case _ConvAccess.history:
+          return _buildConvHistoryFooter();
+        case _ConvAccess.denied:
+        case null:
+          return const SizedBox.shrink();
+      }
     }
-    // Static path: footer follows the passed status.
+    // Static (icebreaker) path: footer follows the passed status arg.
     if (_isLocked) return _buildLockedFooter();
     return _buildHistoryFooter();
+  }
+
+  /// Footer for a conversation rendered in read-only history mode.  Mirrors
+  /// the chrome of the locked / icebreaker-history footers but labels the
+  /// state from the live conversation status.
+  Widget _buildConvHistoryFooter() {
+    final status = _convStatus ?? '';
+    final (icon, text) = switch (status) {
+      'blocked' => (Icons.block_rounded, 'This conversation is closed'),
+      'expired' => (Icons.timer_off_outlined, 'This conversation expired'),
+      _ => (Icons.lock_outline_rounded, 'This conversation has ended'),
+    };
+    return Container(
+      color: AppColors.bgSurface,
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 28),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: 14, color: AppColors.textMuted),
+          const SizedBox(width: 6),
+          Text(text, style: AppTextStyles.caption),
+        ],
+      ),
+    );
   }
 
   Widget _buildComposer(BuildContext context) {
@@ -474,12 +646,15 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
               ),
               child: TextField(
                 controller: _messageController,
+                focusNode: _messageFocusNode,
                 style: AppTextStyles.body
                     .copyWith(color: AppColors.textPrimary),
                 maxLines: 5,
                 minLines: 1,
                 keyboardType: TextInputType.multiline,
                 textCapitalization: TextCapitalization.sentences,
+                textInputAction: TextInputAction.send,
+                onSubmitted: (_) => _isSending ? null : _sendMessage(),
                 decoration: InputDecoration(
                   hintText: 'Say something...',
                   hintStyle: AppTextStyles.body
@@ -570,6 +745,11 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   Future<void> _sendMessage() async {
     final text = _messageController.text.trim();
     if (text.isEmpty || widget.conversationId == null) return;
+    // Defense in depth — the composer is only built when active, but a stale
+    // tap (status flipped to ended/blocked between focus and send) should
+    // bail out before hitting Firestore. Rules also reject creates when
+    // status != 'active', so this is belt-and-suspenders.
+    if (_convAccess != _ConvAccess.active) return;
 
     setState(() => _isSending = true);
     final myUid = FirebaseAuth.instance.currentUser?.uid ?? '';
@@ -584,11 +764,20 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
         'type': 'text',
         'createdAt': FieldValue.serverTimestamp(),
       });
-      await convRef.update({
+      final update = <String, Object?>{
         'lastMessage': text,
+        'lastSenderId': myUid,
         'lastMessageAt': FieldValue.serverTimestamp(),
-      });
+      };
+      final otherUid = _otherUserId;
+      if (otherUid != null && otherUid.isNotEmpty) {
+        update['unreadCount_$otherUid'] = FieldValue.increment(1);
+        update['unreadCount_$myUid'] = 0;
+        update['lastReadAt_$myUid'] = FieldValue.serverTimestamp();
+      }
+      await convRef.update(update);
       _messageController.clear();
+      _messageFocusNode.unfocus();
     } catch (e) {
       debugPrint('[Chat] send failed: $e');
     } finally {
@@ -760,19 +949,17 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
 
     setState(() => _isBlocking = true);
     try {
-      final db = FirebaseFirestore.instance;
-      final batch = db.batch();
-      // Forward entry: my blocked-users list.
-      batch.set(
-        db.collection('users').doc(myUid).collection('blockedUsers').doc(otherId),
-        {'blockedAt': FieldValue.serverTimestamp(), 'displayName': widget.otherFirstName, 'photoUrl': widget.otherPhotoUrl},
+      // BlocksRepository fans out to canonical blocks/{...} + forward index +
+      // reverse index in one batch.  source='chat' + the conversationId give
+      // moderation enough provenance to find the offending thread later.
+      await BlocksRepository().block(
+        blockerId: myUid,
+        blockedId: otherId,
+        source: 'chat',
+        conversationId: widget.conversationId,
+        blockedDisplayName: widget.otherFirstName,
+        blockedPhotoUrl: widget.otherPhotoUrl,
       );
-      // Reverse entry: lets the blocked user stream who has blocked them.
-      batch.set(
-        db.collection('blockedBy').doc(otherId).collection('blockers').doc(myUid),
-        {'blockedAt': FieldValue.serverTimestamp()},
-      );
-      await batch.commit();
       debugPrint('[ChatBlock] blocked $otherId (${widget.otherFirstName})');
       if (mounted) Navigator.of(context).pop();
     } catch (e) {
@@ -780,8 +967,23 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
       if (mounted) {
         setState(() => _isBlocking = false);
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-              content: Text('Could not block. Please try again.')),
+          SnackBar(
+            content: Text(
+              "Couldn't block ${widget.otherFirstName}. Check your connection and try again.",
+              style: AppTextStyles.bodyS.copyWith(color: Colors.white),
+            ),
+            backgroundColor: AppColors.bgElevated,
+            behavior: SnackBarBehavior.floating,
+            shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(12)),
+            margin: const EdgeInsets.all(16),
+            duration: const Duration(seconds: 4),
+            action: SnackBarAction(
+              label: 'Retry',
+              textColor: AppColors.brandCyan,
+              onPressed: _blockFromChat,
+            ),
+          ),
         );
       }
     }
@@ -790,13 +992,12 @@ class _ChatThreadScreenState extends State<ChatThreadScreen> {
   void _showProfileSheet(BuildContext context) {
     showModalBottomSheet(
       context: context,
-      backgroundColor: AppColors.bgElevated,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (_) => _ProfilePreviewSheet(
-        firstName: widget.otherFirstName,
-        photoUrl: widget.otherPhotoUrl,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _FullProfileSheet(
+        otherUid: _otherUserId,
+        fallbackFirstName: widget.otherFirstName,
+        fallbackPhotoUrl: widget.otherPhotoUrl,
       ),
     );
   }
@@ -977,56 +1178,240 @@ class _AvatarCircle extends StatelessWidget {
   }
 }
 
-// ── Profile preview sheet ─────────────────────────────────────────────────────
+// ── Full-profile sheet ────────────────────────────────────────────────────────
+//
+// Replaces the old single-photo "Profile preview — coming soon" placeholder.
+// Renders the same NearbyFocusCard + NearbyAboutMeCard pair as the Nearby
+// discovery carousel, but with [hideActions: true] so the Send Icebreaker
+// CTA and more-options menu are suppressed (you're already in this person's
+// chat thread — sending another icebreaker or surfacing block from here
+// would be redundant).
+//
+// When [otherUid] is null (icebreaker doc lookup failed, or this surface
+// was opened before the lookup resolved), falls back to a minimal
+// avatar + name preview so the avatar tap never feels broken.
 
-class _ProfilePreviewSheet extends StatelessWidget {
-  const _ProfilePreviewSheet({
+class _FullProfileSheet extends StatelessWidget {
+  const _FullProfileSheet({
+    required this.otherUid,
+    required this.fallbackFirstName,
+    required this.fallbackPhotoUrl,
+  });
+
+  final String? otherUid;
+  final String fallbackFirstName;
+  final String fallbackPhotoUrl;
+
+  @override
+  Widget build(BuildContext context) {
+    return DraggableScrollableSheet(
+      initialChildSize: 0.88,
+      minChildSize: 0.5,
+      maxChildSize: 0.95,
+      expand: false,
+      builder: (context, scrollController) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.bgBase,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: Column(
+            children: [
+              // Drag handle
+              Container(
+                margin: const EdgeInsets.only(top: 12, bottom: 8),
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.divider,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              Expanded(
+                child: (otherUid == null || otherUid!.isEmpty)
+                    ? _MinimalProfileBody(
+                        firstName: fallbackFirstName,
+                        photoUrl: fallbackPhotoUrl,
+                        scrollController: scrollController,
+                      )
+                    : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+                        stream: FirebaseFirestore.instance
+                            .collection('profiles')
+                            .doc(otherUid)
+                            .snapshots(),
+                        builder: (context, snap) {
+                          if (snap.connectionState ==
+                                  ConnectionState.waiting &&
+                              !snap.hasData) {
+                            return const Center(
+                              child: CircularProgressIndicator(
+                                color: AppColors.brandPink,
+                                strokeWidth: 2.5,
+                              ),
+                            );
+                          }
+                          final data = snap.data?.data();
+                          if (data == null) {
+                            return _MinimalProfileBody(
+                              firstName: fallbackFirstName,
+                              photoUrl: fallbackPhotoUrl,
+                              scrollController: scrollController,
+                            );
+                          }
+                          return _FullProfileBody(
+                            uid: otherUid!,
+                            profile: data,
+                            fallbackFirstName: fallbackFirstName,
+                            fallbackPhotoUrl: fallbackPhotoUrl,
+                            scrollController: scrollController,
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+/// Renders the Nearby-style card + about-me block stacked vertically inside
+/// the sheet, sourced from the live `profiles/{otherUid}` doc.
+class _FullProfileBody extends StatelessWidget {
+  const _FullProfileBody({
+    required this.uid,
+    required this.profile,
+    required this.fallbackFirstName,
+    required this.fallbackPhotoUrl,
+    required this.scrollController,
+  });
+
+  final String uid;
+  final Map<String, dynamic> profile;
+  final String fallbackFirstName;
+  final String fallbackPhotoUrl;
+  final ScrollController scrollController;
+
+  @override
+  Widget build(BuildContext context) {
+    final firstName =
+        (profile['firstName'] as String?)?.trim().isNotEmpty == true
+            ? profile['firstName'] as String
+            : fallbackFirstName;
+    final age = (profile['age'] as num?)?.toInt() ?? 0;
+    final bio = profile['bio'] as String?;
+    final hometownDisplay = profile['hometownDisplay'] as String?;
+    final occupation = profile['occupation'] as String?;
+    final height = profile['height'] as String?;
+    final lookingFor = profile['lookingFor'] as String?;
+    final interests = (profile['interests'] as List<dynamic>?)
+            ?.whereType<String>()
+            .toList() ??
+        const <String>[];
+    final hobbies = (profile['hobbies'] as List<dynamic>?)
+            ?.whereType<String>()
+            .toList() ??
+        const <String>[];
+    final photoUrls = (profile['photoUrls'] as List<dynamic>?)
+            ?.whereType<String>()
+            .toList() ??
+        const <String>[];
+    final primaryPhoto = profile['primaryPhotoUrl'] as String?;
+    final liveSelfieUrl = profile['liveSelfieUrl'] as String?;
+    final isGold = (profile['isGold'] as bool?) ?? false;
+
+    // Build image rail: live selfie first (when present), then ordered
+    // gallery, then the primary-photo fallback, then the fallback URL the
+    // chat thread was opened with.  Dedupes by URL so a primary photo
+    // already in the gallery doesn't render twice.
+    final images = <NearbyImage>[];
+    final seen = <String>{};
+    void add(String? url, NearbyImageKind kind) {
+      if (url == null) return;
+      final v = url.trim();
+      if (v.isEmpty) return;
+      if (seen.add(v)) images.add(NearbyImage(url: v, kind: kind));
+    }
+    add(liveSelfieUrl, NearbyImageKind.liveSelfie);
+    for (final u in photoUrls) {
+      add(u, NearbyImageKind.profilePhoto);
+    }
+    add(primaryPhoto, NearbyImageKind.profilePhoto);
+    add(fallbackPhotoUrl, NearbyImageKind.profilePhoto);
+
+    return SingleChildScrollView(
+      controller: scrollController,
+      padding: const EdgeInsets.fromLTRB(0, 0, 0, 32),
+      child: Column(
+        children: [
+          // Hero card — matches the Nearby focus card visually.  Aspect
+          // ratio mirrors the discovery surface so a user pulled in from
+          // Messages feels like they're seeing the same canonical card.
+          AspectRatio(
+            aspectRatio: 3 / 4,
+            child: NearbyFocusCard(
+              recipientId: uid,
+              firstName: firstName,
+              age: age,
+              images: images,
+              isGold: isGold,
+              isActive: true,
+              hideActions: true,
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
+            child: NearbyAboutMeCard(
+              age: age,
+              bio: bio,
+              hometown: hometownDisplay,
+              occupation: occupation,
+              height: height,
+              lookingFor: lookingFor,
+              interests: interests,
+              hobbies: hobbies,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Minimal fallback rendered when [otherUid] is null (icebreaker uid lookup
+/// failed) or the `profiles/{uid}` doc is missing.  Shows the same data the
+/// chat thread already has on hand so the user gets *something* useful.
+class _MinimalProfileBody extends StatelessWidget {
+  const _MinimalProfileBody({
     required this.firstName,
     required this.photoUrl,
+    required this.scrollController,
   });
 
   final String firstName;
   final String photoUrl;
+  final ScrollController scrollController;
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 36),
+    return SingleChildScrollView(
+      controller: scrollController,
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 32),
       child: Column(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Container(
-            width: 40,
-            height: 4,
-            decoration: BoxDecoration(
-              color: AppColors.divider,
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const SizedBox(height: 24),
           _AvatarCircle(
             url: photoUrl,
             initials: firstName.isNotEmpty ? firstName[0] : '?',
-            radius: 44,
+            radius: 56,
           ),
-          const SizedBox(height: 16),
+          const SizedBox(height: 18),
           Text(firstName, style: AppTextStyles.h2),
-          const SizedBox(height: 6),
-          Text('Profile preview', style: AppTextStyles.bodyS),
-          const SizedBox(height: 28),
-          Container(
-            width: double.infinity,
-            height: 48,
-            decoration: BoxDecoration(
-              color: AppColors.bgSurface,
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(color: AppColors.divider),
-            ),
-            alignment: Alignment.center,
-            child: Text(
-              'Full profile — coming soon',
-              style: AppTextStyles.bodyS,
-            ),
+          const SizedBox(height: 8),
+          Text(
+            "We couldn't load this profile right now.",
+            style: AppTextStyles.bodyS.copyWith(color: AppColors.textSecondary),
+            textAlign: TextAlign.center,
           ),
         ],
       ),

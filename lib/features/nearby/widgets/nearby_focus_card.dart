@@ -4,10 +4,27 @@ import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/pill_button.dart';
 import '../../reports/widgets/report_sheet.dart';
 
+/// Image kind tag for the Nearby hero rail.  Both kinds render with
+/// [BoxFit.cover] so the photo fills the entire card edge-to-edge.  The
+/// kind is preserved for future per-source treatment (badges, ordering,
+/// etc.) but no longer drives framing.
+enum NearbyImageKind { liveSelfie, profilePhoto }
+
+/// One entry in the hero card's image rail.  Carries the URL plus a [kind]
+/// so the rail can pick the right framing per image instead of treating
+/// every URL identically.
+class NearbyImage {
+  const NearbyImage({required this.url, required this.kind});
+
+  final String url;
+  final NearbyImageKind kind;
+}
+
 /// The hero profile card shown in the Nearby discovery carousel.
 ///
 /// Intentionally minimal — attraction and quick ID only:
-///   - Full-bleed portrait photo
+///   - Full-bleed portrait photo with horizontal swipe through this user's
+///     image rail (live selfie first, then profile gallery)
 ///   - Gradient border ring (pink → purple → cyan) with outer neon glow
 ///   - Deep bottom scrim
 ///   - Name + age overlay
@@ -15,140 +32,280 @@ import '../../reports/widgets/report_sheet.dart';
 ///   - "Send Icebreaker" CTA at card bottom
 ///
 /// Bio, distance, hometown, and chat opener are deliberately excluded;
-/// those live in the NearbyAboutMeCard below the carousel.
+/// those live in the NearbyAboutMeCard below.
 ///
-/// [isActive] drives scale (1.0 vs 0.94) and glow intensity.
-class NearbyFocusCard extends StatelessWidget {
+/// Gesture model — nested horizontal PageViews:
+///   The card's photo region owns an inner horizontal [PageView] for its
+///   own image rail.  The OUTER between-people PageView lives above this
+///   widget and reads its gestures from the about-me area below the card,
+///   not from this card's surface (Flutter routes a horizontal drag to the
+///   deepest scrollable that wants it; the inner PageView wins inside the
+///   card).  When the inner reaches an edge it bounces in place rather than
+///   advancing the outer — release and drag on the about-me card to change
+///   person.  See `_buildDiscovery` in nearby_screen.dart for the layout.
+///
+/// [isActive] drives glow intensity only.  Page-level scale/opacity for
+/// active vs inactive cards is applied by the parent in `_buildDiscovery`
+/// so the about-me card below this hero dims/shrinks in lockstep.
+class NearbyFocusCard extends StatefulWidget {
   const NearbyFocusCard({
     super.key,
     required this.recipientId,
     required this.firstName,
     required this.age,
-    required this.photoUrl,
+    required this.images,
     this.isGold = false,
     this.isActive = true,
-    required this.onSendIcebreaker,
-    required this.onBlock,
+    this.hideActions = false,
+    this.onSendIcebreaker,
+    this.onBlock,
   });
 
   final String recipientId;
   final String firstName;
   final int age;
-  final String photoUrl;
+
+  /// Ordered display rail.  Index 0 is preferred to be the live selfie
+  /// ([NearbyImageKind.liveSelfie]) and is followed by profile gallery
+  /// entries ([NearbyImageKind.profilePhoto]) in profile order.  Empty
+  /// list renders the placeholder gradient.
+  final List<NearbyImage> images;
+
   final bool isGold;
 
   /// True when this card is the centred, focused card in the carousel.
   final bool isActive;
 
-  final VoidCallback onSendIcebreaker;
+  /// When true, suppresses the more-options menu (top-left) and the
+  /// "Send Icebreaker" CTA at the bottom.  Used by surfaces that re-use
+  /// the card chrome but don't need the Nearby-discovery actions — most
+  /// notably the chat profile sheet, where the user is already in a
+  /// conversation with this person and block/report live on the chat
+  /// thread itself.
+  final bool hideActions;
+
+  /// Tapped to send an icebreaker.  Required when [hideActions] is false.
+  final VoidCallback? onSendIcebreaker;
 
   /// Called after the user confirms a block action for this card.
-  final VoidCallback onBlock;
+  /// Required when [hideActions] is false.
+  final VoidCallback? onBlock;
+
+  @override
+  State<NearbyFocusCard> createState() => _NearbyFocusCardState();
+}
+
+class _NearbyFocusCardState extends State<NearbyFocusCard> {
+  late final PageController _imageController = PageController();
+  int _imageIndex = 0;
+
+  @override
+  void didUpdateWidget(covariant NearbyFocusCard oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // If the image rail shrank below the current index (e.g., a profile photo
+    // was removed mid-session), clamp back to a valid page so the indicator
+    // and PageView stay in sync.
+    if (_imageIndex >= widget.images.length && widget.images.isNotEmpty) {
+      _imageIndex = widget.images.length - 1;
+      if (_imageController.hasClients) {
+        _imageController.jumpToPage(_imageIndex);
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _imageController.dispose();
+    super.dispose();
+  }
+
+  Widget _buildPhoto(NearbyImage image) {
+    return _Photo(url: image.url);
+  }
 
   @override
   Widget build(BuildContext context) {
+    final images = widget.images;
     return Padding(
       // Vertical breathing room lets the glow shadow render unclipped.
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 10),
-      child: AnimatedScale(
-        scale: isActive ? 1.0 : 0.94,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
-        child: AnimatedOpacity(
-          opacity: isActive ? 1.0 : 0.60,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-          child: _GlowBorderShell(
-            isActive: isActive,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                // ── Photo ─────────────────────────────────────────────────────
-                _Photo(url: photoUrl),
+      child: _GlowBorderShell(
+        isActive: widget.isActive,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // ── Image rail ────────────────────────────────────────────────
+            if (images.isEmpty)
+              const _PhotoPlaceholder()
+            else if (images.length == 1)
+              _buildPhoto(images.first)
+            else
+              PageView.builder(
+                controller: _imageController,
+                itemCount: images.length,
+                physics: const PageScrollPhysics(),
+                onPageChanged: (i) => setState(() => _imageIndex = i),
+                itemBuilder: (_, i) => _buildPhoto(images[i]),
+              ),
 
-                // ── Bottom scrim ──────────────────────────────────────────────
-                const _BottomScrim(),
+            // ── Bottom scrim ──────────────────────────────────────────────
+            // Decorative only — `IgnorePointer` so horizontal drag events
+            // sail through to the image-rail PageView underneath.  Without
+            // this, the scrim's `BoxDecoration` absorbs hit-tests across
+            // the bottom ~70% of the card and the rail feels unswipeable
+            // anywhere near the name/age band.
+            const IgnorePointer(child: _BottomScrim()),
 
-                // ── Gold badge ────────────────────────────────────────────────
-                if (isGold)
-                  const Positioned(
-                    top: 16,
-                    right: 16,
-                    child: _GoldBadge(),
-                  ),
-
-                // ── More-options button (top-left) ────────────────────────────
-                Positioned(
-                  top: 14,
-                  left: 14,
-                  child: _MoreOptionsButton(
-                    recipientId: recipientId,
-                    firstName: firstName,
-                    cardContext: context,
-                    onBlock: onBlock,
+            // ── Image position indicators (dots) ──────────────────────────
+            // Also pointer-transparent — same rationale as the scrim.  The
+            // active-dot pill is wide enough to swallow a drag start that
+            // begins near the top of the card.
+            if (images.length > 1)
+              Positioned(
+                top: 14,
+                left: 0,
+                right: 0,
+                child: IgnorePointer(
+                  child: Center(
+                    child: _PageIndicators(
+                      count: images.length,
+                      index: _imageIndex,
+                    ),
                   ),
                 ),
+              ),
 
-                // ── Bottom overlay: name + age + button ───────────────────────
-                Positioned(
-                  left: 20,
-                  right: 20,
-                  bottom: 18,
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
+            // ── Gold badge ────────────────────────────────────────────────
+            if (widget.isGold)
+              const Positioned(
+                top: 16,
+                right: 16,
+                child: IgnorePointer(child: _GoldBadge()),
+              ),
+
+            // ── More-options button (top-left) ────────────────────────────
+            if (!widget.hideActions)
+              Positioned(
+                top: 14,
+                left: 14,
+                child: _MoreOptionsButton(
+                  recipientId: widget.recipientId,
+                  firstName: widget.firstName,
+                  cardContext: context,
+                  onBlock: widget.onBlock ?? () {},
+                ),
+              ),
+
+            // ── Bottom overlay: name + age + button ───────────────────────
+            Positioned(
+              left: 20,
+              right: 20,
+              bottom: 18,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Name + age row
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.end,
                     children: [
-                      // Name + age row
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.end,
-                        children: [
-                          Flexible(
-                            child: Text(
-                              firstName,
-                              style: AppTextStyles.h1.copyWith(
-                                fontSize: 36,
-                                fontWeight: FontWeight.w800,
-                                letterSpacing: -0.8,
-                                shadows: const [
-                                  Shadow(color: Colors.black87, blurRadius: 10),
-                                ],
-                              ),
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                            ),
+                      Flexible(
+                        child: Text(
+                          widget.firstName,
+                          style: AppTextStyles.h1.copyWith(
+                            fontSize: 36,
+                            fontWeight: FontWeight.w800,
+                            letterSpacing: -0.8,
+                            shadows: const [
+                              Shadow(color: Colors.black87, blurRadius: 10),
+                            ],
                           ),
-                          const SizedBox(width: 8),
-                          Padding(
-                            padding: const EdgeInsets.only(bottom: 5),
-                            child: Text(
-                              '$age',
-                              style: AppTextStyles.h3.copyWith(
-                                color: AppColors.textSecondary,
-                                shadows: const [
-                                  Shadow(color: Colors.black87, blurRadius: 6),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ],
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
                       ),
-
-                      const SizedBox(height: 18),
-
-                      // CTA button — centered label, no icon/emoji
-                      PillButton.primary(
-                        label: 'Send Icebreaker',
-                        onTap: onSendIcebreaker,
-                        width: double.infinity,
-                        height: 52,
+                      const SizedBox(width: 8),
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 5),
+                        child: Text(
+                          '${widget.age}',
+                          style: AppTextStyles.h3.copyWith(
+                            color: AppColors.textSecondary,
+                            shadows: const [
+                              Shadow(color: Colors.black87, blurRadius: 6),
+                            ],
+                          ),
+                        ),
                       ),
                     ],
                   ),
-                ),
-              ],
+
+                  if (!widget.hideActions) ...[
+                    const SizedBox(height: 18),
+
+                    // CTA button — centered label, no icon/emoji
+                    PillButton.primary(
+                      label: 'Send Icebreaker',
+                      onTap: widget.onSendIcebreaker ?? () {},
+                      width: double.infinity,
+                      height: 52,
+                    ),
+                  ],
+                ],
+              ),
             ),
-          ),
+          ],
         ),
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _PageIndicators
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Horizontal row of small dots showing which image in the rail is active.
+/// Rendered above the gold badge / more-options buttons; sits inside the
+/// card's clipped corners so it never punches through the gradient ring.
+///
+/// Wrapped in a translucent dark capsule so the dots stay legible against
+/// any photo — pure-white dots over a bright outdoor selfie used to wash
+/// out, and a per-dot drop shadow couldn't carry that on its own.  The
+/// capsule reads as a single intentional indicator pill rather than five
+/// stranded specks.
+class _PageIndicators extends StatelessWidget {
+  const _PageIndicators({required this.count, required this.index});
+
+  final int count;
+  final int index;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: Colors.black.withValues(alpha: 0.32),
+        borderRadius: BorderRadius.circular(99),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: List.generate(count, (i) {
+          final isActive = i == index;
+          return AnimatedContainer(
+            duration: const Duration(milliseconds: 220),
+            curve: Curves.easeOut,
+            margin: const EdgeInsets.symmetric(horizontal: 3),
+            width: isActive ? 18 : 6,
+            height: 6,
+            decoration: BoxDecoration(
+              color: isActive
+                  ? Colors.white
+                  : Colors.white.withValues(alpha: 0.55),
+              borderRadius: BorderRadius.circular(99),
+            ),
+          );
+        }),
       ),
     );
   }
@@ -457,15 +614,28 @@ class _BottomScrim extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Stops are tuned to the bottom-overlay geometry: the name+age band sits
+    // around 80% down the card (just above the 18 pt margin + 52 pt CTA +
+    // 18 pt gap + 36 pt name = ~124 pt from bottom).  So:
+    //   • 0.0 → 0.58: fully transparent — the upper portrait reads clean
+    //     and the photo's own composition (eyes, framing) carries the card.
+    //   • 0.58 → 0.82: ramp from 0 to ~63% black — the dim arrives just in
+    //     time to back the name without bleeding into the middle of the
+    //     image.  Lighter than the previous 0xBB middle so the transition
+    //     feels like a vignette, not a curtain.
+    //   • 0.82 → 1.0: ramp to 0xF2 (~95%) — full readability behind the
+    //     CTA pill on bright outdoor photos.
+    // The name itself also carries `Shadow(blurRadius: 10)` (see build()),
+    // so the scrim only needs to provide a backdrop, not full coverage.
     return Container(
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          stops: [0.30, 0.62, 1.0],
+          stops: [0.58, 0.82, 1.0],
           colors: [
             Colors.transparent,
-            Color(0xBB000000),
+            Color(0xA0000000),
             Color(0xF2000000),
           ],
         ),
@@ -507,4 +677,3 @@ class _GoldBadge extends StatelessWidget {
     );
   }
 }
-
