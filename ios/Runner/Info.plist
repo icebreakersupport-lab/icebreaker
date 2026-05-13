@@ -8,6 +8,14 @@
 	<string>ca-app-pub-9291120751046044~3292400402</string>
 	<key>NSUserTrackingUsageDescription</key>
 	<string>This identifier will be used to deliver personalized ads to you.</string>
+	<!-- Required because the com.apple.developer.usernotifications.communication
+	     entitlement is enabled.  Tells iOS which SiriKit Intent types this app
+	     supports as the destination for Communication Notifications (avatars
+	     + iMessage-style rich notification banners for chat messages). -->
+	<key>NSUserActivityTypes</key>
+	<array>
+		<string>INSendMessageIntent</string>
+	</array>
 	<key>SKAdNetworkItems</key>
 	<array>
 		<dict>
