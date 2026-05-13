@@ -43,6 +43,12 @@
 	<string>????</string>
 	<key>CFBundleVersion</key>
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
+	<!-- Declares that the app uses ONLY Apple-provided encryption (HTTPS via
+	     URLSession, Keychain).  Avoids the "App Encryption Documentation"
+	     dialog in App Store Connect after every upload.  ECCN 5D992
+	     exemption applies. -->
+	<key>ITSAppUsesNonExemptEncryption</key>
+	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSCameraUsageDescription</key>
