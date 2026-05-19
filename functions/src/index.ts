@@ -2183,34 +2183,93 @@ export const sendCustomVerificationEmail = onCall(
     const safeEmail = escapeHtml(user.email);
     const safeLink = escapeHtml(link);
 
-    const html = `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:560px;margin:0 auto;padding:32px 24px;color:#111;">
-        <h1 style="font-size:24px;font-weight:700;margin:0 0 12px;">Verify your email</h1>
-        <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 24px;">
-          Tap the button below to confirm <strong>${safeEmail}</strong> for Icebreaker.
-        </p>
-        <p style="margin:0 0 28px;">
-          <a href="${safeLink}" style="display:inline-block;background:#FF3B81;color:#fff;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:600;font-size:16px;">
-            Verify Email
-          </a>
-        </p>
-        <p style="font-size:13px;color:#777;margin:0 0 8px;">
-          Or paste this link into your browser:
-        </p>
-        <p style="font-size:13px;color:#777;margin:0 0 32px;word-break:break-all;">
-          <a href="${safeLink}" style="color:#777;">${safeLink}</a>
-        </p>
-        <p style="font-size:12px;color:#999;margin:0;border-top:1px solid #eee;padding-top:16px;">
-          You're receiving this because someone signed up for Icebreaker with this email address.
-          If that wasn't you, you can ignore this message.
-        </p>
-      </div>
-    `;
+    // Brand tokens (kept in sync with lib/core/theme/app_colors.dart).
+    //   bgBase   #090011  brandPink #FF1F6E  brandPurple #7B2FF7
+    //   brandCyan #00E5FF  textPrimary #FFFFFF  textSecondary #B0A4C0
+    //   textMuted #6A5F7A  divider #2A1040
+    //
+    // Inline-only styles because Gmail / iCloud / Yahoo strip <style> blocks.
+    // Background colors live on the table cells, not the body — most email
+    // clients won't honor a body background.
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Verify your email — Icebreaker</title>
+  </head>
+  <body style="margin:0;padding:0;background:#090011;">
+    <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">
+      Tap the button to verify ${safeEmail} and start meeting people in real life.
+    </span>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#090011;">
+      <tr>
+        <td align="center" style="padding:40px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;background:#130020;border:1px solid #2A1040;border-radius:24px;">
+            <tr>
+              <td style="padding:40px 32px 32px;text-align:center;">
+
+                <!-- Brand wordmark -->
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:30px;font-weight:800;letter-spacing:-0.5px;line-height:1;margin:0 0 8px;color:#FF1F6E;background:linear-gradient(90deg,#FF1F6E,#7B2FF7);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">
+                  Icebreaker
+                </div>
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;letter-spacing:2px;color:#00E5FF;text-transform:uppercase;margin:0 0 32px;">
+                  Stop swiping. Start meeting.
+                </div>
+
+                <!-- Headline -->
+                <h1 style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:26px;font-weight:800;color:#FFFFFF;margin:0 0 14px;letter-spacing:-0.4px;line-height:1.2;">
+                  Confirm your email
+                </h1>
+
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5;color:#B0A4C0;margin:0 0 32px;">
+                  Tap below to verify <strong style="color:#FFFFFF;">${safeEmail}</strong> so you can go live and meet people nearby.
+                </p>
+
+                <!-- CTA -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 28px;">
+                  <tr>
+                    <td style="background:#FF1F6E;background:linear-gradient(90deg,#FF1F6E,#7B2FF7);border-radius:999px;">
+                      <a href="${safeLink}" style="display:inline-block;padding:16px 40px;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;color:#FFFFFF;text-decoration:none;letter-spacing:0.3px;">
+                        Verify Email
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Fallback link -->
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;color:#6A5F7A;margin:0 0 6px;">
+                  Button not working? Paste this into your browser:
+                </p>
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.5;margin:0 0 32px;word-break:break-all;">
+                  <a href="${safeLink}" style="color:#00E5FF;text-decoration:none;">${safeLink}</a>
+                </p>
+
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px 32px;border-top:1px solid #2A1040;text-align:center;">
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.5;color:#6A5F7A;margin:0;">
+                  You're receiving this because someone signed up for Icebreaker with this email address. If that wasn't you, you can safely ignore this message — no account will be created.
+                </p>
+              </td>
+            </tr>
+          </table>
+          <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#6A5F7A;margin:20px 0 0;">
+            Icebreaker · icebreakerlive.com
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
 
     const text =
-      `Verify your email for Icebreaker.\n\n` +
-      `Open this link to confirm ${user.email}:\n${link}\n\n` +
-      `If you didn't sign up for Icebreaker, you can ignore this email.`;
+      `Icebreaker — Stop swiping. Start meeting.\n\n` +
+      `Confirm your email to go live and meet people nearby.\n\n` +
+      `Verify ${user.email}:\n${link}\n\n` +
+      `Didn't sign up for Icebreaker? You can safely ignore this email — no account will be created.\n\n` +
+      `Icebreaker · icebreakerlive.com`;
 
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
@@ -2222,7 +2281,7 @@ export const sendCustomVerificationEmail = onCall(
         from: VERIFY_FROM_EMAIL,
         to: [user.email],
         reply_to: VERIFY_REPLY_TO,
-        subject: 'Verify your email for Icebreaker',
+        subject: 'Confirm your Icebreaker email',
         html,
         text,
       }),
