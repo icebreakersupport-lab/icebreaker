@@ -1,12 +1,15 @@
 import { onDocumentWritten, onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { defineSecret } from 'firebase-functions/params';
 import * as functionsV1 from 'firebase-functions/v1';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { getAuth } from 'firebase-admin/auth';
 import { getStorage } from 'firebase-admin/storage';
+
+const RESEND_API_KEY = defineSecret('RESEND_API_KEY');
 
 initializeApp();
 
@@ -2115,3 +2118,132 @@ export const grantAdReward = onCall(async (request) => {
   );
   return result;
 });
+
+// ── Email verification via Resend ─────────────────────────────────────────────
+//
+// Firebase's built-in `sendEmailVerification` ships from
+// `noreply@<project>.firebaseapp.com`, which has zero sender reputation —
+// iCloud / Yahoo aggressively block it and Gmail routes it to spam.  This
+// callable replaces it with a server-generated verification link delivered
+// via Resend from a domain with SPF / DKIM / DMARC in place.
+//
+// Flow:
+//   1. Client calls `sendCustomVerificationEmail` while signed in.
+//   2. Function reads the authed user, generates a verification link with
+//      the Admin SDK (the same link Firebase Auth would have emailed), and
+//      POSTs it to the Resend HTTPS API.
+//   3. Resend handles delivery with proper authentication, so the message
+//      lands in the inbox instead of spam.
+//
+// The link Firebase generates is a `__/auth/action?mode=verifyEmail&oobCode=…`
+// URL.  Tapping it marks the user's email verified server-side; the existing
+// client reload() picks that up on the next focus.
+
+const VERIFY_FROM_EMAIL = 'Icebreaker <verify@icebreakerlive.com>';
+const VERIFY_REPLY_TO = 'icebreaker.support@gmail.com';
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export const sendCustomVerificationEmail = onCall(
+  { secrets: [RESEND_API_KEY] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required.');
+    }
+    const uid = request.auth.uid;
+
+    const user = await auth.getUser(uid);
+    if (!user.email) {
+      throw new HttpsError(
+        'failed-precondition',
+        'No email address on this account.',
+      );
+    }
+    if (user.emailVerified) {
+      return { ok: true, alreadyVerified: true };
+    }
+
+    const apiKey = RESEND_API_KEY.value();
+    if (!apiKey) {
+      console.error('[verify-email] RESEND_API_KEY secret not configured');
+      throw new HttpsError('internal', 'Email service not configured.');
+    }
+
+    // Admin SDK generates the same verification link Firebase Auth would
+    // have emailed itself — we just take delivery into our own hands.
+    const link = await auth.generateEmailVerificationLink(user.email);
+
+    const safeEmail = escapeHtml(user.email);
+    const safeLink = escapeHtml(link);
+
+    const html = `
+      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:560px;margin:0 auto;padding:32px 24px;color:#111;">
+        <h1 style="font-size:24px;font-weight:700;margin:0 0 12px;">Verify your email</h1>
+        <p style="font-size:16px;line-height:1.5;color:#444;margin:0 0 24px;">
+          Tap the button below to confirm <strong>${safeEmail}</strong> for Icebreaker.
+        </p>
+        <p style="margin:0 0 28px;">
+          <a href="${safeLink}" style="display:inline-block;background:#FF3B81;color:#fff;text-decoration:none;padding:14px 28px;border-radius:999px;font-weight:600;font-size:16px;">
+            Verify Email
+          </a>
+        </p>
+        <p style="font-size:13px;color:#777;margin:0 0 8px;">
+          Or paste this link into your browser:
+        </p>
+        <p style="font-size:13px;color:#777;margin:0 0 32px;word-break:break-all;">
+          <a href="${safeLink}" style="color:#777;">${safeLink}</a>
+        </p>
+        <p style="font-size:12px;color:#999;margin:0;border-top:1px solid #eee;padding-top:16px;">
+          You're receiving this because someone signed up for Icebreaker with this email address.
+          If that wasn't you, you can ignore this message.
+        </p>
+      </div>
+    `;
+
+    const text =
+      `Verify your email for Icebreaker.\n\n` +
+      `Open this link to confirm ${user.email}:\n${link}\n\n` +
+      `If you didn't sign up for Icebreaker, you can ignore this email.`;
+
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: VERIFY_FROM_EMAIL,
+        to: [user.email],
+        reply_to: VERIFY_REPLY_TO,
+        subject: 'Verify your email for Icebreaker',
+        html,
+        text,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '<no body>');
+      console.error(
+        `[verify-email] resend failed uid=${uid} status=${response.status} body=${errBody}`,
+      );
+      throw new HttpsError(
+        'internal',
+        'Could not send verification email. Please try again.',
+      );
+    }
+
+    const json = (await response.json().catch(() => ({}))) as { id?: string };
+    console.log(
+      `[verify-email] sent uid=${uid} to=${user.email} resendId=${json.id ?? 'unknown'}`,
+    );
+
+    return { ok: true };
+  },
+);

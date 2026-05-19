@@ -506,8 +506,14 @@ class _SettingsScreenState extends State<SettingsScreen>
         return;
       }
 
-      await freshUser.sendEmailVerification();
-      debugPrint('[verifyEmail] ✅ sent to ${freshUser.email}');
+      // Route through the Cloud Function so the verification email ships
+      // from our authenticated domain via Resend instead of Firebase's
+      // default `noreply@<project>.firebaseapp.com` sender, which iCloud
+      // and Yahoo aggressively filter and Gmail routes to spam.
+      final result = await FirebaseFunctions.instance
+          .httpsCallable('sendCustomVerificationEmail')
+          .call<Map<String, dynamic>>();
+      debugPrint('[verifyEmail] ✅ cloud function returned ${result.data}');
 
       if (mounted) {
         setState(() {
@@ -519,9 +525,30 @@ class _SettingsScreenState extends State<SettingsScreen>
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              'Email sent to ${freshUser.email} — check your inbox (and spam folder)',
+              'Email sent to ${freshUser.email} — check your inbox',
             ),
           ),
+        );
+      }
+    } on FirebaseFunctionsException catch (e) {
+      debugPrint('[verifyEmail] ❌ FirebaseFunctionsException:'
+          '\n  code=${e.code}'
+          '\n  message=${e.message}'
+          '\n  details=${e.details}');
+      if (mounted) {
+        setState(() => _emailSending = false);
+        final msg = switch (e.code) {
+          'unauthenticated' =>
+            'Session expired — please sign out and sign back in.',
+          'failed-precondition' =>
+            'No email address found on your account.',
+          'resource-exhausted' || 'unavailable' =>
+            'Email service is busy. Please try again in a moment.',
+          _ =>
+            'Could not send verification email. Please try again.',
+        };
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(msg)),
         );
       }
     } on FirebaseAuthException catch (e) {
@@ -532,8 +559,6 @@ class _SettingsScreenState extends State<SettingsScreen>
       if (mounted) {
         setState(() => _emailSending = false);
         final msg = switch (e.code) {
-          'too-many-requests' =>
-            'Firebase temporarily blocked this device. Wait a few minutes before trying again.',
           'user-token-expired' || 'invalid-user-token' =>
             'Session expired — please sign out and sign back in.',
           'network-request-failed' =>
@@ -541,9 +566,6 @@ class _SettingsScreenState extends State<SettingsScreen>
           _ =>
             'Could not send verification email (${e.code}). Please try again.',
         };
-        // On too-many-requests, impose the same 60-second client-side cooldown
-        // to stop the user hammering the button further.
-        if (e.code == 'too-many-requests') _startEmailCooldown(60);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text(msg)),
         );
