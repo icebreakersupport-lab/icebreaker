@@ -457,6 +457,36 @@ class UserProfile extends ChangeNotifier {
         _ => 'Everyone',
       };
 
+  // ── Gender canonicalisation ─────────────────────────────────────────────────
+
+  /// Normalise any legacy or user-typed gender value to the canonical
+  /// lowercase code used by the discovery filter.
+  ///
+  /// Canonical codes: `'male' | 'female' | 'non_binary' | 'other'`.
+  ///
+  /// Accepts every variant we've seen on disk:
+  ///   • The canonical codes themselves.
+  ///   • Title-case display labels (`'Male'`, `'Female'`, `'Non-binary'`).
+  ///   • Older onboarding values (`'man'`, `'woman'`).
+  ///   • Dashed / squashed variants (`'non-binary'`, `'nonbinary'`).
+  ///   • Single-letter shorthands (`'m'`, `'f'`).
+  ///
+  /// Anything unrecognised (including empty string) returns `''` so the
+  /// caller can detect "no gender on file" and fail closed in the mutual
+  /// filter — falling back to a default would silently leak users past
+  /// the orientation gate.
+  static String genderToCanonical(String raw) {
+    final v = raw.trim().toLowerCase();
+    if (v.isEmpty) return '';
+    if (v == 'male' || v == 'man' || v == 'm') return 'male';
+    if (v == 'female' || v == 'woman' || v == 'f') return 'female';
+    if (v == 'non_binary' || v == 'nonbinary' || v == 'non-binary') {
+      return 'non_binary';
+    }
+    if (v == 'other') return 'other';
+    return '';
+  }
+
   // ── State abbreviation helper ─────────────────────────────────────────────────
 
   /// Returns a short code for [state]:

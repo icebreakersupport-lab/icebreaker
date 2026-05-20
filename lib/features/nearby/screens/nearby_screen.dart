@@ -12,6 +12,7 @@ import '../../../core/models/live_session_model.dart';
 import '../../../core/services/blocks_repository.dart';
 import '../../../core/services/location_service.dart';
 import '../../../core/state/live_session.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
@@ -383,12 +384,19 @@ class _NearbyScreenState extends State<NearbyScreen>
       final profileData = results[0].exists ? results[0].data() : null;
       final userData = results[1].exists ? results[1].data() : null;
 
-      _myGender = (profileData?['gender'] as String?) ??
-          (userData?['gender'] as String?);
+      // Canonicalise on read so the mutual filter does not have to handle
+      // legacy / titlecase / squashed shapes downstream.  Falls back to
+      // empty string (NOT null) so the filter's "unknown gender → fail
+      // closed" branch fires deterministically.
+      final rawGender = (profileData?['gender'] as String?) ??
+          (userData?['gender'] as String?) ??
+          '';
+      final canonicalGender = UserProfile.genderToCanonical(rawGender);
+      _myGender = canonicalGender.isEmpty ? null : canonicalGender;
       _myAge = (profileData?['age'] as num?)?.toInt() ??
           (userData?['age'] as num?)?.toInt();
       debugPrint('[Nearby] stable profile loaded — '
-          'gender=$_myGender age=$_myAge '
+          'gender=$_myGender (raw="$rawGender") age=$_myAge '
           '(profiles=${profileData != null}, users=${userData != null})');
     } catch (e) {
       debugPrint('[Nearby] stable profile load failed (non-fatal): $e');
@@ -836,6 +844,11 @@ class _NearbyScreenState extends State<NearbyScreen>
   ///   `gender_mismatch_my`         — my interestedIn doesn't match their gender
   ///   `age_mismatch_my`            — they're outside my age range
   ///   `gender_mismatch_theirs`     — their interestedIn doesn't match my gender
+  ///   `my_gender_unknown`          — my own profile.gender is missing/invalid
+  ///                                   (fail-closed against specific prefs)
+  ///   `their_interested_in_missing` — their session has no interestedInSnapshot
+  ///                                   AND no legacy showMeSnapshot — corrupt
+  ///                                   session, exclude rather than fail open
   ///   `age_mismatch_theirs`        — I'm outside their age range
   ///   `missing_lat_lng`            — session doc has no position fields yet
   ///   `no_self_position`           — I haven't resolved my own GPS yet
@@ -865,8 +878,14 @@ class _NearbyScreenState extends State<NearbyScreen>
     // Both sides' values come from the SESSION snapshots, not from the
     // mutable users doc, so that a mid-session Settings edit by either
     // party cannot re-enter the running session.
+    //
+    // Gender is canonicalised on read because the on-disk values come from
+    // multiple historical write paths ('Male' / 'man' / 'male') and the
+    // matching helper does strict equality.  Empty / unrecognised gender
+    // fails closed in the helper.
 
-    final theirGender = prof['gender'] as String? ?? '';
+    final theirGender =
+        UserProfile.genderToCanonical(prof['gender'] as String? ?? '');
     final theirAge = (prof['age'] as num?)?.toInt();
 
     final myInterestedIn = _myInterestedIn;
@@ -885,14 +904,29 @@ class _NearbyScreenState extends State<NearbyScreen>
     // legacy `showMeSnapshot` key is read as a fallback so any session
     // written before the cutover keeps filtering correctly until it
     // expires (max 1 h).
-    final theirInterestedIn = (sess['interestedInSnapshot'] as String?) ??
-        (sess['showMeSnapshot'] as String?) ??
-        'everyone';
+    //
+    // If BOTH keys are missing the session is malformed — fail closed by
+    // returning a distinct reason code instead of defaulting to 'everyone'
+    // (which previously made every malformed session visible to every
+    // user, defeating the orientation gate).
+    final theirInterestedInRaw = (sess['interestedInSnapshot'] as String?) ??
+        (sess['showMeSnapshot'] as String?);
+    if (theirInterestedInRaw == null || theirInterestedInRaw.isEmpty) {
+      return 'their_interested_in_missing';
+    }
+    final theirInterestedIn =
+        UserProfile.interestedInToCanonical(theirInterestedInRaw);
+
     final myGender = _myGender;
-    if (myGender != null &&
-        theirInterestedIn != 'everyone' &&
-        !_genderMatchesInterestedIn(myGender, theirInterestedIn)) {
-      return 'gender_mismatch_theirs';
+    if (theirInterestedIn != 'everyone') {
+      // If MY own profile.gender is missing/invalid, we cannot evaluate
+      // whether their specific preference accepts me.  Fail closed: hide
+      // the candidate rather than fall through (the old behaviour silently
+      // bypassed the orientation gate when gender was unset).
+      if (myGender == null) return 'my_gender_unknown';
+      if (!_genderMatchesInterestedIn(myGender, theirInterestedIn)) {
+        return 'gender_mismatch_theirs';
+      }
     }
 
     final theirAgeMin = (sess['ageRangeMinSnapshot'] as num?)?.toInt() ??
@@ -1457,14 +1491,32 @@ class _NearbyScreenState extends State<NearbyScreen>
 
   /// Returns true when [gender] is compatible with an [interestedIn] preference.
   ///
-  /// gender values       : 'male' | 'female' | 'non_binary' | 'other'
+  /// gender values       : 'male' | 'female' | 'non_binary' | 'other' | ''
   /// interestedIn values : 'everyone' | 'men' | 'women' | 'non_binary'
+  ///
+  /// Both inputs are expected to be canonical lowercase — call
+  /// [UserProfile.genderToCanonical] / [UserProfile.interestedInToCanonical]
+  /// before passing legacy or user-typed values.
+  ///
+  /// Semantics:
+  ///   • Empty / unknown gender FAILS CLOSED — a candidate whose gender is
+  ///     unknown is hidden from anyone with a specific preference.  The
+  ///     prior "fail open" default was the root cause of TestFlight users
+  ///     seeing carousel candidates that didn't match their orientation.
+  ///   • 'other' gender matches BOTH 'non_binary' and 'everyone' so
+  ///     non-cisgender users aren't invisible to users with specific
+  ///     preferences.
+  ///   • Unknown interestedIn values still fail open (logged upstream) —
+  ///     this only fires for corrupted data, not normal flow.
   bool _genderMatchesInterestedIn(String gender, String interestedIn) {
     if (interestedIn == 'everyone') return true;
+    if (gender.isEmpty) return false; // fail closed on unknown gender
     if (interestedIn == 'men') return gender == 'male';
     if (interestedIn == 'women') return gender == 'female';
-    if (interestedIn == 'non_binary') return gender == 'non_binary';
-    return true; // unrecognised value — don't filter
+    if (interestedIn == 'non_binary') {
+      return gender == 'non_binary' || gender == 'other';
+    }
+    return true; // unrecognised interestedIn — permissive (no rule to apply)
   }
 
   void _retryDiscovery() {

@@ -14,8 +14,12 @@ import '../../../shared/widgets/icebreaker_logo.dart';
 ///
 /// Firestore storage:
 ///   • profiles/{uid}.interestedIn  String  — canonical lowercase code
-///     ('women' | 'men' | 'everyone' — non_binary is added in Edit Profile)
+///     ('women' | 'men' | 'non_binary' | 'everyone')
 ///   • users/{uid}.interestedIn     String  — mirror of the canonical value
+///
+/// The four options here match Edit Profile so a user's onboarding choice
+/// stays editable post-onboarding without surfacing a new option only
+/// available later.
 ///
 /// The retired field name `openTo` is no longer written; both the Nearby
 /// snapshot reader and the sign-in resume gate continue to accept the old
@@ -244,11 +248,13 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
 enum _OpenToOption {
   women,
   men,
+  nonBinary,
   everyone;
 
   String get displayLabel => switch (this) {
         _OpenToOption.women => 'Women',
         _OpenToOption.men => 'Men',
+        _OpenToOption.nonBinary => 'Non-binary',
         _OpenToOption.everyone => 'Everyone',
       };
 
@@ -256,6 +262,7 @@ enum _OpenToOption {
   String get firestoreValue => switch (this) {
         _OpenToOption.women => 'women',
         _OpenToOption.men => 'men',
+        _OpenToOption.nonBinary => 'non_binary',
         _OpenToOption.everyone => 'everyone',
       };
 
@@ -263,6 +270,7 @@ enum _OpenToOption {
   String get subtitle => switch (this) {
         _OpenToOption.women => 'Show me women nearby',
         _OpenToOption.men => 'Show me men nearby',
+        _OpenToOption.nonBinary => 'Show me non-binary people nearby',
         _OpenToOption.everyone => 'Show me everyone nearby',
       };
 }
