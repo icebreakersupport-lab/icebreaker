@@ -1176,16 +1176,25 @@ class _SettingsScreenState extends State<SettingsScreen>
         // match-confirmed, and session-start alerts.
         const _SectionHeader(title: 'Notifications'),
         _SettingsCard(items: [
-          // Do Not Disturb: silences chat/message push notifications while the
-          // user is not live.  Auto-cleared to false when a session starts
-          // (LiveSession.goLive writes doNotDisturb: false to Firestore).
-          // Has no effect on discoverability — that is governed by live session
-          // state only.
+          // Do Not Disturb: silences NON-urgent push notifications while the
+          // user is not live.  When DND is on we still wake the phone for
+          // time-critical events (incoming icebreaker, your icebreaker
+          // about to expire, meetup starting, talk timer ending, session
+          // ending soon) — the alternative is letting those slip past the
+          // 5–10 minute response windows that drive the whole product.
+          //
+          // DND silences instead: chat messages, match-confirmed pings,
+          // your own outbound icebreaker reminders, credit refresh
+          // reminders, and the 24-h "say hi before this goes cold" nudge.
+          //
+          // Auto-cleared to false when a session starts (LiveSession.goLive
+          // writes doNotDisturb: false to Firestore).  Has no effect on
+          // discoverability — that is governed by live session state only.
           _SettingsToggleRow(
             icon: Icons.do_not_disturb_on_outlined,
             iconColor: AppColors.brandPurple,
             label: 'Do Not Disturb',
-            subtitle: 'Silence chats when not live',
+            subtitle: 'Silence non-urgent pings when not live',
             value: s.doNotDisturb,
             onChanged: (v) {
               setState(() => s.doNotDisturb = v);

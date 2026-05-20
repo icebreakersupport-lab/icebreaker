@@ -330,6 +330,10 @@ export const onMeetupDecisionWritten = onDocumentWritten(
           otherUserId: uid2,
         },
         channelId: 'match_confirmed',
+        // DND-respecting: chat-unlock is celebratory but not time-critical.
+        // If the user has put their phone down, this can wait — the match
+        // record + conversation are already created and waiting.
+        respectDoNotDisturb: true,
         userData: user1,
       }),
       sendPreferenceGatedPush({
@@ -345,6 +349,7 @@ export const onMeetupDecisionWritten = onDocumentWritten(
           otherUserId: uid1,
         },
         channelId: 'match_confirmed',
+        respectDoNotDisturb: true,
         userData: user2,
       }),
     ]);
@@ -1108,6 +1113,10 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
           otherUserId: recipientId,
         },
         channelId: 'icebreaker_reminders',
+        // DND-respecting on the sender side: the user can't take action
+        // here, it's their own outbound that hasn't been answered yet — no
+        // reason to wake their phone if they've put it down.
+        respectDoNotDisturb: true,
         userData: senderSnap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1125,6 +1134,10 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
           otherUserId: senderId,
         },
         channelId: 'icebreaker_reminders',
+        // NOT DND-respecting on the recipient side: they have ~60 s left
+        // to act on an incoming icebreaker.  Their explicit DND choice is
+        // overridden because the alternative is letting the icebreaker
+        // expire silently.
         userData: recipientSnap.data(),
       }),
     ]);
@@ -1251,6 +1264,9 @@ export const onIcebreakerCreditsRefreshed = onSchedule(
           type: 'icebreaker_credits_refreshed',
         },
         channelId: 'icebreaker_reminders',
+        // DND-respecting: purely promotional reminder.  Nothing the user
+        // needs to act on this minute.
+        respectDoNotDisturb: true,
         userData: data,
       });
 
@@ -1325,6 +1341,9 @@ export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
           otherUserId: uid2,
         },
         channelId: 'match_reminders',
+        // DND-respecting: this is a 24-h-old nudge, not a real-time event.
+        // If the user has put their phone down, this can wait.
+        respectDoNotDisturb: true,
         userData: u1Snap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1339,6 +1358,7 @@ export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
           otherUserId: uid1,
         },
         channelId: 'match_reminders',
+        respectDoNotDisturb: true,
         userData: u2Snap.data(),
       }),
     ]);
