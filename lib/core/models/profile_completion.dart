@@ -111,6 +111,7 @@ class ProfileCompletionScore {
   factory ProfileCompletionScore.fromProfile(
     UserProfile profile, {
     required bool hasLiveSelfie,
+    required bool emailVerified,
   }) {
     return ProfileCompletionScore([
       // ── Account Basics — 30 pts ─────────────────────────────────────────
@@ -131,13 +132,14 @@ class ProfileCompletionScore {
         isComplete: true,
         hint: 'Enable location permissions in System Settings',
       ),
-      const ProfileCompletionItem(
+      ProfileCompletionItem(
         id: 'email',
         title: 'Email Verified',
         description: 'Your email address has been confirmed',
         points: 7,
         category: ProfileCompletionCategory.basics,
-        isComplete: true,
+        isComplete: emailVerified,
+        hint: 'Verify your email in Settings',
       ),
       ProfileCompletionItem(
         id: 'preferences',
@@ -176,7 +178,8 @@ class ProfileCompletionScore {
         points: 7,
         category: ProfileCompletionCategory.media,
         isComplete: profile.video != null,
-        hint: 'Upload a short video in My Gallery',
+        hint:
+            'Upload a short video in My Gallery. Note: intro video is not yet persisted across app restarts.',
       ),
 
       // ── Personality — 25 pts ────────────────────────────────────────────
@@ -224,6 +227,13 @@ class ProfileCompletionScore {
             'Real-time selfie verification builds trust with nearby users',
         points: 15,
         category: ProfileCompletionCategory.verification,
+        // Was previously also checking `profile.hasLivePhotoVerification`,
+        // but that getter was never implemented on UserProfile — the
+        // reference broke the build at kernel_snapshot. The current live
+        // session's selfie flag is the only authoritative signal we have,
+        // and it's already passed in via [hasLiveSelfie].  If we ever
+        // persist a "verified within last N days" flag on the profile, add
+        // it back here as a `|| profile.theNewFlag` clause.
         isComplete: hasLiveSelfie,
         hint: 'Tap GO LIVE on the Home tab to complete verification',
       ),
