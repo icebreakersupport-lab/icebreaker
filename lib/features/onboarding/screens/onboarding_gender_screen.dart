@@ -4,20 +4,27 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/profile_repository.dart';
+import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 
-/// Onboarding — Step 3: Gender.
+/// Onboarding — Step 3: Gender + who you're open to meeting.
 ///
-/// Firestore storage (users/{uid}):
-///   gender       String  — canonical value ('male' | 'female' | 'non_binary' | 'other')
-///   genderCustom String? — only present when gender == 'other'; holds the user's
-///                          free-text self-description
+/// Combines what used to be two separate screens (Gender and Open To) into
+/// one — both are single-tap selections that together define the orientation
+/// gate the Nearby carousel runs.  The standalone Open To screen file still
+/// exists as a fallback (e.g. for accounts mid-flow under the prior code
+/// path) but the new flow writes both values from here.
 ///
-/// Keeping the canonical value separate from the custom label allows the
-/// discovery/filtering layer to query on gender without parsing free text.
-/// The custom label is for display only.
+/// Firestore storage (users/{uid} + profiles/{uid}):
+///   gender         String  — 'male' | 'female' | 'non_binary' | 'other'
+///   genderCustom   String? — only when gender == 'other'
+///   interestedIn   String  — 'women' | 'men' | 'non_binary' | 'everyone'
+///
+/// `openTo` is intentionally NOT written — that's a legacy field name.  The
+/// sign-in resume gate now checks `interestedIn` instead.
 class OnboardingGenderScreen extends StatefulWidget {
   const OnboardingGenderScreen({super.key});
 
@@ -26,9 +33,10 @@ class OnboardingGenderScreen extends StatefulWidget {
 }
 
 class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
-  Gender? _selected;
+  Gender? _selectedGender;
+  _OpenToOption? _selectedOpenTo;
 
-  // Self-describe text field — only active when _selected == Gender.other
+  // Self-describe text field — only active when gender == Gender.other
   final _customController = TextEditingController();
   final _customFocus = FocusNode();
 
@@ -58,8 +66,8 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
   String get _customTrimmed => _customController.text.trim();
 
   bool get _isValid {
-    if (_selected == null) return false;
-    if (_selected == Gender.other) {
+    if (_selectedGender == null || _selectedOpenTo == null) return false;
+    if (_selectedGender == Gender.other) {
       return _customTrimmed.length >= 2 &&
           _customTrimmed.length <= _customMaxLength &&
           _hasLetter.hasMatch(_customTrimmed);
@@ -67,11 +75,11 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
     return true;
   }
 
-  // ─── Option tap ─────────────────────────────────────────────────────────────
+  // ─── Option taps ───────────────────────────────────────────────────────────
 
-  void _onOptionTap(Gender gender) {
+  void _onGenderTap(Gender gender) {
     setState(() {
-      _selected = gender;
+      _selectedGender = gender;
       _errorMessage = null;
     });
     if (gender == Gender.other) {
@@ -82,6 +90,13 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
     } else {
       _customFocus.unfocus();
     }
+  }
+
+  void _onOpenToTap(_OpenToOption option) {
+    setState(() {
+      _selectedOpenTo = option;
+      _errorMessage = null;
+    });
   }
 
   // ─── Save + advance ─────────────────────────────────────────────────────────
@@ -95,28 +110,41 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
       _errorMessage = null;
     });
 
-    final gender = _selected!;
+    final gender = _selectedGender!;
+    final openTo = _selectedOpenTo!;
     final uid = FirebaseAuth.instance.currentUser?.uid;
 
     // ── Firestore ─────────────────────────────────────────────────────────────
     if (uid != null) {
       try {
-        final Map<String, dynamic> payload = {
+        final Map<String, dynamic> userPayload = {
           'gender': gender.firestoreValue,
+          'interestedIn': openTo.firestoreValue,
         };
         if (gender == Gender.other) {
-          payload['genderCustom'] = _customTrimmed;
+          userPayload['genderCustom'] = _customTrimmed;
         } else {
           // Clear any previous custom value if the user went back and changed.
-          payload['genderCustom'] = FieldValue.delete();
+          userPayload['genderCustom'] = FieldValue.delete();
         }
 
-        await FirebaseFirestore.instance
-            .collection('users')
-            .doc(uid)
-            .set(payload, SetOptions(merge: true));
+        // Dual-write to users/{uid} (legacy/private surface) and profiles/{uid}
+        // (canonical public surface). Both stores must carry interestedIn and
+        // gender because the Nearby filter reads from both as a fallback chain.
+        await Future.wait([
+          FirebaseFirestore.instance
+              .collection('users')
+              .doc(uid)
+              .set(userPayload, SetOptions(merge: true)),
+          ProfileRepository().setFields(uid, {
+            'gender': gender.firestoreValue,
+            'interestedIn': openTo.firestoreValue,
+            if (gender == Gender.other) 'genderCustom': _customTrimmed,
+          }),
+        ]);
         // ignore: avoid_print
-        print('[Onboarding/Gender] ✅ gender=${gender.firestoreValue}'
+        print('[Onboarding/Gender] ✅ gender=${gender.firestoreValue} '
+            'interestedIn=${openTo.firestoreValue}'
             '${gender == Gender.other ? ' custom="$_customTrimmed"' : ''}');
       } on FirebaseException catch (e) {
         // ignore: avoid_print
@@ -139,9 +167,28 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
       }
     }
 
-    // ── Advance ───────────────────────────────────────────────────────────────
+    // ── In-memory profile mirror ──────────────────────────────────────────────
+    if (mounted) {
+      final p = UserProfileScope.of(context);
+      p.saveTextFields(
+        firstName: p.firstName,
+        age: p.age,
+        bio: p.bio,
+        occupation: p.occupation,
+        height: p.height,
+        lookingFor: p.lookingFor,
+        interestedIn: openTo.firestoreValue,
+        ageRange: p.ageRange,
+        interests: p.interests,
+        hobbies: p.hobbies,
+        maxDistanceMeters: p.maxDistanceMeters,
+      );
+    }
+
+    // ── Advance — skip the standalone Open To screen AND the now-removed
+    //              Orientation screen, jump straight to Location.
     if (!mounted) return;
-    context.go(AppRoutes.onboardingOpenTo);
+    context.go(AppRoutes.onboardingLocation);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────
@@ -150,7 +197,6 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.bgBase,
-      // false — keyboard inset handled manually via viewInsets in button padding.
       resizeToAvoidBottomInset: false,
       body: SafeArea(
         bottom: false,
@@ -166,63 +212,67 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    const SizedBox(height: 52),
+                    const SizedBox(height: 44),
 
                     const Center(
-                        child: IcebreakerLogo(size: 56, showGlow: false)),
-                    const SizedBox(height: 32),
+                        child: IcebreakerLogo(size: 52, showGlow: false)),
+                    const SizedBox(height: 24),
 
                     Text(
-                      "What's your gender?",
+                      'About you',
                       style: AppTextStyles.h2,
                       textAlign: TextAlign.center,
                     ),
-                    const SizedBox(height: 8),
+                    const SizedBox(height: 6),
 
                     Text(
-                      'This helps us show you relevant people and build your profile.',
+                      'Both help us show you the right people nearby.',
                       style: AppTextStyles.bodyS,
                       textAlign: TextAlign.center,
                     ),
 
-                    const SizedBox(height: 32),
+                    const SizedBox(height: 28),
 
-                    // ── Options ───────────────────────────────────────────────
-                    _GenderOption(
+                    // ── Gender section ────────────────────────────────────────
+                    _SectionLabel(text: "I'm a"),
+                    const SizedBox(height: 10),
+
+                    _PickerOption(
                       label: 'Woman',
-                      isSelected: _selected == Gender.female,
-                      onTap: () => _onOptionTap(Gender.female),
+                      isSelected: _selectedGender == Gender.female,
+                      onTap: () => _onGenderTap(Gender.female),
                     ),
-                    const SizedBox(height: 12),
-                    _GenderOption(
+                    const SizedBox(height: 8),
+                    _PickerOption(
                       label: 'Man',
-                      isSelected: _selected == Gender.male,
-                      onTap: () => _onOptionTap(Gender.male),
+                      isSelected: _selectedGender == Gender.male,
+                      onTap: () => _onGenderTap(Gender.male),
                     ),
-                    const SizedBox(height: 12),
-                    _GenderOption(
+                    const SizedBox(height: 8),
+                    _PickerOption(
                       label: 'Non-binary',
-                      isSelected: _selected == Gender.nonBinary,
-                      onTap: () => _onOptionTap(Gender.nonBinary),
+                      isSelected: _selectedGender == Gender.nonBinary,
+                      onTap: () => _onGenderTap(Gender.nonBinary),
                     ),
-                    const SizedBox(height: 12),
-                    _GenderOption(
+                    const SizedBox(height: 8),
+                    _PickerOption(
                       label: 'Prefer to self-describe',
-                      isSelected: _selected == Gender.other,
-                      onTap: () => _onOptionTap(Gender.other),
+                      isSelected: _selectedGender == Gender.other,
+                      onTap: () => _onGenderTap(Gender.other),
                     ),
 
                     // Self-describe text field — slides in when selected
                     AnimatedSize(
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeOutCubic,
-                      child: _selected == Gender.other
+                      child: _selectedGender == Gender.other
                           ? Padding(
-                              padding: const EdgeInsets.only(top: 16),
+                              padding: const EdgeInsets.only(top: 12),
                               child: TextField(
                                 controller: _customController,
                                 focusNode: _customFocus,
-                                textCapitalization: TextCapitalization.sentences,
+                                textCapitalization:
+                                    TextCapitalization.sentences,
                                 textInputAction: TextInputAction.done,
                                 maxLength: _customMaxLength,
                                 enabled: !_isSaving,
@@ -244,11 +294,26 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
                                     ),
                                   ),
                                 ),
-                                onSubmitted: (_) => _save(),
                               ),
                             )
                           : const SizedBox.shrink(),
                     ),
+
+                    const SizedBox(height: 24),
+
+                    // ── Interested in section ─────────────────────────────────
+                    _SectionLabel(text: 'Interested in meeting'),
+                    const SizedBox(height: 10),
+
+                    for (final option in _OpenToOption.values) ...[
+                      _PickerOption(
+                        label: option.displayLabel,
+                        isSelected: _selectedOpenTo == option,
+                        onTap: () => _onOpenToTap(option),
+                      ),
+                      if (option != _OpenToOption.values.last)
+                        const SizedBox(height: 8),
+                    ],
 
                     // Error message
                     AnimatedSize(
@@ -284,8 +349,6 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
             ),
 
             // ── Continue button pinned at bottom ─────────────────────────────
-            // Padding includes keyboard height so the button floats above the
-            // keyboard when the self-describe field is focused.
             AnimatedPadding(
               duration: const Duration(milliseconds: 180),
               curve: Curves.easeOut,
@@ -341,15 +404,37 @@ class _OnboardingGenderScreenState extends State<OnboardingGenderScreen> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// _GenderOption
+// Section label
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Full-width tappable option card.
+class _SectionLabel extends StatelessWidget {
+  const _SectionLabel({required this.text});
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: AppTextStyles.caption.copyWith(
+        color: AppColors.brandCyan,
+        fontWeight: FontWeight.w700,
+        letterSpacing: 1.2,
+      ),
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _PickerOption — shared option card used by both pickers on this screen
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// Compact tappable option card (48px tall — smaller than the single-purpose
+/// gender screen's 56px row so both pickers fit comfortably on one screen).
 ///
 /// Selected state: brand-pink border + soft pink fill tint + check icon.
 /// Unselected state: subtle divider border + dark input fill.
-class _GenderOption extends StatelessWidget {
-  const _GenderOption({
+class _PickerOption extends StatelessWidget {
+  const _PickerOption({
     required this.label,
     required this.isSelected,
     required this.onTap,
@@ -365,8 +450,8 @@ class _GenderOption extends StatelessWidget {
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
-        height: 56,
-        padding: const EdgeInsets.symmetric(horizontal: 20),
+        height: 48,
+        padding: const EdgeInsets.symmetric(horizontal: 18),
         decoration: BoxDecoration(
           color: isSelected
               ? AppColors.brandPink.withValues(alpha: 0.10)
@@ -396,7 +481,7 @@ class _GenderOption extends StatelessWidget {
               child: const Icon(
                 Icons.check_circle_rounded,
                 color: AppColors.brandPink,
-                size: 20,
+                size: 18,
               ),
             ),
           ],
@@ -404,4 +489,33 @@ class _GenderOption extends StatelessWidget {
       ),
     );
   }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// _OpenToOption — canonical preference values for the Interested-In picker.
+//
+// Mirrors the standalone OnboardingOpenToScreen's options exactly so the
+// two paths produce identical Firestore writes.  Non-binary is included for
+// parity with Edit Profile.
+// ─────────────────────────────────────────────────────────────────────────────
+
+enum _OpenToOption {
+  women,
+  men,
+  nonBinary,
+  everyone;
+
+  String get displayLabel => switch (this) {
+        _OpenToOption.women => 'Women',
+        _OpenToOption.men => 'Men',
+        _OpenToOption.nonBinary => 'Non-binary',
+        _OpenToOption.everyone => 'Everyone',
+      };
+
+  String get firestoreValue => switch (this) {
+        _OpenToOption.women => 'women',
+        _OpenToOption.men => 'men',
+        _OpenToOption.nonBinary => 'non_binary',
+        _OpenToOption.everyone => 'everyone',
+      };
 }

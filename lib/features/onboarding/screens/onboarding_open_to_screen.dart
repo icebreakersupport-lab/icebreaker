@@ -115,8 +115,11 @@ class _OnboardingOpenToScreenState extends State<OnboardingOpenToScreen> {
     }
 
     // ── Advance ───────────────────────────────────────────────────────────────
+    // Orientation screen is no longer part of the signup flow — jump straight
+    // to Location.  The orientation field can still be set later from Edit
+    // Profile if the user wants to share it.
     if (!mounted) return;
-    context.go(AppRoutes.onboardingOrientation);
+    context.go(AppRoutes.onboardingLocation);
   }
 
   // ─── Build ───────────────────────────────────────────────────────────────────

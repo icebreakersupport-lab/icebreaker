@@ -74,6 +74,13 @@ dependencies:
   # serve personalized ads. Skipping the prompt drops eCPM significantly.
   app_tracking_transparency: ^2.0.4
 
+  # Apple Sign In — required by App Store if any third-party social login is
+  # offered. Also dramatically faster than email/password signup for the 80%+
+  # of iOS users with an Apple ID. Pairs with `crypto` for the Sign in with
+  # Apple nonce, which Firebase Auth requires for replay protection.
+  sign_in_with_apple: ^6.1.0
+  crypto: ^3.0.3
+
 
 dev_dependencies:
   flutter_test:

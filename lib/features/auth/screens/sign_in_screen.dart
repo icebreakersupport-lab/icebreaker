@@ -2,7 +2,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/apple_auth_service.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
@@ -23,6 +25,8 @@ class _SignInScreenState extends State<SignInScreen> {
   final _passwordFocus = FocusNode();
 
   bool _isLoading = false;
+  bool _isAppleLoading = false;
+  bool _appleAvailable = false;
   String? _errorMessage;
 
   @override
@@ -31,6 +35,11 @@ class _SignInScreenState extends State<SignInScreen> {
     // Rebuild on every keystroke so _isValid / button-enabled state stays current.
     _emailController.addListener(() => setState(() {}));
     _passwordController.addListener(() => setState(() {}));
+
+    AppleAuthService.isAvailable().then((available) {
+      if (!mounted) return;
+      setState(() => _appleAvailable = available);
+    });
   }
 
   @override
@@ -200,14 +209,73 @@ class _SignInScreenState extends State<SignInScreen> {
 
   /// Returns the onboarding route where the user dropped off by checking which
   /// required fields are already present in their Firestore document.
+  ///
+  /// Resume order (matches the live flow):
+  ///   name → birthday → gender+interestedIn (combined screen) → location → photo
+  ///
+  /// Orientation is intentionally NOT gated — it was removed from signup and
+  /// is now an optional field set from Edit Profile.  The `openTo` legacy
+  /// field is also not gated; the canonical key is `interestedIn`, and the
+  /// combined gender screen writes both gender + interestedIn together.
   String _resumeOnboardingRoute(Map<String, dynamic> data) {
     if (data['firstName'] == null) return AppRoutes.onboardingName;
     if (data['birthday'] == null) return AppRoutes.onboardingBirthday;
-    if (data['gender'] == null) return AppRoutes.onboardingGender;
-    if (data['openTo'] == null) return AppRoutes.onboardingOpenTo;
+    // Either gender or interestedIn missing → back to the combined screen.
+    // Older accounts may have one but not the other (gender screen used to
+    // write only gender, then advance to a separate Open To screen).
+    if (data['gender'] == null || data['interestedIn'] == null) {
+      return AppRoutes.onboardingGender;
+    }
     if (data['hometown'] == null) return AppRoutes.onboardingLocation;
     // Has all text data but didn't finish — resume at photo/slideshow.
     return AppRoutes.onboardingPhoto;
+  }
+
+  /// Apple Sign In path — also covers new-account creation when Apple
+  /// returns a uid we haven't seen.  The post-auth gate then walks the user
+  /// through onboarding the same way an email signup would.
+  Future<void> _signInWithApple() async {
+    if (_isAppleLoading || _isLoading) return;
+    setState(() {
+      _isAppleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final user = await AppleAuthService.signIn();
+      if (user == null) {
+        if (mounted) setState(() => _isAppleLoading = false);
+        return;
+      }
+      if (!mounted) return;
+      // ignore: avoid_print
+      print('[SignIn/Apple] ✅ proceeding to route gate for uid=${user.uid}');
+      await _routeAfterAuth(user);
+    } on FirebaseAuthException catch (e) {
+      // ignore: avoid_print
+      print('[SignIn/Apple] ❌ FirebaseAuthException code=${e.code}');
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = _mapError(e.code);
+      });
+    } on SignInWithAppleAuthorizationException catch (e) {
+      // ignore: avoid_print
+      print('[SignIn/Apple] ❌ Apple authorization error: ${e.code}');
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = 'Apple Sign In failed. Please try again.';
+      });
+    } catch (e, st) {
+      // ignore: avoid_print
+      print('[SignIn/Apple] ❌ unexpected: $e\n$st');
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = 'Something went wrong. Please try again.';
+      });
+    }
   }
 
   String _mapError(String code) => switch (code) {
@@ -260,7 +328,19 @@ class _SignInScreenState extends State<SignInScreen> {
                     textAlign: TextAlign.center,
                   ),
 
-                  const SizedBox(height: 44),
+                  const SizedBox(height: 28),
+
+                  // ── Apple Sign In (top of fold) ──────────────────────────
+                  if (_appleAvailable) ...[
+                    _AppleSignInButton(
+                      onTap: _signInWithApple,
+                      isLoading: _isAppleLoading,
+                      enabled: !_isLoading && !_isAppleLoading,
+                    ),
+                    const SizedBox(height: 18),
+                    const _OrDivider(),
+                    const SizedBox(height: 18),
+                  ],
 
                   // ── Email ────────────────────────────────────────────────
                   AuthTextField(
@@ -271,7 +351,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.email],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) =>
                         FocusScope.of(context).requestFocus(_passwordFocus),
                   ),
@@ -286,7 +366,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     isPassword: true,
                     textInputAction: TextInputAction.done,
                     autofillHints: const [AutofillHints.password],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) => _signIn(),
                   ),
 
@@ -428,6 +508,92 @@ class _AuthButton extends StatelessWidget {
               : Text(label, style: AppTextStyles.buttonL),
         ),
       ),
+    );
+  }
+}
+
+// ─── Apple Sign In button — HIG-compliant white pill with Apple logo ─────────
+
+class _AppleSignInButton extends StatelessWidget {
+  const _AppleSignInButton({
+    required this.onTap,
+    required this.isLoading,
+    required this.enabled,
+  });
+
+  final VoidCallback onTap;
+  final bool isLoading;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: enabled ? onTap : null,
+      child: AnimatedOpacity(
+        opacity: enabled ? 1.0 : 0.45,
+        duration: const Duration(milliseconds: 200),
+        child: Container(
+          height: 52,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(26),
+          ),
+          alignment: Alignment.center,
+          child: isLoading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Colors.black,
+                  ),
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.apple, color: Colors.black, size: 22),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Sign in with Apple',
+                      style: AppTextStyles.buttonL.copyWith(
+                        color: Colors.black,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── "or" divider between social and email/password sections ────────────────
+
+class _OrDivider extends StatelessWidget {
+  const _OrDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        const Expanded(
+          child: Divider(color: AppColors.divider, thickness: 1, height: 1),
+        ),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'or',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 1.2,
+            ),
+          ),
+        ),
+        const Expanded(
+          child: Divider(color: AppColors.divider, thickness: 1, height: 1),
+        ),
+      ],
     );
   }
 }

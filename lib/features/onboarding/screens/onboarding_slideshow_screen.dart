@@ -116,17 +116,39 @@ class _OnboardingSlideshowScreenState extends State<OnboardingSlideshowScreen> {
                 children: [
                   _DotIndicator(count: _slides.length, current: _current),
                   const Spacer(),
+                  // Skip is visible from slide 1 onward — hidden only on the
+                  // final slide because "Let's Go" already finishes the flow.
+                  // Pill-shaped, cyan-bordered, glow-tinted to read as a
+                  // first-class action instead of a barely-visible dim link.
                   if (!_isLast)
                     GestureDetector(
                       onTap: _finish,
                       behavior: HitTestBehavior.opaque,
-                      child: Padding(
+                      child: Container(
                         padding: const EdgeInsets.symmetric(
-                            horizontal: 4, vertical: 4),
+                            horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: AppColors.brandCyan.withValues(alpha: 0.10),
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(
+                            color: AppColors.brandCyan.withValues(alpha: 0.55),
+                            width: 1.2,
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color:
+                                  AppColors.brandCyan.withValues(alpha: 0.18),
+                              blurRadius: 12,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
                         child: Text(
                           'Skip',
-                          style: AppTextStyles.body.copyWith(
-                            color: Colors.white.withValues(alpha: 0.42),
+                          style: AppTextStyles.caption.copyWith(
+                            color: AppColors.brandCyan,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 1.0,
                           ),
                         ),
                       ),
