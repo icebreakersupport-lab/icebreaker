@@ -323,7 +323,7 @@ SHOTS = [
     ("05_send_ice.png", "Make the first move,\nthe respectful way.",    "05_first_move.png",          4),
     ("07_find.png",     "Find each other\nin the room.",                "06_find_each_other.png",    -3),
     ("08_talking.png",  "Ten minutes that matter.",                     "07_ten_minutes.png",         3),
-    ("12_shop.png",     "Stay ready when\nthe room is live.",           "08_stay_ready.png",         -3),
+    ("09_stay.png",     "Chat unlocks\nafter chemistry.",               "08_chat_unlocks.png",       -3),
     ("11_profile.png",  "Real people.\nReal places.",                   "09_real_people.png",         3),
 ]
 
