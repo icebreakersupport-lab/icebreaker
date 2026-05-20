@@ -61,10 +61,15 @@ type PreferenceGatedPush = {
   body: string;
   data: Record<string, string>;
   channelId: string;
-  respectDoNotDisturb?: boolean;
   userData?: FirebaseFirestore.DocumentData;
 };
 
+// Removed (2026-05-20): the `respectDoNotDisturb` flag + `doNotDisturb`
+// gating block.  iOS Focus modes + the system's per-app notification
+// settings already cover the "shush this app" use case, and the per-
+// category preference keys above give finer control inside the app.  The
+// `doNotDisturb` field on users/{uid} may still exist on legacy docs; it
+// is intentionally ignored now.
 async function sendPreferenceGatedPush({
   userId,
   preferenceKey,
@@ -73,7 +78,6 @@ async function sendPreferenceGatedPush({
   body,
   data,
   channelId,
-  respectDoNotDisturb = false,
   userData,
 }: PreferenceGatedPush): Promise<void> {
   const userRef = db.collection('users').doc(userId);
@@ -95,16 +99,6 @@ async function sendPreferenceGatedPush({
   const preferenceEnabled = (resolvedUserData[preferenceKey] as boolean | undefined) ?? true;
   if (!preferenceEnabled) {
     console.log(`[${logTag}] suppressed for ${userId}: ${preferenceKey}=false`);
-    return;
-  }
-
-  const isLive = (resolvedUserData.isLive as boolean | undefined) ?? false;
-  const doNotDisturb = (resolvedUserData.doNotDisturb as boolean | undefined) ?? false;
-  if (respectDoNotDisturb && !isLive && doNotDisturb) {
-    console.log(
-      `[${logTag}] suppressed for ${userId}: ` +
-        `isLive=${isLive} doNotDisturb=${doNotDisturb}`,
-    );
     return;
   }
 
@@ -333,7 +327,6 @@ export const onMeetupDecisionWritten = onDocumentWritten(
         // DND-respecting: chat-unlock is celebratory but not time-critical.
         // If the user has put their phone down, this can wait — the match
         // record + conversation are already created and waiting.
-        respectDoNotDisturb: true,
         userData: user1,
       }),
       sendPreferenceGatedPush({
@@ -349,7 +342,6 @@ export const onMeetupDecisionWritten = onDocumentWritten(
           otherUserId: uid1,
         },
         channelId: 'match_confirmed',
-        respectDoNotDisturb: true,
         userData: user2,
       }),
     ]);
@@ -417,18 +409,18 @@ export const onUserBlocked = onDocumentCreated(
 );
 
 /**
- * Chat message notification with Do Not Disturb enforcement.
+ * Chat message notification.
  *
  * Trigger: every new message document in conversations/{conversationId}/messages/{messageId}
  *
- * Suppression rules (DND gate):
- *   • If recipient.isLive == false AND recipient.doNotDisturb == true → skip.
- *   • isLive is written by the Flutter client in LiveSession.goLive() /
- *     endSession().  It is reset to false on cold-start crash recovery
- *     (hydrateCredits) so a force-killed session never leaves DND permanently
- *     active.
+ * Suppression rules (handled by sendPreferenceGatedPush):
+ *   • notifMessages preference false → skip.
+ *   • No FCM token → skip silently (token written by client on app init).
  *
- * No FCM token → skip silently (token written by client on app init; TODO).
+ * Do Not Disturb was removed (2026-05-20).  iOS Focus modes + the system's
+ * per-app notification settings handle "shush this app" at the OS level —
+ * an in-app DND toggle was redundant and confusing on top of that.
+ *
  * Stale/invalid token → delete token from user doc so future sends are skipped
  * until the client registers a fresh one.
  *
@@ -595,7 +587,6 @@ export const onNewChatMessage = onDocumentCreated(
         senderId,
       },
       channelId: 'chat_messages',
-      respectDoNotDisturb: true,
       userData: recipient,
     });
   },
@@ -1116,7 +1107,6 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
         // DND-respecting on the sender side: the user can't take action
         // here, it's their own outbound that hasn't been answered yet — no
         // reason to wake their phone if they've put it down.
-        respectDoNotDisturb: true,
         userData: senderSnap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1266,7 +1256,6 @@ export const onIcebreakerCreditsRefreshed = onSchedule(
         channelId: 'icebreaker_reminders',
         // DND-respecting: purely promotional reminder.  Nothing the user
         // needs to act on this minute.
-        respectDoNotDisturb: true,
         userData: data,
       });
 
@@ -1343,7 +1332,6 @@ export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
         channelId: 'match_reminders',
         // DND-respecting: this is a 24-h-old nudge, not a real-time event.
         // If the user has put their phone down, this can wait.
-        respectDoNotDisturb: true,
         userData: u1Snap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1358,7 +1346,6 @@ export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
           otherUserId: uid1,
         },
         channelId: 'match_reminders',
-        respectDoNotDisturb: true,
         userData: u2Snap.data(),
       }),
     ]);

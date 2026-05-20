@@ -17,7 +17,7 @@ import 'user_profile.dart';
 ///
 /// Dual-write is owned by [LiveSessionRepository]: every live-presence mutation
 /// commits BOTH the authoritative `live_sessions/{uid}` write AND the legacy
-/// `users/{uid}` mirror (`isLive`, position fields, `doNotDisturb`) in a single
+/// `users/{uid}` mirror (`isLive`, position fields) in a single
 /// Firestore batch, so the two stores either both land or both fail — no
 /// split-brain state is possible.  Phase 2 drops the mirror once the relevant
 /// Cloud Functions are cut over to read `live_sessions/{uid}` directly.

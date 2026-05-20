@@ -28,7 +28,6 @@ import '../../../shared/widgets/gradient_scaffold.dart';
 class _UserSettings {
   _UserSettings({
     this.photosToMatchesOnly = false,
-    this.doNotDisturb = false,
     this.subscriptionTier = 'free',
     this.notifReminders = true,
     this.notifIcebreakers = true,
@@ -42,12 +41,10 @@ class _UserSettings {
   /// Firestore field: photosToMatchesOnly.
   bool photosToMatchesOnly;
 
-  /// Firestore field: doNotDisturb.
-  /// Silences chat/message push notifications while the user is NOT live.
-  /// Auto-cleared to false by LiveSession.goLive() when a session starts.
-  /// Has no effect on discovery — discoverability is governed by live session
-  /// state only (isLive in users/{uid}, set/unset by the session flow).
-  bool doNotDisturb;
+  // Do Not Disturb was removed (2026-05-20) — iOS Focus modes + the
+  // per-category notification toggles below already cover everything DND
+  // was doing.  The on-disk `doNotDisturb` field on users/{uid} is no
+  // longer read or written by client or server; legacy values are harmless.
 
   // ── Account ────────────────────────────────────────────────────────────────
 
@@ -66,7 +63,6 @@ class _UserSettings {
   factory _UserSettings.fromFirestore(Map<String, dynamic> data) {
     return _UserSettings(
       photosToMatchesOnly: (data['photosToMatchesOnly'] as bool?) ?? false,
-      doNotDisturb: (data['doNotDisturb'] as bool?) ?? false,
       subscriptionTier: (data['plan'] as String?) ?? 'free',
       notifReminders: (data['notifReminders'] as bool?) ?? true,
       notifIcebreakers: (data['notifIcebreakers'] as bool?) ?? true,
@@ -1176,31 +1172,13 @@ class _SettingsScreenState extends State<SettingsScreen>
         // match-confirmed, and session-start alerts.
         const _SectionHeader(title: 'Notifications'),
         _SettingsCard(items: [
-          // Do Not Disturb: silences NON-urgent push notifications while the
-          // user is not live.  When DND is on we still wake the phone for
-          // time-critical events (incoming icebreaker, your icebreaker
-          // about to expire, meetup starting, talk timer ending, session
-          // ending soon) — the alternative is letting those slip past the
-          // 5–10 minute response windows that drive the whole product.
-          //
-          // DND silences instead: chat messages, match-confirmed pings,
-          // your own outbound icebreaker reminders, credit refresh
-          // reminders, and the 24-h "say hi before this goes cold" nudge.
-          //
-          // Auto-cleared to false when a session starts (LiveSession.goLive
-          // writes doNotDisturb: false to Firestore).  Has no effect on
-          // discoverability — that is governed by live session state only.
-          _SettingsToggleRow(
-            icon: Icons.do_not_disturb_on_outlined,
-            iconColor: AppColors.brandPurple,
-            label: 'Do Not Disturb',
-            subtitle: 'Silence non-urgent pings when not live',
-            value: s.doNotDisturb,
-            onChanged: (v) {
-              setState(() => s.doNotDisturb = v);
-              _save('doNotDisturb', v);
-            },
-          ),
+          // Removed (2026-05-20): the Do Not Disturb toggle.  iOS Focus
+          // modes + the system's per-app notification settings already
+          // cover the "shush this app" use case, and the per-category
+          // toggles below give finer control.  Leaving a custom DND row
+          // on top of those was redundant and added a confusing fourth
+          // layer (per-category toggle → DND → iOS Focus → iOS app notif
+          // settings).
           _SettingsToggleRow(
             icon: Icons.alarm_on_outlined,
             iconColor: AppColors.warning,
