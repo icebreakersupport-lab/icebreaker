@@ -1670,6 +1670,62 @@ export const onMeetupFoundConfirmed = onDocumentWritten(
  * doesn't strand the other in 'talking'.  Bounded above by `limit(100)` per
  * run to keep the function fast; subsequent runs drain any backlog.
  */
+/**
+ * sendTalkExpiredPushes — fires a push notification to each participant of a
+ * meetup that just transitioned `talking` → `awaiting_post_talk_decision`.
+ *
+ * Why this is its own helper: BOTH paths into that transition (the every-1-min
+ * scheduler in [onMeetupTalkExpired] AND the client-driven trigger in
+ * [onTalkExpiredRequestCreated]) must produce the same downstream behaviour —
+ * a user whose phone is asleep when their 10-minute talk ends needs the push
+ * either way.  Centralising the send avoids drift between the two paths.
+ *
+ * Gated by the `notifMatchConfirmed` preference (same category as the
+ * meetup-match push, since the post-talk decision is the closing beat of
+ * that same match).  Skips silently when participants array is missing or
+ * malformed — we never block the status transition on a push send failure.
+ */
+async function sendTalkExpiredPushes(
+  meetupId: string,
+  meetupData: FirebaseFirestore.DocumentData,
+): Promise<void> {
+  const participants = meetupData.participants;
+  if (!Array.isArray(participants)) {
+    console.warn(
+      `[meetup-talk-expired-push] ${meetupId} has no participants array — skipping`,
+    );
+    return;
+  }
+  const names =
+    (meetupData.participantNames as Record<string, string> | undefined) ?? {};
+  await Promise.all(
+    participants.map(async (uid) => {
+      if (typeof uid !== 'string' || uid.length === 0) return;
+      // The other participant's first name — used in the push body so the
+      // user sees "How did it go with Jordan?" instead of generic copy.
+      const otherUid = participants.find(
+        (p): p is string => typeof p === 'string' && p !== uid,
+      );
+      const otherName = otherUid ? names[otherUid] : undefined;
+      const body = otherName
+        ? `Tap to decide if you and ${otherName} stay in touch.`
+        : 'Tap to decide if you stay in touch.';
+      await sendPreferenceGatedPush({
+        userId: uid,
+        preferenceKey: 'notifMatchConfirmed',
+        logTag: 'meetup-talk-expired-push',
+        title: 'How did it go?',
+        body,
+        data: {
+          type: 'meetup_talk_expired',
+          meetupId,
+        },
+        channelId: 'meetup',
+      });
+    }),
+  );
+}
+
 export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
   const now = Timestamp.now();
   const snap = await db
@@ -1693,6 +1749,11 @@ export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
   await writer.close();
   console.log(
     `[meetup-talk-expired] flipped ${snap.size} meetup(s) → awaiting_post_talk_decision`,
+  );
+  // Fire pushes AFTER the status writes commit so the client receiving the
+  // push opens to a meetup already in the decision phase.
+  await Promise.all(
+    snap.docs.map((doc) => sendTalkExpiredPushes(doc.id, doc.data())),
   );
 });
 
@@ -1755,6 +1816,15 @@ export const onTalkExpiredRequestCreated = onDocumentCreated(
     console.log(
       `[meetup-talk-expired-req] ${meetupId} → awaiting_post_talk_decision via ${uid}`,
     );
+    // Same push fan-out as the scheduler path so a backgrounded participant
+    // still gets the "How did it go?" prompt regardless of which flip path
+    // fired.  Read the latest data so the participantNames denormalisation
+    // is current.
+    const refreshed = await meetupRef.get();
+    const refreshedData = refreshed.data();
+    if (refreshedData) {
+      await sendTalkExpiredPushes(meetupId, refreshedData);
+    }
   },
 );
 
