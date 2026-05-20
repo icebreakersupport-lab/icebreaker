@@ -357,11 +357,19 @@ class _NearbyScreenState extends State<NearbyScreen>
     _effectiveRadiusMeters = session.maxDistanceMetersSnapshot
         .toDouble()
         .clamp(AppConstants.nearbyRadiusMeters, 60.0);
-    _myInterestedIn = session.interestedInSnapshot;
+    // An empty interestedInSnapshot is written when the user reached Go
+    // Live without ever setting a preference (e.g. broken onboarding write,
+    // legacy account). Treat it as null so the "my-side" filter falls
+    // through to permissive — the user can still discover candidates;
+    // they're separately hidden from others' carousels via the read-side
+    // `their_interested_in_missing` exclusion.
+    final rawInterestedIn = session.interestedInSnapshot;
+    _myInterestedIn = rawInterestedIn.isEmpty ? null : rawInterestedIn;
     _myAgeRangeMin = session.ageRangeMinSnapshot;
     _myAgeRangeMax = session.ageRangeMaxSnapshot;
     debugPrint('[Nearby] session snapshots applied — '
         'interestedIn=$_myInterestedIn '
+        '(raw="$rawInterestedIn") '
         'ageRange=$_myAgeRangeMin–$_myAgeRangeMax '
         'radius=$_effectiveRadiusMeters m');
   }

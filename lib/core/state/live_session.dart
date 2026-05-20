@@ -1063,8 +1063,17 @@ class LiveSession extends ChangeNotifier {
   /// `interestedIn` value is normalised through
   /// [UserProfile.interestedInToCanonical] so the snapshot is canonical
   /// lowercase regardless of which legacy field name (interestedIn / showMe /
-  /// openTo) or casing the source doc carried.  A read failure on either doc
-  /// produces the documented defaults rather than aborting Go Live.
+  /// openTo) or casing the source doc carried.
+  ///
+  /// When NO source carries an interestedIn value, the snapshot is written
+  /// with `interestedIn = ''` (empty string sentinel — "unknown") rather
+  /// than fabricated as `'everyone'`.  The previous default silently
+  /// promoted users who never picked a preference into every other user's
+  /// carousel.  The read-side filter
+  /// ([_NearbyScreenState._candidateExclusionReason]) treats empty as
+  /// `their_interested_in_missing` and excludes the candidate — so unset
+  /// users are hidden from others until they complete onboarding.  A read
+  /// failure follows the same rule: prefer "hidden" over "promoted".
   Future<_DiscoverySnapshot> _readDiscoverySnapshot(String uid) async {
     try {
       final db = FirebaseFirestore.instance;
@@ -1089,7 +1098,9 @@ class LiveSession extends ChangeNotifier {
             return UserProfile.interestedInToCanonical(candidate);
           }
         }
-        return 'everyone';
+        // No preference on file — return empty so the snapshot reflects
+        // "unknown" rather than impersonating an active "everyone" choice.
+        return '';
       }
 
       int pickInt(String key, int fallback) {
@@ -1110,9 +1121,12 @@ class LiveSession extends ChangeNotifier {
       );
     } catch (e) {
       debugPrint('[LiveSession] discovery snapshot read failed: $e');
+      // Read failure — hide the user from others until the next session
+      // start succeeds.  The empty interestedIn surfaces as
+      // `their_interested_in_missing` in everyone's carousel filter.
       return const _DiscoverySnapshot(
         maxDistanceMeters: 30,
-        interestedIn: 'everyone',
+        interestedIn: '',
         ageRangeMin: 18,
         ageRangeMax: 99,
       );
