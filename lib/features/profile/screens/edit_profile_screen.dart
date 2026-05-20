@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
+import '../../../core/services/live_session_repository.dart';
+import '../../../core/state/live_session.dart';
 import '../../../core/services/profile_repository.dart';
 import '../../../core/state/user_profile.dart';
 import '../../../core/theme/app_colors.dart';
@@ -153,6 +155,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
     final bio = _bioCtrl.text.trim();
     final occupation = _occupationCtrl.text.trim();
     final height = _heightCtrl.text.trim();
+    final liveSession = LiveSessionScope.of(context);
 
     UserProfileScope.of(context).saveTextFields(
       firstName: firstName,
@@ -228,6 +231,15 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           hobbies: _selectedHobbies,
         ),
       ]);
+      if (liveSession.isLive) {
+        await LiveSessionRepository().updateDiscoverySnapshot(
+          uid: uid,
+          maxDistanceMetersSnapshot: _maxDistanceMeters,
+          interestedInSnapshot: _interestedIn,
+          ageRangeMinSnapshot: _ageRange.start.round(),
+          ageRangeMaxSnapshot: _ageRange.end.round(),
+        );
+      }
       if (!mounted) return;
       Navigator.of(context).pop();
     } catch (e) {
@@ -243,7 +255,8 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
           backgroundColor: AppColors.bgElevated,
           behavior: SnackBarBehavior.floating,
           shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(12)),
+            borderRadius: BorderRadius.circular(12),
+          ),
           margin: const EdgeInsets.all(16),
           duration: const Duration(seconds: 4),
           action: SnackBarAction(
@@ -276,8 +289,10 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
         centerTitle: true,
         title: Text('Edit Profile', style: AppTextStyles.h3),
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back_ios_new_rounded,
-              color: AppColors.textSecondary),
+          icon: const Icon(
+            Icons.arrow_back_ios_new_rounded,
+            color: AppColors.textSecondary,
+          ),
           onPressed: () => Navigator.of(context).pop(),
         ),
         actions: [
@@ -287,8 +302,9 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               onPressed: _save,
               child: Text(
                 'Save',
-                style: AppTextStyles.buttonS
-                    .copyWith(color: AppColors.brandPink),
+                style: AppTextStyles.buttonS.copyWith(
+                  color: AppColors.brandPink,
+                ),
               ),
             ),
           ),
@@ -315,10 +331,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               accent: AppColors.brandPink,
               icon: Icons.person_rounded,
               highlight: _isHighlighted('name_age'),
-              child: _IdentitySection(
-                nameCtrl: _nameCtrl,
-                ageCtrl: _ageCtrl,
-              ),
+              child: _IdentitySection(nameCtrl: _nameCtrl, ageCtrl: _ageCtrl),
             ),
 
             const SizedBox(height: 14),
@@ -369,15 +382,30 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               child: _ChipPicker(
                 selected: _selectedInterests,
                 options: const [
-                  'Music', 'Travel', 'Photography', 'Food', 'Sport',
-                  'Art', 'Tech', 'Film', 'Fashion', 'Books',
-                  'Fitness', 'Gaming', 'Nature', 'Coffee', 'Wine',
+                  'Music',
+                  'Travel',
+                  'Photography',
+                  'Food',
+                  'Sport',
+                  'Art',
+                  'Tech',
+                  'Film',
+                  'Fashion',
+                  'Books',
+                  'Fitness',
+                  'Gaming',
+                  'Nature',
+                  'Coffee',
+                  'Wine',
                 ],
                 accent: AppColors.brandCyan,
                 minCount: 1,
                 onChanged: (tag, on) => setState(() {
-                  if (on) { _selectedInterests.add(tag); }
-                  else { _selectedInterests.remove(tag); }
+                  if (on) {
+                    _selectedInterests.add(tag);
+                  } else {
+                    _selectedInterests.remove(tag);
+                  }
                 }),
               ),
             ),
@@ -395,15 +423,29 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
               child: _ChipPicker(
                 selected: _selectedHobbies,
                 options: const [
-                  'Hiking', 'Cooking', 'Gaming', 'Yoga', 'Cycling',
-                  'Painting', 'Dancing', 'Running', 'Surfing', 'Reading',
-                  'Climbing', 'Swimming', 'Camping', 'Pottery',
+                  'Hiking',
+                  'Cooking',
+                  'Gaming',
+                  'Yoga',
+                  'Cycling',
+                  'Painting',
+                  'Dancing',
+                  'Running',
+                  'Surfing',
+                  'Reading',
+                  'Climbing',
+                  'Swimming',
+                  'Camping',
+                  'Pottery',
                 ],
                 accent: AppColors.brandPurple,
                 minCount: 1,
                 onChanged: (tag, on) => setState(() {
-                  if (on) { _selectedHobbies.add(tag); }
-                  else { _selectedHobbies.remove(tag); }
+                  if (on) {
+                    _selectedHobbies.add(tag);
+                  } else {
+                    _selectedHobbies.remove(tag);
+                  }
                 }),
               ),
             ),
@@ -424,8 +466,7 @@ class _EditProfileScreenState extends State<EditProfileScreen> {
                 ageRange: _ageRange,
                 maxDistanceMeters: _maxDistanceMeters,
                 onLookingForChanged: (v) => setState(() => _lookingFor = v),
-                onInterestedInChanged: (v) =>
-                    setState(() => _interestedIn = v),
+                onInterestedInChanged: (v) => setState(() => _interestedIn = v),
                 onAgeRangeChanged: (v) => setState(() => _ageRange = v),
                 onMaxDistanceChanged: (v) =>
                     setState(() => _maxDistanceMeters = v),
@@ -529,8 +570,7 @@ class _FocusBanner extends StatelessWidget {
           ],
         ),
         borderRadius: BorderRadius.circular(16),
-        border:
-            Border.all(color: AppColors.brandPink.withValues(alpha: 0.32)),
+        border: Border.all(color: AppColors.brandPink.withValues(alpha: 0.32)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -543,8 +583,11 @@ class _FocusBanner extends StatelessWidget {
               color: AppColors.brandPink.withValues(alpha: 0.16),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.arrow_downward_rounded,
-                color: AppColors.brandPink, size: 18),
+            child: const Icon(
+              Icons.arrow_downward_rounded,
+              color: AppColors.brandPink,
+              size: 18,
+            ),
           ),
           const SizedBox(width: 12),
           Expanded(
@@ -615,8 +658,7 @@ class _AboutYouZoneHeader extends StatelessWidget {
               // Hint chip — quietly tells the user what these three sections
               // feed into.  Cyan accent ties to the About Me card border.
               Container(
-                padding: const EdgeInsets.symmetric(
-                    horizontal: 9, vertical: 4),
+                padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                 decoration: BoxDecoration(
                   color: AppColors.brandCyan.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(10),
@@ -706,8 +748,7 @@ class _SectionCard extends StatelessWidget {
         color: AppColors.bgSurface,
         borderRadius: BorderRadius.circular(20),
         border: Border.all(
-          color:
-              highlight ? accent.withValues(alpha: 0.65) : AppColors.divider,
+          color: highlight ? accent.withValues(alpha: 0.65) : AppColors.divider,
           width: highlight ? 1.5 : 1.0,
         ),
         boxShadow: highlight
@@ -716,7 +757,7 @@ class _SectionCard extends StatelessWidget {
                   color: accent.withValues(alpha: 0.14),
                   blurRadius: 22,
                   spreadRadius: 0,
-                )
+                ),
               ]
             : null,
       ),
@@ -750,8 +791,9 @@ class _SectionCard extends StatelessWidget {
                     ),
                     Text(
                       subtitle,
-                      style: AppTextStyles.caption
-                          .copyWith(color: AppColors.textMuted),
+                      style: AppTextStyles.caption.copyWith(
+                        color: AppColors.textMuted,
+                      ),
                     ),
                   ],
                 ),
@@ -759,7 +801,9 @@ class _SectionCard extends StatelessWidget {
               if (highlight)
                 Container(
                   padding: const EdgeInsets.symmetric(
-                      horizontal: 8, vertical: 3),
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
                   decoration: BoxDecoration(
                     color: accent.withValues(alpha: 0.14),
                     borderRadius: BorderRadius.circular(8),
@@ -792,10 +836,7 @@ class _SectionCard extends StatelessWidget {
 // ── Identity section ──────────────────────────────────────────────────────────
 
 class _IdentitySection extends StatelessWidget {
-  const _IdentitySection({
-    required this.nameCtrl,
-    required this.ageCtrl,
-  });
+  const _IdentitySection({required this.nameCtrl, required this.ageCtrl});
 
   final TextEditingController nameCtrl;
   final TextEditingController ageCtrl;
@@ -885,8 +926,10 @@ class _LabeledField extends StatelessWidget {
             filled: true,
             fillColor: AppColors.bgInput,
             counterText: '',
-            contentPadding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 13,
+            ),
             border: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
               borderSide: const BorderSide(color: AppColors.divider),
@@ -897,12 +940,205 @@ class _LabeledField extends StatelessWidget {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide:
-                  const BorderSide(color: AppColors.brandPink, width: 1.5),
+              borderSide: const BorderSide(
+                color: AppColors.brandPink,
+                width: 1.5,
+              ),
             ),
           ),
         ),
       ],
+    );
+  }
+}
+
+// ── Height picker ─────────────────────────────────────────────────────────────
+//
+// Two side-by-side dropdowns (feet + inches) that read/write the same
+// TextEditingController as the rest of the form.  The controller is still
+// the source of truth — this widget just provides a structured input UI
+// instead of free-text "5'10\"" entry, which was easy to mis-format.
+//
+// On-disk format is preserved: the controller stores e.g. `5'10"`, the same
+// string the legacy text field produced, so nothing downstream (Firestore
+// writes, profile display, profile_completion checklist) needs to change.
+
+class _HeightPicker extends StatefulWidget {
+  const _HeightPicker({required this.controller});
+
+  final TextEditingController controller;
+
+  @override
+  State<_HeightPicker> createState() => _HeightPickerState();
+}
+
+class _HeightPickerState extends State<_HeightPicker> {
+  // Common adult range — covers ~99.9% of users without making the wheel
+  // unscrollably long.  Add a "—" placeholder option so the field can be
+  // legitimately empty before the user picks.
+  static const _feetOptions = [4, 5, 6, 7];
+  static const _inchOptions = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+
+  int? _feet;
+  int? _inches;
+
+  @override
+  void initState() {
+    super.initState();
+    _parseFromController();
+    widget.controller.addListener(_handleExternalUpdate);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_handleExternalUpdate);
+    super.dispose();
+  }
+
+  /// Rebuild local state if the controller was updated externally (e.g.
+  /// profile reload after a save).  Guarded so our own writes don't loop.
+  void _handleExternalUpdate() {
+    final cur = _composeText(_feet, _inches);
+    if (cur == widget.controller.text) return;
+    _parseFromController();
+  }
+
+  /// Pulls feet + inches out of the controller text.  Tolerant of variations
+  /// the legacy free-text field produced:
+  ///   "5'10\""   "5'10"   "5' 10\""   "5 10"   "5'"
+  void _parseFromController() {
+    final text = widget.controller.text;
+    final match = RegExp(r"(\d+)\s*['′]?\s*(\d{0,2})").firstMatch(text);
+    if (match == null) {
+      setState(() {
+        _feet = null;
+        _inches = null;
+      });
+      return;
+    }
+    final feet = int.tryParse(match.group(1) ?? '');
+    final inchesRaw = match.group(2);
+    final inches =
+        (inchesRaw == null || inchesRaw.isEmpty) ? null : int.tryParse(inchesRaw);
+    setState(() {
+      _feet = _feetOptions.contains(feet) ? feet : null;
+      _inches = (inches != null && _inchOptions.contains(inches)) ? inches : null;
+    });
+  }
+
+  String _composeText(int? feet, int? inches) {
+    if (feet == null) return '';
+    // Inches default to 0 once a feet value is chosen so the saved string is
+    // always well-formed; the picker shows the user's actual selection.
+    final displayInches = inches ?? 0;
+    return "$feet'$displayInches\"";
+  }
+
+  void _onChange({int? feet, int? inches}) {
+    setState(() {
+      if (feet != null) _feet = feet;
+      if (inches != null) _inches = inches;
+    });
+    final next = _composeText(_feet, _inches);
+    if (next != widget.controller.text) {
+      widget.controller.text = next;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'HEIGHT',
+          style: AppTextStyles.caption.copyWith(
+            color: AppColors.textSecondary,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.8,
+          ),
+        ),
+        const SizedBox(height: 7),
+        Row(
+          children: [
+            Expanded(
+              child: _HeightDropdown<int>(
+                value: _feet,
+                hint: 'Feet',
+                options: _feetOptions,
+                labelBuilder: (v) => "$v'",
+                onChanged: (v) => _onChange(feet: v),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: _HeightDropdown<int>(
+                value: _inches,
+                hint: 'Inches',
+                options: _inchOptions,
+                labelBuilder: (v) => '$v"',
+                onChanged: _feet == null ? null : (v) => _onChange(inches: v),
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+/// Dark-themed dropdown matching the rest of the Edit Profile form.
+/// Reuses the same fill + border treatment as [_LabeledField] so the two
+/// pickers visually align with the surrounding text fields.
+class _HeightDropdown<T> extends StatelessWidget {
+  const _HeightDropdown({
+    required this.value,
+    required this.hint,
+    required this.options,
+    required this.labelBuilder,
+    required this.onChanged,
+  });
+
+  final T? value;
+  final String hint;
+  final List<T> options;
+  final String Function(T value) labelBuilder;
+  final ValueChanged<T?>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onChanged == null;
+    return Container(
+      height: 48,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: AppColors.bgInput,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppColors.divider),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isExpanded: true,
+          dropdownColor: AppColors.bgElevated,
+          iconEnabledColor: AppColors.textSecondary,
+          iconDisabledColor: AppColors.textMuted,
+          style: AppTextStyles.bodyS.copyWith(color: AppColors.textPrimary),
+          hint: Text(
+            hint,
+            style: AppTextStyles.bodyS.copyWith(color: AppColors.textMuted),
+          ),
+          onChanged: disabled ? null : onChanged,
+          items: options
+              .map(
+                (v) => DropdownMenuItem<T>(
+                  value: v,
+                  child: Text(labelBuilder(v)),
+                ),
+              )
+              .toList(),
+        ),
+      ),
     );
   }
 }
@@ -929,10 +1165,8 @@ class _MediaSection extends StatelessWidget {
           color: AppColors.brandPurple,
           title: 'Upload Intro Video',
           subtitle: 'Max 30 seconds · boosts profile visibility',
-          onTap: () => context.push(
-            AppRoutes.gallery,
-            extra: {'scrollToVideo': true},
-          ),
+          onTap: () =>
+              context.push(AppRoutes.gallery, extra: {'scrollToVideo': true}),
         ),
       ],
     );
@@ -991,16 +1225,20 @@ class _MediaTile extends StatelessWidget {
                   const SizedBox(height: 2),
                   Text(
                     subtitle,
-                    style: AppTextStyles.caption
-                        .copyWith(color: AppColors.textMuted),
+                    style: AppTextStyles.caption.copyWith(
+                      color: AppColors.textMuted,
+                    ),
                     overflow: TextOverflow.ellipsis,
                   ),
                 ],
               ),
             ),
             const SizedBox(width: 8),
-            Icon(Icons.chevron_right_rounded,
-                color: color.withValues(alpha: 0.70), size: 20),
+            Icon(
+              Icons.chevron_right_rounded,
+              color: color.withValues(alpha: 0.70),
+              size: 20,
+            ),
           ],
         ),
       ),
@@ -1042,8 +1280,7 @@ class _BioFieldState extends State<_BioField> {
   @override
   Widget build(BuildContext context) {
     final nearLimit = _count >= _maxChars - 20;
-    final counterColor =
-        nearLimit ? AppColors.warning : AppColors.textMuted;
+    final counterColor = nearLimit ? AppColors.warning : AppColors.textMuted;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.end,
@@ -1078,8 +1315,10 @@ class _BioFieldState extends State<_BioField> {
             ),
             focusedBorder: OutlineInputBorder(
               borderRadius: BorderRadius.circular(12),
-              borderSide:
-                  const BorderSide(color: AppColors.brandPink, width: 1.5),
+              borderSide: const BorderSide(
+                color: AppColors.brandPink,
+                width: 1.5,
+              ),
             ),
           ),
         ),
@@ -1153,7 +1392,9 @@ class _ChipPicker extends StatelessWidget {
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 180),
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 8),
+                  horizontal: 14,
+                  vertical: 8,
+                ),
                 decoration: BoxDecoration(
                   color: isOn
                       ? accent.withValues(alpha: 0.16)
@@ -1177,8 +1418,7 @@ class _ChipPicker extends StatelessWidget {
                       tag,
                       style: AppTextStyles.caption.copyWith(
                         color: isOn ? accent : AppColors.textSecondary,
-                        fontWeight:
-                            isOn ? FontWeight.w700 : FontWeight.w400,
+                        fontWeight: isOn ? FontWeight.w700 : FontWeight.w400,
                         fontSize: 13,
                       ),
                     ),
@@ -1257,8 +1497,9 @@ class _PreferencesSection extends StatelessWidget {
           children: [
             Text(
               'Age range',
-              style: AppTextStyles.bodyS
-                  .copyWith(color: AppColors.textSecondary),
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textSecondary,
+              ),
             ),
             Text(
               '${ageRange.start.round()} – ${ageRange.end.round()}',
@@ -1277,8 +1518,9 @@ class _PreferencesSection extends StatelessWidget {
             thumbColor: AppColors.brandPink,
             overlayColor: AppColors.brandPink.withValues(alpha: 0.14),
             trackHeight: 3,
-            rangeThumbShape:
-                const RoundRangeSliderThumbShape(enabledThumbRadius: 10),
+            rangeThumbShape: const RoundRangeSliderThumbShape(
+              enabledThumbRadius: 10,
+            ),
           ),
           child: RangeSlider(
             values: ageRange,
@@ -1291,12 +1533,14 @@ class _PreferencesSection extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('18',
-                style: AppTextStyles.caption
-                    .copyWith(color: AppColors.textMuted)),
-            Text('60',
-                style: AppTextStyles.caption
-                    .copyWith(color: AppColors.textMuted)),
+            Text(
+              '18',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            ),
+            Text(
+              '60',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            ),
           ],
         ),
         const SizedBox(height: 18),
@@ -1308,8 +1552,9 @@ class _PreferencesSection extends StatelessWidget {
           children: [
             Text(
               'Max distance',
-              style: AppTextStyles.bodyS
-                  .copyWith(color: AppColors.textSecondary),
+              style: AppTextStyles.bodyS.copyWith(
+                color: AppColors.textSecondary,
+              ),
             ),
             Text(
               '$maxDistanceMeters m',
@@ -1340,12 +1585,14 @@ class _PreferencesSection extends StatelessWidget {
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text('30 m',
-                style: AppTextStyles.caption
-                    .copyWith(color: AppColors.textMuted)),
-            Text('60 m',
-                style: AppTextStyles.caption
-                    .copyWith(color: AppColors.textMuted)),
+            Text(
+              '30 m',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            ),
+            Text(
+              '60 m',
+              style: AppTextStyles.caption.copyWith(color: AppColors.textMuted),
+            ),
           ],
         ),
       ],
@@ -1362,6 +1609,7 @@ class _PrefRow extends StatelessWidget {
   });
 
   final String label;
+
   /// Canonical value (the field that's persisted) — e.g. `'women'`.  The
   /// dropdown surfaces the matching `label` from [options] for the visible
   /// row, so the on-disk lowercase code never appears in UI.
@@ -1401,8 +1649,9 @@ class _PrefRow extends StatelessWidget {
               flex: 2,
               child: Text(
                 label,
-                style: AppTextStyles.bodyS
-                    .copyWith(color: AppColors.textSecondary),
+                style: AppTextStyles.bodyS.copyWith(
+                  color: AppColors.textSecondary,
+                ),
               ),
             ),
             Expanded(
@@ -1452,20 +1701,15 @@ class _PrefDropdown extends StatelessWidget {
           context: context,
           backgroundColor: AppColors.bgSurface,
           shape: const RoundedRectangleBorder(
-            borderRadius:
-                BorderRadius.vertical(top: Radius.circular(24)),
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
           ),
-          builder: (_) => _PickerSheet(
-            title: label,
-            options: options,
-            selected: value,
-          ),
+          builder: (_) =>
+              _PickerSheet(title: label, options: options, selected: value),
         );
         if (result != null) onChanged(result);
       },
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
         decoration: BoxDecoration(
           color: AppColors.bgInput,
           borderRadius: BorderRadius.circular(12),
@@ -1477,13 +1721,17 @@ class _PrefDropdown extends StatelessWidget {
             Flexible(
               child: Text(
                 _displayLabel(),
-                style: AppTextStyles.bodyS
-                    .copyWith(color: AppColors.textPrimary),
+                style: AppTextStyles.bodyS.copyWith(
+                  color: AppColors.textPrimary,
+                ),
                 overflow: TextOverflow.ellipsis,
               ),
             ),
-            const Icon(Icons.expand_more_rounded,
-                size: 18, color: AppColors.textMuted),
+            const Icon(
+              Icons.expand_more_rounded,
+              size: 18,
+              color: AppColors.textMuted,
+            ),
           ],
         ),
       ),
@@ -1502,6 +1750,7 @@ class _PickerSheet extends StatelessWidget {
 
   final String title;
   final List<({String value, String label})> options;
+
   /// The currently selected canonical value — compared against `option.value`
   /// to mark the active row.  The sheet returns the chosen option's `value`
   /// so callers persist the canonical code, not the display label.
@@ -1541,22 +1790,24 @@ class _PickerSheet extends StatelessWidget {
                   children: options.map((opt) {
                     final isSel = opt.value == selected;
                     return ListTile(
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 24),
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 24,
+                      ),
                       title: Text(
                         opt.label,
                         style: AppTextStyles.body.copyWith(
                           color: isSel
                               ? AppColors.brandPink
                               : AppColors.textPrimary,
-                          fontWeight:
-                              isSel ? FontWeight.w700 : FontWeight.w400,
+                          fontWeight: isSel ? FontWeight.w700 : FontWeight.w400,
                         ),
                         overflow: TextOverflow.ellipsis,
                       ),
                       trailing: isSel
-                          ? const Icon(Icons.check_rounded,
-                              color: AppColors.brandPink)
+                          ? const Icon(
+                              Icons.check_rounded,
+                              color: AppColors.brandPink,
+                            )
                           : null,
                       onTap: () => Navigator.of(context).pop(opt.value),
                     );
@@ -1593,11 +1844,7 @@ class _DetailsSection extends StatelessWidget {
           hint: 'e.g. Developer',
         ),
         const SizedBox(height: 14),
-        _LabeledField(
-          label: 'Height',
-          ctrl: heightCtrl,
-          hint: "e.g. 5'10\"",
-        ),
+        _HeightPicker(controller: heightCtrl),
       ],
     );
   }
