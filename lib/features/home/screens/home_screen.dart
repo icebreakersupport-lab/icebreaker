@@ -1,10 +1,9 @@
 import 'dart:async';
-import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:geolocator/geolocator.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../../core/constants/app_constants.dart';
@@ -14,11 +13,19 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/gradient_scaffold.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
+import '../../../shared/widgets/live_selfie_circle_image.dart';
 import '../../../shared/widgets/pill_button.dart';
 
 /// Below this width the Home screen switches to its compact layout mode.
 /// 400 dp covers all small phones and narrow macOS windows.
 const double _kNarrow = 400.0;
+
+/// How long after account creation a user may Go Live without having
+/// verified their email.  After this window, the verification sheet
+/// gate at [_handleGoLive] kicks in.  Product call: testers reported
+/// the email-link redirect kicked them out of the app and was the
+/// single biggest first-session drop-off.
+const Duration _kVerificationGracePeriod = Duration(hours: 24);
 
 /// Home tab — the "GO LIVE" entry point.
 ///
@@ -38,6 +45,13 @@ class HomeScreen extends StatefulWidget {
 class _HomeScreenState extends State<HomeScreen>
     with WidgetsBindingObserver {
   Timer? _countdownTimer;
+  LiveSession? _listenedSession;
+  int? _lastSeenIcebreakerCredits;
+  int? _lastSeenLiveCredits;
+  int _icebreakerBurstTick = 0;
+  int _liveBurstTick = 0;
+  int _icebreakerBurstAmount = 0;
+  int _liveBurstAmount = 0;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -56,6 +70,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _listenedSession?.removeListener(_handleCreditChangeToast);
     _countdownTimer?.cancel();
     super.dispose();
   }
@@ -100,6 +115,45 @@ class _HomeScreenState extends State<HomeScreen>
     }
   }
 
+  void _wireCreditToastListener(LiveSession session) {
+    if (identical(_listenedSession, session)) return;
+    _listenedSession?.removeListener(_handleCreditChangeToast);
+    _listenedSession = session;
+    _lastSeenIcebreakerCredits = session.icebreakerCredits;
+    _lastSeenLiveCredits = session.liveCredits;
+    session.addListener(_handleCreditChangeToast);
+  }
+
+  void _handleCreditChangeToast() {
+    final session = _listenedSession;
+    if (session == null || !mounted) return;
+
+    final previousIcebreakers = _lastSeenIcebreakerCredits;
+    final previousLive = _lastSeenLiveCredits;
+    final currentIcebreakers = session.icebreakerCredits;
+    final currentLive = session.liveCredits;
+
+    _lastSeenIcebreakerCredits = currentIcebreakers;
+    _lastSeenLiveCredits = currentLive;
+
+    if (previousIcebreakers == null || previousLive == null) return;
+
+    final gainedIcebreakers = currentIcebreakers - previousIcebreakers;
+    final gainedLive = currentLive - previousLive;
+    if (gainedIcebreakers <= 0 && gainedLive <= 0) return;
+
+    setState(() {
+      if (gainedIcebreakers > 0) {
+        _icebreakerBurstTick++;
+        _icebreakerBurstAmount = gainedIcebreakers;
+      }
+      if (gainedLive > 0) {
+        _liveBurstTick++;
+        _liveBurstAmount = gainedLive;
+      }
+    });
+  }
+
   // ── Actions ───────────────────────────────────────────────────────────────
 
   Future<void> _handleGoLive() async {
@@ -108,6 +162,12 @@ class _HomeScreenState extends State<HomeScreen>
       _showVerificationRequiredSheet();
       return;
     }
+
+    // Captured from the Gate 1 read and consumed in Gate 3's grace-period
+    // calculation.  Default to "old account" if the read fails or the field
+    // is missing — that fails CLOSED on the verification gate (better than
+    // silently letting unverified users live forever).
+    DateTime? accountCreatedAt;
 
     // ── Gate 1: profile complete ───────────────────────────────────────────
     // One Firestore read confirms onboarding finished and first photo saved.
@@ -118,8 +178,14 @@ class _HomeScreenState extends State<HomeScreen>
           .collection('users')
           .doc(user.uid)
           .get();
-      final profileComplete =
-          (doc.data()?['profileComplete'] as bool?) ?? false;
+      final data = doc.data();
+      final profileComplete = (data?['profileComplete'] as bool?) ?? false;
+      // Capture createdAt from the same read so we don't pay a second
+      // round-trip in Gate 3.
+      final createdAtTs = data?['createdAt'];
+      if (createdAtTs is Timestamp) {
+        accountCreatedAt = createdAtTs.toDate();
+      }
       if (!profileComplete) {
         if (!mounted) return;
         context.push(AppRoutes.profileChecklist);
@@ -132,20 +198,31 @@ class _HomeScreenState extends State<HomeScreen>
 
     // ── Gate 2: location permission ────────────────────────────────────────
     // Discovery writes GPS to Firestore — Go Live makes no sense without it.
-    final locationPerm = await LocationService.checkPermission();
-    final locationOk = locationPerm == LocationPermission.always ||
-        locationPerm == LocationPermission.whileInUse;
-    if (!locationOk) {
+    //
+    // requestIfNeeded() prompts the OS dialog when the state is requestable
+    // and is a no-op otherwise.  This is what removes the iOS dead-end:
+    // before, a brand-new install with `denied` (never asked) would punt to
+    // system Settings, where the Location row doesn't yet exist.  Now the
+    // very first tap triggers the OS prompt itself, and the sheet only
+    // appears for genuinely terminal states.
+    final locStatus = await LocationService.requestIfNeeded();
+    if (locStatus != LocationStatus.granted) {
       if (!mounted) return;
-      _showLocationRequiredSheet(
-        permanent: locationPerm == LocationPermission.deniedForever,
-      );
+      _showLocationRequiredSheet(locStatus);
       return;
     }
 
-    // ── Gate 3: email OR phone verified ───────────────────────────────────
-    // Reload before deciding so a link clicked in the email client is
-    // reflected immediately without waiting for the periodic resume reload.
+    // ── Gate 3: email OR phone verified — with 24h grace period ──────────
+    // Product call (2026-05-20): testers reported the verification-required
+    // sheet as a major drop-off because tapping the verification link kicks
+    // them out of the app.  New rule: a brand-new account gets 24 h to
+    // explore + Go Live BEFORE the verification gate kicks in.  After 24 h,
+    // an unverified user hits the existing sheet.  This is a soft-gate —
+    // they're nudged via the [_unverifiedGracePeriodHint] banner below the
+    // GO LIVE button (see [build]) so they know the deadline.
+    //
+    // Reload first so a link clicked in the email client is reflected
+    // immediately, regardless of which path Gate 3 takes.
     if (!user.emailVerified) {
       try {
         await user.reload();
@@ -155,11 +232,24 @@ class _HomeScreenState extends State<HomeScreen>
       if (!mounted) return;
       user = FirebaseAuth.instance.currentUser;
     }
-    final phoneVerified =
-        (user?.phoneNumber?.isNotEmpty) ?? false;
-    if (user == null || (!user.emailVerified && !phoneVerified)) {
+    if (user == null) {
       _showVerificationRequiredSheet();
       return;
+    }
+    final phoneVerified = user.phoneNumber?.isNotEmpty ?? false;
+    final emailOrPhoneVerified = user.emailVerified || phoneVerified;
+    if (!emailOrPhoneVerified) {
+      final inGracePeriod = accountCreatedAt != null &&
+          DateTime.now().difference(accountCreatedAt) <
+              _kVerificationGracePeriod;
+      if (!inGracePeriod) {
+        debugPrint('[Home] verification gate enforced — '
+            'createdAt=$accountCreatedAt grace expired');
+        _showVerificationRequiredSheet();
+        return;
+      }
+      debugPrint('[Home] verification gate skipped — '
+          'createdAt=$accountCreatedAt within 24h grace period');
     }
 
     // ── Gate 4: live credits ───────────────────────────────────────────────
@@ -173,7 +263,36 @@ class _HomeScreenState extends State<HomeScreen>
     context.push(AppRoutes.liveVerify);
   }
 
-  void _showLocationRequiredSheet({required bool permanent}) {
+  /// Sheet content branches on the [LocationStatus] returned by
+  /// [LocationService.requestIfNeeded].  Three distinct UI paths:
+  ///
+  ///   • [LocationStatus.requestable]    — should not occur in practice, since
+  ///                                       requestIfNeeded would have prompted
+  ///                                       and resolved.  We still handle it:
+  ///                                       offer "Allow Location" which
+  ///                                       re-enters the same flow.
+  ///   • [LocationStatus.blockedForever] — only reachable via system Settings
+  ///                                       (the Location row exists by now,
+  ///                                       since the OS prompt has happened
+  ///                                       at least once in the past).
+  ///   • [LocationStatus.servicesDisabled] — device-wide switch is off.  Open
+  ///                                       Settings deep-links to the app's
+  ///                                       page; copy points the user at the
+  ///                                       global toggle.
+  void _showLocationRequiredSheet(LocationStatus status) {
+    final canRequest = status == LocationStatus.requestable;
+    final servicesOff = status == LocationStatus.servicesDisabled;
+
+    final body = switch (status) {
+      LocationStatus.requestable =>
+        'Icebreaker needs location permission to show you to nearby people while you\'re live.',
+      LocationStatus.blockedForever =>
+        'Location is blocked for Icebreaker. Open Settings to enable it, then try again.',
+      LocationStatus.servicesDisabled =>
+        'Location Services are turned off on this device. Turn them on in Settings → Privacy & Security → Location Services, then try again.',
+      LocationStatus.granted => '', // unreachable — caller filters this case
+    };
+
     showModalBottomSheet<void>(
       context: context,
       backgroundColor: AppColors.bgSurface,
@@ -196,43 +315,61 @@ class _HomeScreenState extends State<HomeScreen>
                 ),
               ),
             ),
-            const Icon(Icons.location_off_rounded,
-                color: AppColors.brandCyan, size: 48),
+            Icon(
+              servicesOff
+                  ? Icons.gps_off_rounded
+                  : Icons.location_off_rounded,
+              color: AppColors.brandCyan,
+              size: 48,
+            ),
             const SizedBox(height: 16),
             Text(
-              'Location access needed',
+              servicesOff
+                  ? 'Location Services are off'
+                  : 'Location access needed',
               style: AppTextStyles.h3,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
             Text(
-              permanent
-                  ? 'Location is blocked in device settings. Open Settings to enable it for Icebreaker, then try again.'
-                  : 'Icebreaker needs location permission to show you to nearby people while you\'re live.',
+              body,
               style: AppTextStyles.bodyS
                   .copyWith(color: AppColors.textSecondary),
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 28),
-            PillButton.primary(
-              label: 'Open Settings',
-              icon: Icons.settings_rounded,
-              width: double.infinity,
-              height: 52,
-              onTap: () {
-                Navigator.of(sheetCtx).pop();
-                LocationService.openSettings();
-              },
-            ),
-            if (!permanent) ...[
-              const SizedBox(height: 12),
-              PillButton.outlined(
-                label: 'Not now',
+            if (canRequest)
+              PillButton.primary(
+                label: 'Allow Location',
+                icon: Icons.location_on_rounded,
                 width: double.infinity,
                 height: 52,
-                onTap: () => Navigator.of(sheetCtx).pop(),
+                onTap: () async {
+                  Navigator.of(sheetCtx).pop();
+                  // Re-enter the gate.  requestIfNeeded() will prompt; if the
+                  // user grants, _handleGoLive flows through the rest of the
+                  // gates; if they deny again we land back here.
+                  await _handleGoLive();
+                },
+              )
+            else
+              PillButton.primary(
+                label: 'Open Settings',
+                icon: Icons.settings_rounded,
+                width: double.infinity,
+                height: 52,
+                onTap: () {
+                  Navigator.of(sheetCtx).pop();
+                  LocationService.openSettings();
+                },
               ),
-            ],
+            const SizedBox(height: 12),
+            PillButton.outlined(
+              label: 'Not now',
+              width: double.infinity,
+              height: 52,
+              onTap: () => Navigator.of(sheetCtx).pop(),
+            ),
           ],
         ),
       ),
@@ -359,6 +496,7 @@ class _HomeScreenState extends State<HomeScreen>
   @override
   Widget build(BuildContext context) {
     final session = LiveSessionScope.of(context);
+    _wireCreditToastListener(session);
     _syncCountdownTimer(session.isLive);
 
     return GradientScaffold(
@@ -537,8 +675,8 @@ class _HomeScreenState extends State<HomeScreen>
                   // Primary supporting copy — condensed for narrow screens.
                   Text(
                     isNarrow
-                        ? 'Go Live — appear on nearby radars'
-                        : 'Go Live to appear on the radar for people around you',
+                        ? 'Go Live — stay visible until you end it'
+                        : 'Go Live to appear on the radar until you end it or the timer expires',
                     style: AppTextStyles.bodyS.copyWith(
                       color: AppColors.textSecondary,
                     ),
@@ -549,7 +687,7 @@ class _HomeScreenState extends State<HomeScreen>
                   if (!isNarrow) ...[
                     const SizedBox(height: 4),
                     Text(
-                      'Same building, venue, or nearby social setting',
+                      'Nearby people see your live session from your last active location while the timer is running',
                       style: AppTextStyles.caption.copyWith(
                         color: AppColors.textMuted,
                       ),
@@ -571,6 +709,9 @@ class _HomeScreenState extends State<HomeScreen>
       children: [
         Expanded(
           child: _StatusPill(
+            burstAmount: _icebreakerBurstAmount,
+            burstKind: _CreditBurstKind.heart,
+            burstTick: _icebreakerBurstTick,
             icon: Icons.favorite_rounded,
             iconColor: AppColors.brandPink,
             count: '${session.icebreakerCredits}',
@@ -580,6 +721,9 @@ class _HomeScreenState extends State<HomeScreen>
         const SizedBox(width: 12),
         Expanded(
           child: _StatusPill(
+            burstAmount: _liveBurstAmount,
+            burstKind: _CreditBurstKind.bolt,
+            burstTick: _liveBurstTick,
             icon: Icons.bolt_rounded,
             iconColor: AppColors.brandCyan,
             count: '${session.liveCredits}',
@@ -604,6 +748,9 @@ class _HomeScreenState extends State<HomeScreen>
         children: [
           Expanded(
             child: _CompactStat(
+              burstAmount: _icebreakerBurstAmount,
+              burstKind: _CreditBurstKind.heart,
+              burstTick: _icebreakerBurstTick,
               icon: Icons.favorite_rounded,
               iconColor: AppColors.brandPink,
               count: '${session.icebreakerCredits}',
@@ -618,6 +765,9 @@ class _HomeScreenState extends State<HomeScreen>
           ),
           Expanded(
             child: _CompactStat(
+              burstAmount: _liveBurstAmount,
+              burstKind: _CreditBurstKind.bolt,
+              burstTick: _liveBurstTick,
               icon: Icons.bolt_rounded,
               iconColor: AppColors.brandCyan,
               count: '${session.liveCredits}',
@@ -672,7 +822,13 @@ class _HomeScreenState extends State<HomeScreen>
               SizedBox(height: vMd),
 
               // ── 2. Stat strip ──────────────────────────────────────────
-              _LiveStatStrip(session: session),
+              _LiveStatStrip(
+                icebreakerBurstAmount: _icebreakerBurstAmount,
+                icebreakerBurstTick: _icebreakerBurstTick,
+                liveBurstAmount: _liveBurstAmount,
+                liveBurstTick: _liveBurstTick,
+                session: session,
+              ),
 
               // ── 3 & 4. Selfie + badge (fills remaining space) ──────────
               Expanded(
@@ -732,7 +888,10 @@ class _HomeScreenState extends State<HomeScreen>
         ),
         child: ClipOval(
           child: path != null
-              ? Image.file(File(path), fit: BoxFit.cover)
+              ? LiveSelfieCircleImage(
+                  selfiePath: path,
+                  avatarPath: session.avatarFilePath,
+                )
               : Icon(
                   Icons.person_rounded,
                   color: AppColors.textMuted,
@@ -757,6 +916,127 @@ class _HomeScreenState extends State<HomeScreen>
     );
   }
 
+}
+
+enum _CreditBurstKind { heart, bolt }
+
+class _CreditBurst extends StatelessWidget {
+  const _CreditBurst({
+    required this.burstAmount,
+    required this.burstKind,
+    required this.burstTick,
+    required this.child,
+    required this.color,
+    this.compact = false,
+  });
+
+  final int burstAmount;
+  final _CreditBurstKind burstKind;
+  final int burstTick;
+  final Widget child;
+  final Color color;
+  final bool compact;
+
+  IconData get _icon =>
+      burstKind == _CreditBurstKind.heart
+          ? Icons.favorite_rounded
+          : Icons.bolt_rounded;
+
+  @override
+  Widget build(BuildContext context) {
+    if (burstTick == 0 || burstAmount <= 0) return child;
+
+    return TweenAnimationBuilder<double>(
+      key: ValueKey('${burstKind.name}-$burstTick'),
+      tween: Tween(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 950),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, _) {
+        final lift = compact ? 18.0 : 26.0;
+        final iconSize = compact ? 16.0 : 20.0;
+        final pillScale = 1 + math.sin(value * math.pi) * 0.045;
+        final fadeOut = (1 - value).clamp(0.0, 1.0);
+        final glow = math.sin(value * math.pi).clamp(0.0, 1.0);
+        final horizontalOffset = compact ? 8.0 : 12.0;
+        final verticalStart = compact ? -2.0 : 2.0;
+        final badgeFont = compact ? 10.0 : 11.0;
+
+        return Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Transform.scale(
+              scale: pillScale,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  boxShadow: [
+                    BoxShadow(
+                      color: color.withValues(alpha: 0.12 + (glow * 0.16)),
+                      blurRadius: compact ? 12 : 18,
+                      spreadRadius: glow * 2,
+                    ),
+                  ],
+                ),
+                child: child,
+              ),
+            ),
+            Positioned(
+              right: horizontalOffset,
+              top: verticalStart - (value * lift),
+              child: IgnorePointer(
+                child: Opacity(
+                  opacity: fadeOut,
+                  child: Transform.rotate(
+                    angle: burstKind == _CreditBurstKind.bolt
+                        ? (1 - value) * 0.28
+                        : 0,
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          padding: EdgeInsets.all(compact ? 4 : 5),
+                          decoration: BoxDecoration(
+                            color: color.withValues(alpha: 0.16),
+                            shape: BoxShape.circle,
+                            border: Border.all(
+                              color: color.withValues(alpha: 0.30),
+                            ),
+                          ),
+                          child: Icon(_icon, color: color, size: iconSize),
+                        ),
+                        const SizedBox(height: 4),
+                        Container(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: compact ? 5 : 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.bgSurface.withValues(alpha: 0.96),
+                            borderRadius: BorderRadius.circular(999),
+                            border: Border.all(
+                              color: color.withValues(alpha: 0.35),
+                            ),
+                          ),
+                          child: Text(
+                            '+$burstAmount',
+                            style: AppTextStyles.caption.copyWith(
+                              color: color,
+                              fontSize: badgeFont,
+                              fontWeight: FontWeight.w800,
+                              height: 1,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
 }
 
 // ── Live badge ────────────────────────────────────────────────────────────────
@@ -892,7 +1172,18 @@ class _CountdownCard extends StatelessWidget {
 /// Mirrors the offline compact strip but is always shown (never switches
 /// to the tall two-card layout) since screen real estate is tighter.
 class _LiveStatStrip extends StatelessWidget {
-  const _LiveStatStrip({required this.session});
+  const _LiveStatStrip({
+    required this.icebreakerBurstAmount,
+    required this.icebreakerBurstTick,
+    required this.liveBurstAmount,
+    required this.liveBurstTick,
+    required this.session,
+  });
+
+  final int icebreakerBurstAmount;
+  final int icebreakerBurstTick;
+  final int liveBurstAmount;
+  final int liveBurstTick;
   final LiveSession session;
 
   @override
@@ -908,6 +1199,9 @@ class _LiveStatStrip extends StatelessWidget {
         children: [
           Expanded(
             child: _CompactStat(
+              burstAmount: icebreakerBurstAmount,
+              burstKind: _CreditBurstKind.heart,
+              burstTick: icebreakerBurstTick,
               icon: Icons.favorite_rounded,
               iconColor: AppColors.brandPink,
               count: '${session.icebreakerCredits}',
@@ -922,6 +1216,9 @@ class _LiveStatStrip extends StatelessWidget {
           ),
           Expanded(
             child: _CompactStat(
+              burstAmount: liveBurstAmount,
+              burstKind: _CreditBurstKind.bolt,
+              burstTick: liveBurstTick,
               icon: Icons.bolt_rounded,
               iconColor: AppColors.brandCyan,
               count: '${session.liveCredits}',
@@ -992,7 +1289,10 @@ class _SelfieExpandedDialog extends StatelessWidget {
                   ),
                   child: ClipOval(
                     child: path != null
-                        ? Image.file(File(path), fit: BoxFit.cover)
+                        ? LiveSelfieCircleImage(
+                            selfiePath: path,
+                            avatarPath: session.avatarFilePath,
+                          )
                         : const Icon(
                             Icons.person_rounded,
                             color: AppColors.textMuted,
@@ -1071,12 +1371,18 @@ class _SelfieExpandedDialog extends StatelessWidget {
 /// Displays an icon badge, a bold count, and a muted label.
 class _StatusPill extends StatelessWidget {
   const _StatusPill({
+    required this.burstAmount,
+    required this.burstKind,
+    required this.burstTick,
     required this.icon,
     required this.iconColor,
     required this.count,
     required this.label,
   });
 
+  final int burstAmount;
+  final _CreditBurstKind burstKind;
+  final int burstTick;
   final IconData icon;
   final Color iconColor;
   final String count;
@@ -1084,59 +1390,75 @@ class _StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(
-        color: AppColors.bgSurface,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: iconColor.withValues(alpha: 0.28),
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: iconColor.withValues(alpha: 0.14),
-            blurRadius: 20,
-            spreadRadius: 0,
+    return _CreditBurst(
+      burstAmount: burstAmount,
+      burstKind: burstKind,
+      burstTick: burstTick,
+      color: iconColor,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.bgSurface,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(
+            color: iconColor.withValues(alpha: 0.28),
           ),
-        ],
-      ),
-      child: Row(
-        children: [
-          // Icon badge
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              color: iconColor.withValues(alpha: 0.12),
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(
-                color: iconColor.withValues(alpha: 0.22),
-              ),
+          boxShadow: [
+            BoxShadow(
+              color: iconColor.withValues(alpha: 0.14),
+              blurRadius: 20,
+              spreadRadius: 0,
             ),
-            child: Icon(icon, color: iconColor, size: 18),
-          ),
-          const SizedBox(width: 10),
-          // Count + label
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                count,
-                style: AppTextStyles.h3.copyWith(
-                  fontWeight: FontWeight.w800,
-                  height: 1.1,
+          ],
+        ),
+        child: Row(
+          children: [
+            // Icon badge
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: iconColor.withValues(alpha: 0.12),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: iconColor.withValues(alpha: 0.22),
                 ),
               ),
-              Text(
-                label,
-                style: AppTextStyles.caption.copyWith(
-                  color: AppColors.textMuted,
+              child: Icon(icon, color: iconColor, size: 18),
+            ),
+            const SizedBox(width: 10),
+            // Count + label
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  transitionBuilder: (child, animation) {
+                    return FadeTransition(
+                      opacity: animation,
+                      child: ScaleTransition(scale: animation, child: child),
+                    );
+                  },
+                  child: Text(
+                    count,
+                    key: ValueKey(count),
+                    style: AppTextStyles.h3.copyWith(
+                      fontWeight: FontWeight.w800,
+                      height: 1.1,
+                    ),
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
+                Text(
+                  label,
+                  style: AppTextStyles.caption.copyWith(
+                    color: AppColors.textMuted,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1148,12 +1470,18 @@ class _StatusPill extends StatelessWidget {
 /// Renders as: icon · bold count · muted label — all on one row.
 class _CompactStat extends StatelessWidget {
   const _CompactStat({
+    required this.burstAmount,
+    required this.burstKind,
+    required this.burstTick,
     required this.icon,
     required this.iconColor,
     required this.count,
     required this.label,
   });
 
+  final int burstAmount;
+  final _CreditBurstKind burstKind;
+  final int burstTick;
   final IconData icon;
   final Color iconColor;
   final String count;
@@ -1161,30 +1489,47 @@ class _CompactStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: [
-        Icon(icon, color: iconColor, size: 15),
-        const SizedBox(width: 5),
-        Text(
-          count,
-          style: AppTextStyles.buttonS.copyWith(
-            fontWeight: FontWeight.w800,
-            color: AppColors.textPrimary,
-            height: 1.0,
-          ),
-        ),
-        const SizedBox(width: 4),
-        Flexible(
-          child: Text(
-            label,
-            style: AppTextStyles.caption.copyWith(
-              color: AppColors.textMuted,
+    return _CreditBurst(
+      burstAmount: burstAmount,
+      burstKind: burstKind,
+      burstTick: burstTick,
+      color: iconColor,
+      compact: true,
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, color: iconColor, size: 15),
+          const SizedBox(width: 5),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 220),
+            transitionBuilder: (child, animation) {
+              return FadeTransition(
+                opacity: animation,
+                child: ScaleTransition(scale: animation, child: child),
+              );
+            },
+            child: Text(
+              count,
+              key: ValueKey(count),
+              style: AppTextStyles.buttonS.copyWith(
+                fontWeight: FontWeight.w800,
+                color: AppColors.textPrimary,
+                height: 1.0,
+              ),
             ),
-            overflow: TextOverflow.ellipsis,
           ),
-        ),
-      ],
+          const SizedBox(width: 4),
+          Flexible(
+            child: Text(
+              label,
+              style: AppTextStyles.caption.copyWith(
+                color: AppColors.textMuted,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

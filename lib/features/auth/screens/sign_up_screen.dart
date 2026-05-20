@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -9,6 +12,35 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
 import '../widgets/auth_text_field.dart';
+
+/// Fire-and-forget Resend-powered verification email send.
+///
+/// Called immediately after a successful sign-up (email/password OR Apple
+/// when Apple returned an email) so the message is waiting in the user's
+/// inbox by the time the 24-h verification grace period starts ticking.
+/// Skipped silently when the user already has a verified email — covers
+/// returning Apple users.
+///
+/// Failures are non-fatal and logged only: a missed auto-send isn't worth
+/// blocking the onboarding flow, and the user can always re-send from
+/// Settings → Email row.
+Future<void> _kickoffVerificationEmail() async {
+  final user = FirebaseAuth.instance.currentUser;
+  if (user == null || user.emailVerified) return;
+  if (user.email == null || user.email!.isEmpty) return;
+  try {
+    // ignore: avoid_print
+    print('[SignUp] ▶ auto-sending verification email to ${user.email}');
+    await FirebaseFunctions.instance
+        .httpsCallable('sendCustomVerificationEmail')
+        .call<Map<String, dynamic>>();
+    // ignore: avoid_print
+    print('[SignUp] ✅ verification email queued for ${user.email}');
+  } catch (e) {
+    // ignore: avoid_print
+    print('[SignUp] ⚠️ auto-send verification email failed (non-fatal): $e');
+  }
+}
 
 class SignUpScreen extends StatefulWidget {
   const SignUpScreen({super.key});
@@ -152,13 +184,20 @@ class _SignUpScreenState extends State<SignUpScreen> {
           '\n  stack:\n$st');
     }
 
-    // ── STEP 3: Navigate to Profile Setup ────────────────────────────────────
+    // ── STEP 3: Auto-send verification email ─────────────────────────────────
+    // Kicked off before navigation so it races with onboarding — by the
+    // time the user finishes onboarding (~60–90 s), the verification email
+    // is already sitting in their inbox.  Non-blocking: don't await.
+    // The 24-h grace period starts ticking from createdAt set in STEP 2.
+    unawaited(_kickoffVerificationEmail());
+
+    // ── STEP 4: Navigate to Profile Setup ────────────────────────────────────
     if (!mounted) return;
     // ignore: avoid_print
-    print('[SignUp] ▶ STEP 3 — navigating to ${AppRoutes.onboardingName}');
+    print('[SignUp] ▶ STEP 4 — navigating to ${AppRoutes.onboardingName}');
     context.go(AppRoutes.onboardingName);
     // ignore: avoid_print
-    print('[SignUp] ✅ STEP 3 DONE — navigation triggered');
+    print('[SignUp] ✅ STEP 4 DONE — navigation triggered');
   }
 
   /// Apple Sign In path — shorter than email/password by an entire screen
@@ -207,6 +246,12 @@ class _SignUpScreenState extends State<SignUpScreen> {
         // ignore: avoid_print
         print('[SignUp/Apple] ⚠️ Firestore write failed (non-fatal): $e');
       }
+
+      // Apple may NOT have returned a usable email (relay address with
+      // "Hide My Email" still works for auth, but Firebase auto-verifies
+      // it).  The auto-send helper no-ops when the user is already
+      // verified, so this is safe either way.
+      unawaited(_kickoffVerificationEmail());
 
       if (!mounted) return;
       // ignore: avoid_print
