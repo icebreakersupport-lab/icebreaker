@@ -1043,7 +1043,13 @@ class _SettingsScreenState extends State<SettingsScreen>
             icon: Icons.verified_outlined,
             iconColor: AppColors.brandCyan,
             label: 'Live Verification',
-            onTap: () => context.push(AppRoutes.liveVerify, extra: false),
+            // Routes to an info screen instead of dropping the user into the
+            // live-verify flow.  Re-entering the verification step outside an
+            // active GO LIVE session was a loophole that let users refresh
+            // their verified status without starting a new session.  The
+            // only legitimate path to the live-verify flow is from the GO
+            // LIVE button on Home.
+            onTap: () => context.push(AppRoutes.liveVerificationInfo),
           ),
           _SettingsRow(
             icon: Icons.workspace_premium_outlined,

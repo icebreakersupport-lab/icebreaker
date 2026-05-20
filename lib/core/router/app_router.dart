@@ -35,6 +35,7 @@ import '../../features/onboarding/screens/welcome_screen.dart';
 import '../../features/startup/screens/app_loading_screen.dart';
 import '../../features/dev/screens/design_preview_screen.dart';
 import '../../features/settings/screens/blocked_users_screen.dart';
+import '../../features/settings/screens/live_verification_info_screen.dart';
 import '../../features/settings/screens/reporting_and_blocking_screen.dart';
 import '../../features/settings/screens/settings_screen.dart';
 import '../constants/app_constants.dart';
@@ -205,6 +206,20 @@ GoRouter buildAppRouter({
               const NoTransitionPage(child: MessagesScreen()),
         ),
         GoRoute(
+          path: AppRoutes.chat,
+          builder: (context, state) {
+            final extra = state.extra as Map<String, dynamic>;
+            return ChatThreadScreen(
+              icebreakerId: '',
+              conversationId: extra['conversationId'] as String?,
+              otherFirstName: (extra['otherFirstName'] as String?) ?? '',
+              otherPhotoUrl: (extra['otherPhotoUrl'] as String?) ?? '',
+              message: '',
+              status: 'unlocked',
+            );
+          },
+        ),
+        GoRoute(
           path: AppRoutes.profile,
           pageBuilder: (context, state) =>
               const NoTransitionPage(child: ProfileScreen()),
@@ -366,24 +381,6 @@ GoRouter buildAppRouter({
       builder: (context, state) => const OnboardingSlideshowScreen(),
     ),
 
-    // ── Chat thread ───────────────────────────────────────────────────────
-    // Used only for unlocked conversations (Chats section).
-    // Locked and history modes use Navigator.push directly.
-    GoRoute(
-      path: AppRoutes.chat,
-      builder: (context, state) {
-        final extra = state.extra as Map<String, dynamic>;
-        return ChatThreadScreen(
-          icebreakerId: '',
-          conversationId: extra['conversationId'] as String?,
-          otherFirstName: (extra['otherFirstName'] as String?) ?? '',
-          otherPhotoUrl: (extra['otherPhotoUrl'] as String?) ?? '',
-          message: '',
-          status: 'unlocked',
-        );
-      },
-    ),
-
     // ── Design preview (dev only) ─────────────────────────────────────────
     // Registered only in debug builds so the route cannot be reached in
     // production via deep-link or typo'd navigation.
@@ -446,6 +443,11 @@ GoRouter buildAppRouter({
     GoRoute(
       path: AppRoutes.settings,
       builder: (context, state) => const SettingsScreen(),
+    ),
+
+    GoRoute(
+      path: AppRoutes.liveVerificationInfo,
+      builder: (context, state) => const LiveVerificationInfoScreen(),
     ),
 
     GoRoute(

@@ -104,6 +104,12 @@ abstract final class AppRoutes {
   static const String gallery = '/profile/gallery';
   static const String profileChecklist = '/profile/checklist';
   static const String settings = '/profile/settings';
+  /// Informational page describing what Live Verification is and where it
+  /// shows up. This is NOT a way to enter the live-verify flow — that
+  /// only happens via the GO LIVE button so users can't bypass having an
+  /// active live session.
+  static const String liveVerificationInfo =
+      '/profile/settings/live-verification-info';
   static const String blockedUsers = '/profile/settings/blocked-users';
   static const String reportingAndBlocking =
       '/profile/settings/reporting-and-blocking';

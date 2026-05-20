@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 import '../../../core/constants/app_constants.dart';
 import '../../../core/models/profile_completion.dart';
@@ -35,6 +36,7 @@ class ProfileChecklistScreen extends StatelessWidget {
     final score = ProfileCompletionScore.fromProfile(
       profile,
       hasLiveSelfie: session.selfieFilePath != null,
+      emailVerified: FirebaseAuth.instance.currentUser?.emailVerified ?? false,
     );
 
     return GradientScaffold(
@@ -324,7 +326,11 @@ class _CategorySection extends StatelessWidget {
 ///   photo_first, photo_three            → GalleryScreen()
 ///   video                               → GalleryScreen(scrollToVideo: true)
 ///   live_selfie                         → LiveVerificationScreen()
-///   name_age, email, location, phone    → complete; no tap
+///   email                               → SettingsScreen (where the
+///                                          "Tap to send verification email"
+///                                          row lives, with cooldown + status
+///                                          chip)
+///   name_age, location, phone           → always complete; no tap
 class _ChecklistItem extends StatelessWidget {
   const _ChecklistItem({required this.item});
   final ProfileCompletionItem item;
@@ -343,7 +349,13 @@ class _ChecklistItem extends StatelessWidget {
         context.push(AppRoutes.gallery, extra: {'scrollToVideo': true});
       case 'live_selfie':
         context.push(AppRoutes.liveVerify);
-      // name_age, email, location, phone — complete; no action
+      case 'email':
+        // Settings hosts the canonical "send verification email" UX (cooldown
+        // timer, status chip, snackbar errors).  Routing here instead of
+        // wiring a duplicate sender in the checklist avoids drift in rate
+        // limits, error messages, and the success cue.
+        context.push(AppRoutes.settings);
+      // name_age, location, phone — always complete; no action
     }
   }
 
@@ -491,5 +503,6 @@ class _ChecklistItem extends StatelessWidget {
         'photo_three',
         'video',
         'live_selfie',
+        'email',
       }.contains(id);
 }
