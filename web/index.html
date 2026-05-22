@@ -1,46 +1,777 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
-  <base href="$FLUTTER_BASE_HREF">
-
   <meta charset="UTF-8">
-  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Icebreaker Live — stop swiping, start meeting. See who's live and nearby, send one icebreaker, find your color, meet in person. The new way to connect, respectfully and safely.">
+  <meta property="og:title" content="Icebreaker Live — Stop Swiping. Start Meeting.">
+  <meta property="og:description" content="See who's live and nearby right now. Send one icebreaker. Meet in person. Chat unlocks after chemistry, not before.">
+  <meta property="og:image" content="https://icebreakerlive.com/screenshots/01_go_live.png">
+  <title>Icebreaker Live — Stop Swiping. Start Meeting.</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <style>
+    :root {
+      --bg: #0d0316;
+      --panel: rgba(31, 9, 45, 0.82);
+      --panel-border: rgba(94, 40, 135, 0.7);
+      --text: #fbf5ff;
+      --muted: rgba(251, 245, 255, 0.72);
+      --pink: #ff2d8d;
+      --cyan: #20d5ff;
+      --purple: #8f3dff;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+    }
 
-  <!-- iOS meta tags & icons -->
-  <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="icebreaker">
-  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+    * { box-sizing: border-box; margin: 0; padding: 0; }
 
-  <!-- Favicon -->
-  <link rel="icon" type="image/png" href="favicon.png"/>
+    html { scroll-behavior: smooth; }
 
-  <title>icebreaker</title>
-  <link rel="manifest" href="manifest.json">
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow-x: hidden;
+    }
+
+    /* ── NAV ── */
+    nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 64px;
+      background: rgba(13, 3, 22, 0.86);
+      backdrop-filter: blur(14px);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    }
+
+    .nav-logo {
+      font-size: 20px;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(90deg, var(--pink), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      text-decoration: none;
+    }
+
+    .nav-links {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      list-style: none;
+    }
+
+    .nav-links a {
+      color: rgba(251, 245, 255, 0.7);
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 500;
+      transition: color 0.15s;
+    }
+
+    .nav-links a:hover { color: var(--text); }
+
+    /* ── HERO ── */
+    .hero-section {
+      position: relative;
+      min-height: 90vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      padding: 80px 24px 64px;
+      background:
+        radial-gradient(ellipse at 20% 0%, rgba(255, 45, 141, 0.28) 0%, transparent 50%),
+        radial-gradient(ellipse at 80% 10%, rgba(32, 213, 255, 0.18) 0%, transparent 40%),
+        radial-gradient(ellipse at 50% 100%, rgba(143, 61, 255, 0.22) 0%, transparent 50%),
+        linear-gradient(180deg, #1a0823 0%, var(--bg) 100%);
+    }
+
+    .eyebrow {
+      display: inline-block;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 20px;
+    }
+
+    .hero-title {
+      font-size: clamp(48px, 9vw, 96px);
+      font-weight: 900;
+      line-height: 0.95;
+      letter-spacing: -0.03em;
+      max-width: 900px;
+    }
+
+    .hero-title .gradient-word {
+      background: linear-gradient(90deg, var(--pink) 0%, var(--purple) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .hero-subtitle {
+      max-width: 600px;
+      margin: 28px auto 0;
+      font-size: clamp(17px, 2.5vw, 22px);
+      line-height: 1.6;
+      color: var(--muted);
+    }
+
+    .hero-cta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 14px;
+      justify-content: center;
+      margin-top: 44px;
+    }
+
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 28px;
+      height: 56px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, var(--pink), var(--purple));
+      color: #fff;
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+      border: none;
+      cursor: pointer;
+      box-shadow: 0 8px 28px rgba(255, 45, 141, 0.38);
+      transition: transform 0.15s, box-shadow 0.15s;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 12px 36px rgba(255, 45, 141, 0.5);
+    }
+
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 28px;
+      height: 56px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(32, 213, 255, 0.28);
+      color: var(--cyan);
+      font-size: 16px;
+      font-weight: 700;
+      text-decoration: none;
+      transition: background 0.15s, transform 0.15s;
+    }
+
+    .btn-secondary:hover {
+      background: rgba(32, 213, 255, 0.1);
+      transform: translateY(-2px);
+    }
+
+    .store-badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      justify-content: center;
+      margin-top: 48px;
+    }
+
+    .store-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      padding: 0 24px;
+      height: 52px;
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.07);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      color: var(--text);
+      text-decoration: none;
+      transition: background 0.15s, transform 0.15s;
+    }
+
+    .store-badge:hover {
+      background: rgba(255, 255, 255, 0.12);
+      transform: translateY(-2px);
+    }
+
+    .store-badge svg {
+      flex-shrink: 0;
+    }
+
+    .store-badge-text {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+    }
+
+    .store-badge-text .store-line1 {
+      font-size: 10px;
+      color: var(--muted);
+      line-height: 1;
+    }
+
+    .store-badge-text .store-line2 {
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+
+    .coming-soon-note {
+      margin-top: 12px;
+      font-size: 13px;
+      color: rgba(251, 245, 255, 0.4);
+    }
+
+    /* ── SECTION WRAPPER ── */
+    .section {
+      padding: 96px 24px;
+    }
+
+    .section-inner {
+      width: min(1080px, 100%);
+      margin: 0 auto;
+    }
+
+    .section-label {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.18em;
+      text-transform: uppercase;
+      color: var(--cyan);
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      font-size: clamp(32px, 5vw, 54px);
+      font-weight: 900;
+      letter-spacing: -0.03em;
+      line-height: 1.05;
+      margin-bottom: 20px;
+    }
+
+    .section-body {
+      font-size: 18px;
+      line-height: 1.7;
+      color: var(--muted);
+      max-width: 640px;
+    }
+
+    /* ── HOW IT WORKS ── */
+    .how-section {
+      background:
+        radial-gradient(ellipse at 0% 50%, rgba(255, 45, 141, 0.12) 0%, transparent 50%),
+        radial-gradient(ellipse at 100% 50%, rgba(143, 61, 255, 0.12) 0%, transparent 50%);
+    }
+
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 20px;
+      margin-top: 56px;
+    }
+
+    .step-card {
+      padding: 28px 24px;
+      border-radius: 24px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+      backdrop-filter: blur(8px);
+    }
+
+    .step-number {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, var(--pink), var(--purple));
+      font-size: 16px;
+      font-weight: 900;
+      margin-bottom: 18px;
+    }
+
+    .step-icon {
+      font-size: 32px;
+      margin-bottom: 14px;
+      display: block;
+    }
+
+    .step-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      letter-spacing: -0.02em;
+    }
+
+    .step-desc {
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    /* ── SCREENSHOTS ── */
+    .screenshots-section {
+      overflow: hidden;
+    }
+
+    .screenshots-header {
+      text-align: center;
+      margin-bottom: 52px;
+    }
+
+    .screenshots-scroll {
+      display: flex;
+      gap: 20px;
+      overflow-x: auto;
+      padding: 12px 24px 24px;
+      scroll-snap-type: x mandatory;
+      -webkit-overflow-scrolling: touch;
+      scrollbar-width: none;
+    }
+
+    .screenshots-scroll::-webkit-scrollbar { display: none; }
+
+    .phone-frame {
+      flex-shrink: 0;
+      scroll-snap-align: center;
+      width: 220px;
+      border-radius: 32px;
+      overflow: hidden;
+      border: 2px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.5);
+      transition: transform 0.2s;
+    }
+
+    .phone-frame:hover { transform: translateY(-8px) scale(1.02); }
+
+    .phone-frame img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    .screenshot-label {
+      text-align: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: rgba(251, 245, 255, 0.5);
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      margin-top: 14px;
+    }
+
+    .phone-wrap {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* ── WHY ICEBREAKER ── */
+    .why-section {
+      background:
+        radial-gradient(ellipse at 50% 0%, rgba(32, 213, 255, 0.08) 0%, transparent 50%);
+    }
+
+    .why-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+      gap: 20px;
+      margin-top: 56px;
+    }
+
+    .why-card {
+      padding: 28px 24px;
+      border-radius: 24px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+    }
+
+    .why-card-icon {
+      font-size: 28px;
+      margin-bottom: 16px;
+      display: block;
+    }
+
+    .why-card-title {
+      font-size: 20px;
+      font-weight: 800;
+      margin-bottom: 10px;
+      letter-spacing: -0.02em;
+    }
+
+    .why-card-desc {
+      font-size: 15px;
+      line-height: 1.65;
+      color: var(--muted);
+    }
+
+    /* ── SAFETY ── */
+    .safety-section {
+      text-align: center;
+    }
+
+    .safety-inner {
+      max-width: 720px;
+      margin: 0 auto;
+    }
+
+    .safety-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      justify-content: center;
+      margin-top: 40px;
+    }
+
+    .safety-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(32, 213, 255, 0.28);
+      background: rgba(32, 213, 255, 0.06);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--cyan);
+    }
+
+    /* ── CTA BAND ── */
+    .cta-band {
+      text-align: center;
+      padding: 96px 24px;
+      background:
+        radial-gradient(ellipse at 50% 50%, rgba(255, 45, 141, 0.2), transparent 60%);
+    }
+
+    .cta-band .section-title {
+      max-width: 640px;
+      margin-left: auto;
+      margin-right: auto;
+    }
+
+    /* ── FOOTER ── */
+    footer {
+      border-top: 1px solid rgba(255, 255, 255, 0.06);
+      padding: 40px 32px;
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+    }
+
+    .footer-logo {
+      font-size: 17px;
+      font-weight: 800;
+      background: linear-gradient(90deg, var(--pink), var(--purple));
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 24px;
+      list-style: none;
+    }
+
+    .footer-links a {
+      color: rgba(251, 245, 255, 0.55);
+      text-decoration: none;
+      font-size: 14px;
+      transition: color 0.15s;
+    }
+
+    .footer-links a:hover { color: var(--text); }
+
+    .footer-copy {
+      width: 100%;
+      font-size: 13px;
+      color: rgba(251, 245, 255, 0.3);
+    }
+
+    /* ── RESPONSIVE ── */
+    @media (max-width: 640px) {
+      nav { padding: 0 20px; }
+      .nav-links { gap: 16px; }
+      .section { padding: 64px 16px; }
+      footer { padding: 32px 20px; }
+    }
+  </style>
 </head>
 <body>
-  <!--
-    You can customize the "flutter_bootstrap.js" script.
-    This is useful to provide a custom configuration to the Flutter loader
-    or to give the user feedback during the initialization process.
 
-    For more details:
-    * https://docs.flutter.dev/platform-integration/web/initialization
-  -->
-  <script src="flutter_bootstrap.js" async></script>
+  <!-- NAV -->
+  <nav>
+    <a class="nav-logo" href="/">Icebreaker</a>
+    <ul class="nav-links">
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#screenshots">See the app</a></li>
+      <li><a href="privacy.html">Privacy</a></li>
+      <li><a href="terms.html">Terms</a></li>
+    </ul>
+  </nav>
+
+  <!-- HERO -->
+  <section class="hero-section">
+    <span class="eyebrow">Icebreaker Live</span>
+    <h1 class="hero-title">
+      Stop <span class="gradient-word">swiping.</span><br>
+      Start meeting.
+    </h1>
+    <p class="hero-subtitle">
+      See who's live and nearby right now. Send one icebreaker. Find your color. Meet in person.
+      Chat unlocks after chemistry — not before.
+    </p>
+    <div class="store-badge-row">
+      <a class="store-badge" href="#" aria-label="Download on the App Store">
+        <!-- Apple logo -->
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+          <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+        </svg>
+        <span class="store-badge-text">
+          <span class="store-line1">Download on the</span>
+          <span class="store-line2">App Store</span>
+        </span>
+      </a>
+      <a class="store-badge" href="#" aria-label="Get it on Google Play">
+        <!-- Play Store logo -->
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 20.5v-17c0-.83.94-1.3 1.6-.8l14 8.5c.6.36.6 1.24 0 1.6l-14 8.5c-.66.5-1.6.03-1.6-.8zM5 6.07V17.93L15.71 12 5 6.07z"/>
+        </svg>
+        <span class="store-badge-text">
+          <span class="store-line1">Get it on</span>
+          <span class="store-line2">Google Play</span>
+        </span>
+      </a>
+    </div>
+    <p class="coming-soon-note">Available soon on iOS and Android &mdash; 18+ only</p>
+  </section>
+
+  <!-- HOW IT WORKS -->
+  <section class="section how-section" id="how-it-works">
+    <div class="section-inner">
+      <p class="section-label">How it works</p>
+      <h2 class="section-title">From the same room<br>to a real conversation.</h2>
+      <p class="section-body">
+        Icebreaker is built for the moment you're in — a bar, campus, coffee shop, concert, event.
+        No endless swiping. No chat purgatory. Just a respectful, fast path to a real-life interaction.
+      </p>
+      <div class="steps-grid">
+        <div class="step-card">
+          <span class="step-number">1</span>
+          <div class="step-title">Go Live</div>
+          <p class="step-desc">
+            Tap Go Live and take a quick selfie. You're now visible to nearby people who are also live.
+            Your live session runs for a set window — you're in control.
+          </p>
+        </div>
+        <div class="step-card">
+          <span class="step-number">2</span>
+          <div class="step-title">See who's nearby</div>
+          <p class="step-desc">
+            Browse real people who are live, nearby, and open to meeting right now.
+            Only mutual-opt-in people can see each other — no uninvited contact.
+          </p>
+        </div>
+        <div class="step-card">
+          <span class="step-number">3</span>
+          <div class="step-title">Send one icebreaker</div>
+          <p class="step-desc">
+            Pick one person, send one icebreaker message. Make it count.
+            If they accept, you both get a shared color to find each other IRL.
+          </p>
+        </div>
+        <div class="step-card">
+          <span class="step-number">4</span>
+          <div class="step-title">Meet in person</div>
+          <p class="step-desc">
+            Find your color, have a short in-person conversation. If you both say yes after meeting,
+            chat unlocks. The spark happens in person — not on a screen.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SCREENSHOTS -->
+  <section class="section screenshots-section" id="screenshots">
+    <div class="screenshots-header">
+      <p class="section-label">See the app</p>
+      <h2 class="section-title">The room is live.</h2>
+    </div>
+    <div class="screenshots-scroll">
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/01_go_live.png" alt="Go Live screen" loading="lazy">
+        </div>
+        <p class="screenshot-label">Go Live</p>
+      </div>
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/02_see_nearby.png" alt="See who's nearby" loading="lazy">
+        </div>
+        <p class="screenshot-label">See Nearby</p>
+      </div>
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/03_make_first_move.png" alt="Send an icebreaker" loading="lazy">
+        </div>
+        <p class="screenshot-label">Make the First Move</p>
+      </div>
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/04_find_your_color.png" alt="Find your color" loading="lazy">
+        </div>
+        <p class="screenshot-label">Find Your Color</p>
+      </div>
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/05_talk_first.png" alt="Talk first, chat later" loading="lazy">
+        </div>
+        <p class="screenshot-label">Talk First</p>
+      </div>
+      <div class="phone-wrap">
+        <div class="phone-frame">
+          <img src="screenshots/09_chat_unlocks.png" alt="Chat unlocks after meeting" loading="lazy">
+        </div>
+        <p class="screenshot-label">Chat Unlocks</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- WHY ICEBREAKER -->
+  <section class="section why-section">
+    <div class="section-inner">
+      <p class="section-label">Why Icebreaker</p>
+      <h2 class="section-title">A new way<br>to play the game.</h2>
+      <div class="why-grid">
+        <div class="why-card">
+          <span class="why-card-icon">&#128247;</span>
+          <div class="why-card-title">Live verification selfie</div>
+          <p class="why-card-desc">
+            Every active session requires a real-time selfie. No catfishing, no stale profiles —
+            you see the person as they are right now, right there.
+          </p>
+        </div>
+        <div class="why-card">
+          <span class="why-card-icon">&#128205;</span>
+          <div class="why-card-title">Proximity-first matching</div>
+          <p class="why-card-desc">
+            Only people who are physically nearby and actively live appear on your radar.
+            This is about the moment you're in, not someone three cities away.
+          </p>
+        </div>
+        <div class="why-card">
+          <span class="why-card-icon">&#9889;</span>
+          <div class="why-card-title">Mutual consent, always</div>
+          <p class="why-card-desc">
+            Both people must opt in before any meeting happens. One icebreaker, one chance —
+            no harassment, no spam, no unwanted contact.
+          </p>
+        </div>
+        <div class="why-card">
+          <span class="why-card-icon">&#128172;</span>
+          <div class="why-card-title">Chat unlocks after meeting</div>
+          <p class="why-card-desc">
+            The app doesn't let you disappear into a chat thread. Meet first, vibe first —
+            then both decide whether to keep talking.
+          </p>
+        </div>
+        <div class="why-card">
+          <span class="why-card-icon">&#128736;</span>
+          <div class="why-card-title">Block, report, control</div>
+          <p class="why-card-desc">
+            Instantly block anyone, report bad behavior, and manage exactly who can see you.
+            Safety is built into every layer — not bolted on as an afterthought.
+          </p>
+        </div>
+        <div class="why-card">
+          <span class="why-card-icon">&#10024;</span>
+          <div class="why-card-title">Respectful by design</div>
+          <p class="why-card-desc">
+            Icebreaker isn't designed to help you match — it's designed to help you meet.
+            The spark happens in person. We just make it less awkward to start.
+          </p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- SAFETY -->
+  <section class="section safety-section">
+    <div class="safety-inner">
+      <p class="section-label">Safety</p>
+      <h2 class="section-title">Respectful and safe —<br>that's the whole game.</h2>
+      <p class="section-body" style="margin: 20px auto 0;">
+        Icebreaker is built with real-world safety at its core. Mutual opt-in before any contact.
+        Live selfie verification on every session. One-tap blocking and reporting. Age-verified accounts (18+).
+        We enforce the rules — so you can focus on the conversation.
+      </p>
+      <div class="safety-pills">
+        <div class="safety-pill">&#10003; Age-verified 18+</div>
+        <div class="safety-pill">&#10003; Live selfie verification</div>
+        <div class="safety-pill">&#10003; Mutual opt-in only</div>
+        <div class="safety-pill">&#10003; One-tap block &amp; report</div>
+        <div class="safety-pill">&#10003; Instant account deletion</div>
+        <div class="safety-pill">&#10003; Location never shown exactly</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- CTA BAND -->
+  <section class="cta-band">
+    <p class="section-label">Get started</p>
+    <h2 class="section-title">Break the ice.<br>In real life.</h2>
+    <div class="store-badge-row" style="margin-top: 36px;">
+      <a class="store-badge" href="#" aria-label="Download on the App Store">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+          <path d="M18.71 19.5c-.83 1.24-1.71 2.45-3.05 2.47-1.34.03-1.77-.79-3.29-.79-1.53 0-2 .77-3.27.82-1.31.05-2.3-1.32-3.14-2.53C4.25 17 2.94 12.45 4.7 9.39c.87-1.52 2.43-2.48 4.12-2.51 1.28-.02 2.5.87 3.29.87.78 0 2.26-1.07 3.8-.91.65.03 2.47.26 3.64 1.98-.09.06-2.17 1.28-2.15 3.81.03 3.02 2.65 4.03 2.68 4.04-.03.07-.42 1.44-1.38 2.83M13 3.5c.73-.83 1.94-1.46 2.94-1.5.13 1.17-.34 2.35-1.04 3.19-.69.85-1.83 1.51-2.95 1.42-.15-1.15.41-2.35 1.05-3.11z"/>
+        </svg>
+        <span class="store-badge-text">
+          <span class="store-line1">Download on the</span>
+          <span class="store-line2">App Store</span>
+        </span>
+      </a>
+      <a class="store-badge" href="#" aria-label="Get it on Google Play">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="white" xmlns="http://www.w3.org/2000/svg">
+          <path d="M3 20.5v-17c0-.83.94-1.3 1.6-.8l14 8.5c.6.36.6 1.24 0 1.6l-14 8.5c-.66.5-1.6.03-1.6-.8zM5 6.07V17.93L15.71 12 5 6.07z"/>
+        </svg>
+        <span class="store-badge-text">
+          <span class="store-line1">Get it on</span>
+          <span class="store-line2">Google Play</span>
+        </span>
+      </a>
+    </div>
+    <p class="coming-soon-note">Coming soon &mdash; 18+ only</p>
+  </section>
+
+  <!-- FOOTER -->
+  <footer>
+    <div class="footer-logo">Icebreaker</div>
+    <ul class="footer-links">
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="privacy.html">Privacy Policy</a></li>
+      <li><a href="terms.html">Terms of Service</a></li>
+      <li><a href="delete-account.html">Delete Account</a></li>
+      <li><a href="mailto:icebreaker.support@gmail.com">Support</a></li>
+    </ul>
+    <p class="footer-copy">&copy; 2026 Icebreaker Live. All rights reserved. For users 18 and older.</p>
+  </footer>
+
 </body>
 </html>

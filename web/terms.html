@@ -1,0 +1,487 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Terms of Service for Icebreaker Live. Read our usage rules, in-app purchase policy, and community guidelines.">
+  <title>Terms of Service | Icebreaker Live</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <style>
+    :root {
+      --bg: #0d0316;
+      --panel: rgba(31, 9, 45, 0.82);
+      --panel-border: rgba(94, 40, 135, 0.7);
+      --text: #fbf5ff;
+      --muted: rgba(251, 245, 255, 0.72);
+      --pink: #ff2d8d;
+      --cyan: #20d5ff;
+      --purple: #8f3dff;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(255, 45, 141, 0.22), transparent 30%),
+        radial-gradient(circle at top right, rgba(32, 213, 255, 0.14), transparent 24%),
+        linear-gradient(180deg, #1a0823 0%, var(--bg) 74%);
+      color: var(--text);
+    }
+
+    .wrap {
+      width: min(980px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 72px;
+    }
+
+    .hero,
+    .section {
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(135deg, rgba(255, 45, 141, 0.15), rgba(143, 61, 255, 0.16));
+      backdrop-filter: blur(10px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--cyan);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 6vw, 56px);
+      line-height: 0.98;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+      margin-top: 24px;
+    }
+
+    .section {
+      padding: 24px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    p, li {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    ul, ol {
+      margin: 14px 0 0;
+      padding-left: 20px;
+    }
+
+    li { margin-bottom: 6px; }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(32, 213, 255, 0.22);
+      background: rgba(9, 30, 39, 0.34);
+    }
+
+    .callout strong { color: var(--text); }
+
+    .warn {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(255, 45, 141, 0.28);
+      background: rgba(39, 9, 20, 0.34);
+    }
+
+    .warn strong { color: var(--pink); }
+
+    .meta {
+      margin-top: 10px;
+      font-size: 14px;
+      color: rgba(251, 245, 255, 0.56);
+    }
+
+    a { color: var(--cyan); }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 50px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--pink), var(--purple));
+    }
+
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(32, 213, 255, 0.25);
+      color: var(--cyan);
+    }
+
+    @media (max-width: 640px) {
+      .wrap { width: min(100% - 20px, 980px); padding-top: 20px; }
+      .hero, .section { padding: 20px; border-radius: 22px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">Icebreaker Live</p>
+      <h1>Terms of Service</h1>
+      <p>
+        These Terms of Service govern your use of Icebreaker Live (the "App") and
+        icebreakerlive.com (the "Site"), operated by Icebreaker Live ("we," "us," or "our").
+        By creating an account or using the App, you agree to these Terms. Please read them carefully.
+      </p>
+      <p class="meta">Last updated: May 22, 2026 &mdash; Effective immediately for new users; 30-day notice for existing users on material changes.</p>
+    </section>
+
+    <section class="stack">
+
+      <article class="section">
+        <h2>1. Eligibility</h2>
+        <p>
+          You must be at least <strong>18 years old</strong> to create an account or use the App.
+          By creating an account, you represent and warrant that you are 18 or older. We enforce this
+          requirement during onboarding and may terminate accounts found to belong to users under 18.
+        </p>
+        <p style="margin-top:12px;">
+          You must also be able to enter into a legally binding contract under applicable law.
+          If you are accessing the App on behalf of an organization, you represent that you have
+          authority to bind that organization to these Terms.
+        </p>
+        <div class="callout">
+          <strong>Age verification:</strong> Your date of birth is collected during onboarding and used
+          to verify eligibility. It is not displayed publicly to other users.
+        </div>
+      </article>
+
+      <article class="section">
+        <h2>2. Account registration and security</h2>
+        <p>
+          You may sign up using an email address and password, or through Apple Sign In.
+          You are responsible for maintaining the confidentiality of your credentials and for all
+          activity that occurs under your account.
+        </p>
+        <p style="margin-top:12px;">You agree to:</p>
+        <ul>
+          <li>Provide accurate and current information when creating your account.</li>
+          <li>Not share your login credentials with any third party.</li>
+          <li>Notify us immediately at <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a> if you suspect unauthorized access to your account.</li>
+          <li>Not create more than one personal account.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          We reserve the right to suspend or terminate accounts that we reasonably believe are being
+          used in violation of these Terms, for fraudulent purposes, or by someone other than the
+          registered account holder.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>3. Live sessions and verification</h2>
+        <p>
+          When you start a live session ("Go Live"), you are required to take a real-time selfie using
+          your device camera. This selfie is used to verify that you are present and to display your
+          live avatar to nearby users during your session.
+        </p>
+        <ul>
+          <li>You must be the person appearing in the live verification selfie.</li>
+          <li>You may not use photos, videos, masks, or filters that disguise your actual appearance.</li>
+          <li>Your live session remains visible to nearby users until you end it or it expires.</li>
+          <li>You understand that your approximate location is used to determine who is nearby and that other users will know you are live in their vicinity.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          Live sessions consume Live Session Credits from your account balance. Credits are consumable
+          and are deducted at the start of a session.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>4. Icebreakers and meetups</h2>
+        <p>
+          Sending an icebreaker to another user consumes one Icebreaker Credit from your balance.
+          An icebreaker is a single message that the recipient may accept or decline. If accepted,
+          both parties receive a shared color code to facilitate an in-person meeting.
+        </p>
+        <ul>
+          <li>You may only send one icebreaker to a given person per live session unless otherwise permitted by the app.</li>
+          <li>Icebreakers must comply with our conduct rules in Section 5. Harassing, offensive, or inappropriate icebreakers are prohibited.</li>
+          <li>After an in-person meeting, both users may choose to unlock chat. Chat access is granted only upon mutual post-meet agreement.</li>
+        </ul>
+      </article>
+
+      <article class="section">
+        <h2>5. Prohibited conduct</h2>
+        <p>You agree not to use the App to:</p>
+        <ul>
+          <li>Impersonate any person or entity, or misrepresent your identity or affiliation.</li>
+          <li>Harass, stalk, threaten, abuse, or intimidate any other user.</li>
+          <li>Post or send sexually explicit, violent, hateful, discriminatory, or otherwise offensive content.</li>
+          <li>Solicit or attempt to engage in any commercial transactions, advertising, or spam.</li>
+          <li>Collect or harvest other users' personal information without consent.</li>
+          <li>Use automated tools, bots, or scripts to access or interact with the App.</li>
+          <li>Attempt to circumvent age verification, account restrictions, or safety features.</li>
+          <li>Use the App for any illegal purpose or in violation of applicable laws or regulations.</li>
+          <li>Engage in any conduct that promotes prostitution, human trafficking, or exploitation.</li>
+          <li>Reverse-engineer, decompile, or attempt to extract source code from the App.</li>
+          <li>Interfere with or disrupt the integrity or performance of the App or its infrastructure.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          Violations may result in immediate account suspension or termination, at our sole discretion,
+          without notice or refund of any unused credits.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>6. In-app purchases and credits</h2>
+        <h3>Icebreaker and Live Session Credits</h3>
+        <p>
+          The App offers two types of consumable in-app credits: <strong>Icebreaker Credits</strong>
+          (used to send icebreakers) and <strong>Live Session Credits</strong> (used to start live sessions).
+          Credits may be purchased through the Apple App Store or Google Play, or earned by watching
+          rewarded advertisements in the Shop.
+        </p>
+        <div class="warn">
+          <strong>No refunds on consumed credits.</strong> Credits are consumable digital goods.
+          Once used, they are not refundable. Unused credits have no cash value and cannot be
+          transferred, sold, or redeemed for cash.
+        </div>
+        <h3>Purchases through Apple App Store or Google Play</h3>
+        <p>
+          All purchases are processed through Apple App Store or Google Play billing. Their respective
+          refund and billing policies apply. We do not have the ability to issue refunds for purchases
+          made through those platforms — please contact Apple or Google directly for refund requests.
+        </p>
+        <h3>Earning credits via rewarded ads</h3>
+        <p>
+          The Shop includes an "Earn Free" section where you may watch rewarded advertisements
+          (served by Google AdMob) to earn credits. The number of ad views required per credit
+          is determined by the server and may change. Watching an ad does not guarantee a credit
+          if the ad is not completed successfully.
+        </p>
+        <h3>Credit expiration</h3>
+        <p>
+          Credits do not expire while your account is in good standing. Credits are forfeited upon
+          account termination for cause.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>7. User content</h2>
+        <p>
+          You are solely responsible for all content you submit to the App, including your profile
+          photos, bio, icebreaker messages, and chat messages ("User Content"). By submitting User Content, you grant us a
+          non-exclusive, worldwide, royalty-free license to store, display, and process your User
+          Content as needed to operate the App.
+        </p>
+        <p style="margin-top:12px;">You represent and warrant that:</p>
+        <ul>
+          <li>You have the rights to all User Content you submit.</li>
+          <li>Your User Content does not infringe any third-party intellectual property rights.</li>
+          <li>Your User Content does not violate any applicable law or these Terms.</li>
+          <li>Profile photos depict you and are not misleading about your appearance.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          We reserve the right to remove any User Content that we determine, in our sole discretion,
+          violates these Terms or is otherwise harmful to users or our community.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>8. Reporting and blocking</h2>
+        <p>
+          The App provides tools to report users who violate these Terms and to block users from
+          contacting you. We review reports and may take action including warnings, suspension, or
+          permanent termination of accounts that violate our rules.
+        </p>
+        <p style="margin-top:12px;">
+          Repeated reports against an account may trigger automatic escalation to manual review.
+          While we take safety seriously, we cannot guarantee that every report will result in action,
+          and we are not liable for the conduct of other users.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>9. Account deletion</h2>
+        <p>
+          You may delete your account at any time through <strong>Profile → Settings → Delete Account</strong>
+          in the App. Account deletion is permanent and will remove your profile, photos, messages,
+          credits, and all associated data. Deletion cannot be undone.
+        </p>
+        <p style="margin-top:12px;">
+          If you cannot access the App, you may request deletion through our
+          <a href="delete-account.html">account deletion page</a> or by emailing
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>10. Intellectual property</h2>
+        <p>
+          The App, its design, code, trademarks, and all content created by us are owned by
+          Icebreaker Live and are protected by intellectual property laws. You may not copy,
+          reproduce, distribute, or create derivative works from any part of the App without
+          our express written permission.
+        </p>
+        <p style="margin-top:12px;">
+          "Icebreaker," "Icebreaker Live," and associated logos are our trademarks.
+          You may not use them without prior written consent.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>11. Disclaimers</h2>
+        <p>
+          THE APP IS PROVIDED "AS IS" AND "AS AVAILABLE" WITHOUT WARRANTIES OF ANY KIND,
+          EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO WARRANTIES OF MERCHANTABILITY,
+          FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+        </p>
+        <p style="margin-top:12px;">
+          We do not guarantee that: (a) the App will be uninterrupted, error-free, or secure;
+          (b) any information obtained through the App will be accurate or reliable; or
+          (c) any defects or errors will be corrected.
+        </p>
+        <p style="margin-top:12px;">
+          We are not responsible for the conduct, online or offline, of any user of the App.
+          Meeting other users in person involves inherent risk. Always exercise personal judgment
+          and take appropriate safety precautions when meeting anyone for the first time.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>12. Limitation of liability</h2>
+        <p>
+          TO THE FULLEST EXTENT PERMITTED BY LAW, ICEBREAKER LIVE SHALL NOT BE LIABLE FOR
+          ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS
+          OF PROFITS OR REVENUES, WHETHER INCURRED DIRECTLY OR INDIRECTLY, OR ANY LOSS OF DATA,
+          USE, GOODWILL, OR OTHER INTANGIBLE LOSSES ARISING FROM:
+        </p>
+        <ul>
+          <li>Your access to or use of (or inability to access or use) the App.</li>
+          <li>Any conduct or content of any third party on the App, including other users.</li>
+          <li>Any content obtained from the App.</li>
+          <li>Unauthorized access, use, or alteration of your transmissions or content.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          IN NO EVENT SHALL OUR TOTAL LIABILITY TO YOU FOR ALL CLAIMS EXCEED THE GREATER OF
+          (A) THE AMOUNTS YOU HAVE PAID TO US IN THE TWELVE MONTHS PRIOR TO THE CLAIM, OR (B) $100.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>13. Indemnification</h2>
+        <p>
+          You agree to defend, indemnify, and hold harmless Icebreaker Live and its officers,
+          directors, employees, and agents from and against any claims, liabilities, damages,
+          judgments, awards, losses, costs, or expenses (including attorneys' fees) arising out of
+          or relating to your violation of these Terms or your use of the App, including any User
+          Content you submit.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>14. Termination</h2>
+        <p>
+          We may suspend or terminate your account at any time, with or without cause, and with or
+          without notice, at our sole discretion. You may stop using the App at any time and delete
+          your account as described in Section 9.
+        </p>
+        <p style="margin-top:12px;">
+          Upon termination for cause (violation of these Terms), you forfeit any unused credits and
+          your right to access the App. Sections 10, 11, 12, 13, 15, and 16 survive termination.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>15. Governing law and disputes</h2>
+        <p>
+          These Terms are governed by the laws of the United States and the state in which
+          Icebreaker Live is registered, without regard to conflict of law principles.
+        </p>
+        <p style="margin-top:12px;">
+          Any dispute arising from these Terms or your use of the App shall be resolved through
+          binding arbitration conducted by a neutral arbitrator under the American Arbitration
+          Association's Consumer Arbitration Rules, rather than in court — except that either party
+          may bring an individual claim in small claims court.
+        </p>
+        <p style="margin-top:12px;">
+          <strong>Class action waiver:</strong> You agree that any dispute resolution will be conducted
+          on an individual basis only, and not in a class, consolidated, or representative action.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>16. Changes to these Terms</h2>
+        <p>
+          We may update these Terms from time to time. If we make material changes, we will notify
+          you through the App or by email at least 30 days before the changes take effect.
+          Your continued use of the App after changes become effective constitutes your acceptance
+          of the revised Terms.
+        </p>
+      </article>
+
+      <article class="section">
+        <h2>17. Contact</h2>
+        <p>
+          Questions about these Terms? Contact us at
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+        </p>
+        <div class="actions">
+          <a class="btn secondary" href="privacy.html">Privacy Policy</a>
+          <a class="btn secondary" href="delete-account.html">Delete Account</a>
+          <a class="btn secondary" href="mailto:icebreaker.support@gmail.com?subject=Terms%20of%20Service%20question">Email support</a>
+        </div>
+      </article>
+
+    </section>
+  </main>
+</body>
+</html>

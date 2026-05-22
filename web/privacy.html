@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="Privacy Policy for Icebreaker Live. Learn how location, profile data, messages, live-session information, in-app purchases, and advertising data are used.">
+  <title>Privacy Policy | Icebreaker Live</title>
+  <link rel="icon" type="image/png" href="favicon.png">
+  <style>
+    :root {
+      --bg: #0d0316;
+      --panel: rgba(31, 9, 45, 0.82);
+      --panel-border: rgba(94, 40, 135, 0.7);
+      --text: #fbf5ff;
+      --muted: rgba(251, 245, 255, 0.72);
+      --pink: #ff2d8d;
+      --cyan: #20d5ff;
+      --purple: #8f3dff;
+      --shadow: 0 24px 60px rgba(0, 0, 0, 0.34);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(255, 45, 141, 0.22), transparent 30%),
+        radial-gradient(circle at top right, rgba(32, 213, 255, 0.14), transparent 24%),
+        linear-gradient(180deg, #1a0823 0%, var(--bg) 74%);
+      color: var(--text);
+    }
+
+    .wrap {
+      width: min(980px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 40px 0 72px;
+    }
+
+    .hero,
+    .section {
+      border-radius: 28px;
+      box-shadow: var(--shadow);
+    }
+
+    .hero {
+      padding: 28px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      background: linear-gradient(135deg, rgba(255, 45, 141, 0.15), rgba(143, 61, 255, 0.16));
+      backdrop-filter: blur(10px);
+    }
+
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--cyan);
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(34px, 6vw, 56px);
+      line-height: 0.98;
+    }
+
+    .hero p {
+      max-width: 760px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 18px;
+      line-height: 1.65;
+    }
+
+    .stack {
+      display: grid;
+      gap: 18px;
+      margin-top: 24px;
+    }
+
+    .section {
+      padding: 24px;
+      border: 1px solid var(--panel-border);
+      background: var(--panel);
+    }
+
+    h2 {
+      margin: 0 0 10px;
+      font-size: 24px;
+    }
+
+    h3 {
+      margin: 20px 0 8px;
+      font-size: 17px;
+      font-weight: 700;
+      color: var(--text);
+    }
+
+    p, li {
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    ul {
+      margin: 14px 0 0;
+      padding-left: 18px;
+    }
+
+    li { margin-bottom: 6px; }
+
+    .callout {
+      margin-top: 16px;
+      padding: 16px 18px;
+      border-radius: 18px;
+      border: 1px solid rgba(32, 213, 255, 0.22);
+      background: rgba(9, 30, 39, 0.34);
+    }
+
+    .callout strong { color: var(--text); }
+
+    .meta {
+      margin-top: 10px;
+      font-size: 14px;
+      color: rgba(251, 245, 255, 0.56);
+    }
+
+    a { color: var(--cyan); }
+
+    .actions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      margin-top: 16px;
+    }
+
+    .btn {
+      appearance: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 50px;
+      padding: 0 18px;
+      border-radius: 999px;
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      text-decoration: none;
+      color: var(--text);
+      font-weight: 700;
+      background: linear-gradient(90deg, var(--pink), var(--purple));
+    }
+
+    .btn.secondary {
+      background: rgba(255, 255, 255, 0.04);
+      border-color: rgba(32, 213, 255, 0.25);
+      color: var(--cyan);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 16px;
+      font-size: 14px;
+    }
+
+    th {
+      text-align: left;
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      color: var(--text);
+      font-weight: 700;
+    }
+
+    td {
+      padding: 10px 12px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: var(--muted);
+      vertical-align: top;
+    }
+
+    @media (max-width: 640px) {
+      .wrap { width: min(100% - 20px, 980px); padding-top: 20px; }
+      .hero, .section { padding: 20px; border-radius: 22px; }
+      table { font-size: 13px; }
+      th, td { padding: 8px 10px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="hero">
+      <p class="eyebrow">Icebreaker Live</p>
+      <h1>Privacy Policy</h1>
+      <p>
+        Icebreaker Live is built to help people meet nearby in real time — respectfully and safely.
+        This policy explains every category of data we collect, why we collect it, who we share it with,
+        and how long we keep it. We believe you deserve a straight answer to every one of those questions.
+      </p>
+      <p class="meta">Last updated: May 22, 2026</p>
+    </section>
+
+    <section class="stack">
+
+      <!-- AGE REQUIREMENT -->
+      <article class="section">
+        <h2>Age requirement</h2>
+        <p>
+          Icebreaker Live is strictly for users who are <strong>18 years of age or older.</strong>
+          We collect your date of birth during account setup to verify eligibility. We do not
+          knowingly collect personal information from anyone under 18. If we learn that a user
+          is under 18, we will immediately terminate their account and delete their data.
+          If you believe a minor has created an account, contact us at
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+        </p>
+      </article>
+
+      <!-- WHAT WE COLLECT -->
+      <article class="section">
+        <h2>What we collect</h2>
+
+        <h3>Account and identity</h3>
+        <ul>
+          <li>Email address and hashed password (when using email/password sign-up).</li>
+          <li>Apple ID token and associated email when you use <strong>Sign in with Apple</strong>. Apple may provide a privacy-relay email address at your option.</li>
+          <li>Date of birth (used for age verification; not shown to other users).</li>
+        </ul>
+
+        <h3>Profile information</h3>
+        <ul>
+          <li>Display name, gender identity, and sexual orientation (used for discovery filters; you control what is visible on your profile).</li>
+          <li>Profile photos uploaded from your camera or photo library.</li>
+          <li>Bio, preferences, discovery filter settings, and other profile fields you choose to complete.</li>
+        </ul>
+
+        <h3>Live-session data</h3>
+        <ul>
+          <li>Real-time selfie photo captured when you start a live session ("Go Live") — used as your live avatar and for identity verification during the session.</li>
+          <li>Precise GPS latitude and longitude, encoded as a geohash, while a live session is active.</li>
+          <li>Session status (live, ended), session timestamps, and associated session records.</li>
+        </ul>
+
+        <h3>Interactions and communications</h3>
+        <ul>
+          <li>Icebreaker messages you send and receive.</li>
+          <li>Chat messages exchanged after a mutual post-meet agreement.</li>
+          <li>Meetup color-match state and post-meet feedback.</li>
+          <li>Block and report records you create or are subject to.</li>
+        </ul>
+
+        <h3>Device and technical data</h3>
+        <ul>
+          <li>Device push notification token (used to deliver push notifications you have enabled).</li>
+          <li>IP address (collected by Firebase infrastructure as part of normal network requests).</li>
+          <li>Device type and OS version (collected automatically by Firebase Analytics for crash reporting and diagnostics).</li>
+        </ul>
+
+        <h3>Purchase data</h3>
+        <ul>
+          <li>In-app purchase transaction IDs (Apple App Store or Google Play receipt data) forwarded to our Cloud Function to verify and grant credits.</li>
+          <li>Your current Icebreaker Credit and Live Session Credit balances.</li>
+          <li>Rewarded ad completion events (from Google AdMob) used to grant earned credits.</li>
+        </ul>
+
+        <h3>Permissions we may request</h3>
+        <ul>
+          <li><strong>Camera</strong> — required to take your live verification selfie and optional profile photos.</li>
+          <li><strong>Photo Library</strong> — required only if you choose to upload photos from your device gallery for your profile.</li>
+          <li><strong>Location (Precise, When In Use)</strong> — required while a live session is active to determine who is nearby.</li>
+          <li><strong>Push Notifications</strong> — optional; used to alert you to icebreakers, messages, match confirmations, and session events.</li>
+        </ul>
+      </article>
+
+      <!-- HOW LOCATION WORKS -->
+      <article class="section">
+        <h2>How location works in Go Live</h2>
+        <p>
+          When you start a live session, Icebreaker uses your device's precise location to show you
+          nearby people and show you to them. Your exact latitude and longitude are used server-side
+          to calculate proximity, but your exact coordinates are never displayed as a readout to other users.
+          Other users see only that you are live and nearby.
+        </p>
+        <div class="callout">
+          <strong>Important:</strong> if you leave the app during an active live session, your last
+          known live location may still be used until the session ends or you stop it.
+          This keeps your live session visible rather than incorrectly appearing offline the moment
+          your phone backgrounds the app.
+        </div>
+        <p style="margin-top:14px;">
+          If you do not want to remain visible, end your live session. When a session ends, the
+          session location fields are cleared from active discovery. We do not request background
+          location access — location is only accessed while the app is in use during a live session.
+        </p>
+      </article>
+
+      <!-- HOW WE USE YOUR INFO -->
+      <article class="section">
+        <h2>How we use your information</h2>
+        <ul>
+          <li>To create, authenticate, and manage your account.</li>
+          <li>To power nearby discovery, live sessions, icebreakers, meetups, chats, and color-match features.</li>
+          <li>To verify that you are present and real during a live session (live selfie).</li>
+          <li>To send transactional push notifications — new icebreakers, messages, match confirmations, session events, and reminders — based on your notification preferences.</li>
+          <li>To send account-related emails via Resend, including email verification messages.</li>
+          <li>To detect abuse, investigate reports, and support moderation and account safety systems.</li>
+          <li>To process in-app purchases and update your credit balances.</li>
+          <li>To serve rewarded advertisements and grant credits upon ad completion.</li>
+          <li>To improve the reliability and performance of the App through crash data and diagnostics.</li>
+        </ul>
+      </article>
+
+      <!-- SENSITIVE DATA -->
+      <article class="section">
+        <h2>Sensitive personal information</h2>
+        <p>
+          Certain information you provide — including your <strong>gender identity</strong> and
+          <strong>sexual orientation</strong> — is considered sensitive personal data under various
+          privacy laws. We collect this information solely to power discovery filters that let you
+          and other users control who appears in nearby searches and who can see you.
+        </p>
+        <p style="margin-top:12px;">
+          We do not sell, share for advertising purposes, or use this data for any purpose other
+          than operating the discovery features described above.
+        </p>
+      </article>
+
+      <!-- WHO CAN SEE YOUR INFO -->
+      <article class="section">
+        <h2>Who can see your information</h2>
+        <ul>
+          <li>Other users can see the profile information you choose to include — name, photos, bio, and any tags you add.</li>
+          <li>Other users can see that you are live and nearby while your live session is active. They see your live selfie avatar, not your exact location.</li>
+          <li>Other users' discovery filter preferences may cause your profile to be hidden from them, or vice versa, without either party being notified.</li>
+          <li>Other users do not receive your exact GPS coordinates at any time.</li>
+        </ul>
+      </article>
+
+      <!-- THIRD-PARTY SERVICES -->
+      <article class="section">
+        <h2>Third-party services we use</h2>
+        <p>
+          Icebreaker Live relies on the following third-party services to operate. Each collects or
+          processes data as described:
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>Service</th>
+              <th>Purpose</th>
+              <th>Data involved</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Firebase (Google)</strong></td>
+              <td>Authentication, database, file storage, cloud functions, push messaging, crash reporting</td>
+              <td>Account credentials, profile data, messages, location, device tokens, IP address</td>
+            </tr>
+            <tr>
+              <td><strong>Apple Sign In</strong></td>
+              <td>Authentication alternative</td>
+              <td>Apple ID token, associated email (or Apple relay email)</td>
+            </tr>
+            <tr>
+              <td><strong>Google AdMob</strong></td>
+              <td>Rewarded advertisements in the Shop "Earn Free" section</td>
+              <td>Device advertising identifier (IDFA/GAID), ad interaction events, IP address. AdMob's own privacy policy applies.</td>
+            </tr>
+            <tr>
+              <td><strong>Apple App Store</strong></td>
+              <td>In-app purchases on iOS</td>
+              <td>Purchase receipt and transaction ID forwarded to our server for credit redemption.</td>
+            </tr>
+            <tr>
+              <td><strong>Google Play Billing</strong></td>
+              <td>In-app purchases on Android</td>
+              <td>Purchase token and transaction ID forwarded to our server for credit redemption.</td>
+            </tr>
+            <tr>
+              <td><strong>Resend</strong></td>
+              <td>Email delivery for account verification messages</td>
+              <td>Your email address and the verification message content.</td>
+            </tr>
+          </tbody>
+        </table>
+        <p style="margin-top:16px;">
+          We do not sell your personal information to any third party. We do not share your data
+          with advertisers or data brokers. The services listed above act as data processors on
+          our behalf, bound by data processing agreements where applicable.
+        </p>
+      </article>
+
+      <!-- GOOGLE ADMOB -->
+      <article class="section">
+        <h2>Advertising and Google AdMob</h2>
+        <p>
+          The "Earn Free" section of our Shop displays rewarded video advertisements served by
+          <strong>Google AdMob</strong>. AdMob may collect and use your device's advertising
+          identifier (IDFA on iOS, Google Advertising ID on Android), IP address, and ad interaction
+          data in accordance with Google's own privacy policies.
+        </p>
+        <p style="margin-top:12px;">
+          On iOS, AdMob participation is subject to Apple's App Tracking Transparency framework.
+          You may see a prompt asking whether to allow tracking. You can change this setting at any
+          time in your device's Privacy &amp; Security settings.
+        </p>
+        <p style="margin-top:12px;">
+          Icebreaker Live does not display non-rewarded ads. Ads only appear in the Shop when
+          you choose to watch one to earn credits.
+        </p>
+        <div class="callout">
+          <strong>Note:</strong> Opting out of ad tracking limits AdMob's ability to show you
+          personalized ads, but you can still watch rewarded ads and earn credits.
+        </div>
+      </article>
+
+      <!-- NOTIFICATIONS -->
+      <article class="section">
+        <h2>Notifications</h2>
+        <p>
+          If you allow notifications, Icebreaker may send you alerts about live-session activity,
+          incoming icebreakers, messages, match outcomes, and reminders. You can control which
+          notification categories are enabled inside the app at any time. You can also revoke
+          notification permission entirely through your device settings.
+        </p>
+      </article>
+
+      <!-- DATA RETENTION -->
+      <article class="section">
+        <h2>Data retention</h2>
+        <ul>
+          <li><strong>Account and profile data</strong> — retained while your account is active. Deleted within 30 days of account deletion.</li>
+          <li><strong>Live-session location data</strong> — cleared from active discovery when a session ends. Session records are retained for a limited period for safety and moderation purposes, then deleted.</li>
+          <li><strong>Messages</strong> — retained while your account is active. Deleted along with your account upon deletion.</li>
+          <li><strong>Report and block records</strong> — retained for a limited period after account deletion to support safety and moderation.</li>
+          <li><strong>Purchase records</strong> — transaction IDs may be retained for legal compliance and financial record-keeping as required by law.</li>
+          <li><strong>Crash and diagnostic logs</strong> — retained for a limited period (typically 90 days) per Firebase's standard policies.</li>
+        </ul>
+      </article>
+
+      <!-- YOUR RIGHTS -->
+      <article class="section">
+        <h2>Your rights and choices</h2>
+        <p>Depending on where you live, you may have certain rights regarding your personal data:</p>
+        <ul>
+          <li><strong>Access</strong> — you may request a copy of the personal data we hold about you.</li>
+          <li><strong>Correction</strong> — you may update your profile information at any time within the app.</li>
+          <li><strong>Deletion</strong> — you may delete your account and associated data at any time (see Account deletion below).</li>
+          <li><strong>Data portability</strong> — you may request your data in a portable format.</li>
+          <li><strong>Opt-out of notifications</strong> — you can disable any or all notification categories in the app or through device settings.</li>
+          <li><strong>Ad tracking opt-out</strong> — you can limit ad tracking through your device's privacy settings.</li>
+        </ul>
+        <p style="margin-top:12px;">
+          To exercise any of these rights, email us at
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+          We will respond within 30 days.
+        </p>
+      </article>
+
+      <!-- ACCOUNT DELETION -->
+      <article class="section">
+        <h2>Account deletion</h2>
+        <p>
+          You can delete your account inside the app through <strong>Profile → Settings → Delete Account</strong>.
+          Deletion is permanent and removes your profile, photos, messages, credits, and all associated
+          Firestore and Storage data. If you no longer have the app installed, you can use our deletion page instead.
+        </p>
+        <div class="actions">
+          <a class="btn" href="delete-account.html">Open deletion page</a>
+          <a class="btn secondary" href="mailto:icebreaker.support@gmail.com?subject=Icebreaker%20Live%20privacy%20question">Email support</a>
+        </div>
+      </article>
+
+      <!-- CHILDREN -->
+      <article class="section">
+        <h2>Children's privacy (COPPA)</h2>
+        <p>
+          Icebreaker Live is not directed at, and does not knowingly collect personal information from,
+          children under 13 — or from anyone under 18. We enforce an 18+ age requirement at account
+          creation. If we discover that a user is under 18, we will immediately terminate that account
+          and delete their data. If you believe a minor has created an account, contact us immediately at
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+        </p>
+      </article>
+
+      <!-- SECURITY -->
+      <article class="section">
+        <h2>Security</h2>
+        <p>
+          We use Firebase's security infrastructure, Firestore Security Rules, and Firebase Storage
+          Rules to protect your data. All data is transmitted over HTTPS. Account credentials are
+          managed by Firebase Authentication — we never store plaintext passwords.
+        </p>
+        <p style="margin-top:12px;">
+          No system is 100% secure. If you suspect your account has been compromised, change your
+          password immediately and contact us.
+        </p>
+      </article>
+
+      <!-- POLICY CHANGES -->
+      <article class="section">
+        <h2>Changes to this policy</h2>
+        <p>
+          We may update this privacy policy from time to time. If we make material changes, we will
+          notify you through the App or by email before the changes take effect. The "Last updated"
+          date at the top of this page reflects when the policy was last revised. Your continued use
+          of the App after changes become effective constitutes acceptance of the updated policy.
+        </p>
+      </article>
+
+      <!-- CONTACT -->
+      <article class="section">
+        <h2>Contact</h2>
+        <p>
+          If you have privacy questions, requests, or concerns, contact us at
+          <a href="mailto:icebreaker.support@gmail.com">icebreaker.support@gmail.com</a>.
+          We respond within 30 days.
+        </p>
+      </article>
+
+    </section>
+  </main>
+</body>
+</html>
