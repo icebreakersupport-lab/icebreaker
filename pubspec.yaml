@@ -78,6 +78,16 @@ dependencies:
   # (deriveSquareAvatar).  Pure Dart, no native deps.
   image: ^4.5.4
 
+  # Sign in with Apple — required for iOS submission alongside any other
+  # account system (Apple Guideline 4.8). Provides the native AS Authorization
+  # sheet; we exchange the returned identity token for a Firebase credential
+  # via OAuthProvider('apple.com').
+  sign_in_with_apple: ^6.1.0
+  # Used to SHA-256 the per-request nonce before passing it to
+  # SignInWithApple.getAppleIDCredential — Firebase requires the raw nonce
+  # client-side and the hashed nonce server-side to prevent replay attacks.
+  crypto: ^3.0.3
+
 
 dev_dependencies:
   flutter_test:
