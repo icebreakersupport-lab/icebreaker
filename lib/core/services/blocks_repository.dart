@@ -80,6 +80,7 @@ class BlocksRepository {
     required String source,
     String? blockedDisplayName,
     String? blockedPhotoUrl,
+    String? conversationId,
   }) async {
     final batch = _db.batch();
     final blockedAt = FieldValue.serverTimestamp();
@@ -100,11 +101,15 @@ class BlocksRepository {
       'source': source,
       if (blockedDisplayName != null) 'displayName': blockedDisplayName,
       if (blockedPhotoUrl != null) 'photoUrl': blockedPhotoUrl,
+      // Captured when the block originates from a chat thread so the
+      // moderation/CF side can locate the offending conversation later.
+      if (conversationId != null) 'conversationId': conversationId,
     };
     // ignore_for_file: use_null_aware_elements
     final reversePayload = <String, dynamic>{
       'blockedAt': blockedAt,
       'source': source,
+      if (conversationId != null) 'conversationId': conversationId,
     };
 
     batch.set(forwardRef, forwardPayload, SetOptions(merge: true));

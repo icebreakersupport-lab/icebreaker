@@ -17,6 +17,8 @@ class IcebreakerLogo extends StatefulWidget {
     this.showGlow = true,
     this.glowRadius = 1.4,
     this.ambientGlow = 0.0,
+    this.forcePulse = false,
+    this.startupIntro = false,
   });
 
   /// Logical diameter of the bounding box.
@@ -32,6 +34,18 @@ class IcebreakerLogo extends StatefulWidget {
   /// state. Use this in the AppBar where the logo should always feel vivid.
   /// Stacks with [showGlow] when live — does not replace it.
   final double ambientGlow;
+
+  /// When true, runs the heartbeat pulse regardless of [LiveSession] state.
+  /// Used by the bootstrap startup screen so the logo feels alive during
+  /// app launch (before any user session exists).
+  final bool forcePulse;
+
+  /// Reserved for a future calm one-shot intro beat ahead of the normal
+  /// heartbeat repeat.  Currently accepted but not yet implemented — the
+  /// widget falls back to the standard repeating heartbeat.  Tracked for a
+  /// follow-up so the boot transition reads as a single wake-up gesture
+  /// rather than a hard cut into the looping animation.
+  final bool startupIntro;
 
   @override
   State<IcebreakerLogo> createState() => _IcebreakerLogoState();
@@ -99,7 +113,9 @@ class _IcebreakerLogoState extends State<IcebreakerLogo>
   @override
   Widget build(BuildContext context) {
     // Subscribe to live state — rebuilds (and syncs animation) on change.
-    final isLive = LiveSessionScope.isLive(context);
+    // [forcePulse] overrides the live-derived signal so the bootstrap
+    // splash can animate before any session exists.
+    final isLive = LiveSessionScope.isLive(context) || widget.forcePulse;
     _syncAnimation(isLive);
 
     final glowSize = widget.size * widget.glowRadius;
