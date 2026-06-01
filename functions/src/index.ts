@@ -1,12 +1,15 @@
 import { onDocumentWritten, onDocumentCreated } from 'firebase-functions/v2/firestore';
 import { onCall, HttpsError } from 'firebase-functions/v2/https';
 import { onSchedule } from 'firebase-functions/v2/scheduler';
+import { defineSecret } from 'firebase-functions/params';
 import * as functionsV1 from 'firebase-functions/v1';
 import { initializeApp } from 'firebase-admin/app';
 import { getFirestore, FieldValue, Timestamp } from 'firebase-admin/firestore';
 import { getMessaging } from 'firebase-admin/messaging';
 import { getAuth } from 'firebase-admin/auth';
 import { getStorage } from 'firebase-admin/storage';
+
+const RESEND_API_KEY = defineSecret('RESEND_API_KEY');
 
 initializeApp();
 
@@ -58,10 +61,15 @@ type PreferenceGatedPush = {
   body: string;
   data: Record<string, string>;
   channelId: string;
-  respectDoNotDisturb?: boolean;
   userData?: FirebaseFirestore.DocumentData;
 };
 
+// Removed (2026-05-20): the `respectDoNotDisturb` flag + `doNotDisturb`
+// gating block.  iOS Focus modes + the system's per-app notification
+// settings already cover the "shush this app" use case, and the per-
+// category preference keys above give finer control inside the app.  The
+// `doNotDisturb` field on users/{uid} may still exist on legacy docs; it
+// is intentionally ignored now.
 async function sendPreferenceGatedPush({
   userId,
   preferenceKey,
@@ -70,7 +78,6 @@ async function sendPreferenceGatedPush({
   body,
   data,
   channelId,
-  respectDoNotDisturb = false,
   userData,
 }: PreferenceGatedPush): Promise<void> {
   const userRef = db.collection('users').doc(userId);
@@ -92,16 +99,6 @@ async function sendPreferenceGatedPush({
   const preferenceEnabled = (resolvedUserData[preferenceKey] as boolean | undefined) ?? true;
   if (!preferenceEnabled) {
     console.log(`[${logTag}] suppressed for ${userId}: ${preferenceKey}=false`);
-    return;
-  }
-
-  const isLive = (resolvedUserData.isLive as boolean | undefined) ?? false;
-  const doNotDisturb = (resolvedUserData.doNotDisturb as boolean | undefined) ?? false;
-  if (respectDoNotDisturb && !isLive && doNotDisturb) {
-    console.log(
-      `[${logTag}] suppressed for ${userId}: ` +
-        `isLive=${isLive} doNotDisturb=${doNotDisturb}`,
-    );
     return;
   }
 
@@ -327,6 +324,9 @@ export const onMeetupDecisionWritten = onDocumentWritten(
           otherUserId: uid2,
         },
         channelId: 'match_confirmed',
+        // DND-respecting: chat-unlock is celebratory but not time-critical.
+        // If the user has put their phone down, this can wait — the match
+        // record + conversation are already created and waiting.
         userData: user1,
       }),
       sendPreferenceGatedPush({
@@ -409,18 +409,18 @@ export const onUserBlocked = onDocumentCreated(
 );
 
 /**
- * Chat message notification with Do Not Disturb enforcement.
+ * Chat message notification.
  *
  * Trigger: every new message document in conversations/{conversationId}/messages/{messageId}
  *
- * Suppression rules (DND gate):
- *   • If recipient.isLive == false AND recipient.doNotDisturb == true → skip.
- *   • isLive is written by the Flutter client in LiveSession.goLive() /
- *     endSession().  It is reset to false on cold-start crash recovery
- *     (hydrateCredits) so a force-killed session never leaves DND permanently
- *     active.
+ * Suppression rules (handled by sendPreferenceGatedPush):
+ *   • notifMessages preference false → skip.
+ *   • No FCM token → skip silently (token written by client on app init).
  *
- * No FCM token → skip silently (token written by client on app init; TODO).
+ * Do Not Disturb was removed (2026-05-20).  iOS Focus modes + the system's
+ * per-app notification settings handle "shush this app" at the OS level —
+ * an in-app DND toggle was redundant and confusing on top of that.
+ *
  * Stale/invalid token → delete token from user doc so future sends are skipped
  * until the client registers a fresh one.
  *
@@ -587,7 +587,6 @@ export const onNewChatMessage = onDocumentCreated(
         senderId,
       },
       channelId: 'chat_messages',
-      respectDoNotDisturb: true,
       userData: recipient,
     });
   },
@@ -1105,6 +1104,9 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
           otherUserId: recipientId,
         },
         channelId: 'icebreaker_reminders',
+        // DND-respecting on the sender side: the user can't take action
+        // here, it's their own outbound that hasn't been answered yet — no
+        // reason to wake their phone if they've put it down.
         userData: senderSnap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1122,6 +1124,10 @@ export const onIcebreakerExpiringSoon = onSchedule('every 1 minutes', async () =
           otherUserId: senderId,
         },
         channelId: 'icebreaker_reminders',
+        // NOT DND-respecting on the recipient side: they have ~60 s left
+        // to act on an incoming icebreaker.  Their explicit DND choice is
+        // overridden because the alternative is letting the icebreaker
+        // expire silently.
         userData: recipientSnap.data(),
       }),
     ]);
@@ -1248,6 +1254,8 @@ export const onIcebreakerCreditsRefreshed = onSchedule(
           type: 'icebreaker_credits_refreshed',
         },
         channelId: 'icebreaker_reminders',
+        // DND-respecting: purely promotional reminder.  Nothing the user
+        // needs to act on this minute.
         userData: data,
       });
 
@@ -1322,6 +1330,8 @@ export const onMatchNoMessages = onSchedule('every 15 minutes', async () => {
           otherUserId: uid2,
         },
         channelId: 'match_reminders',
+        // DND-respecting: this is a 24-h-old nudge, not a real-time event.
+        // If the user has put their phone down, this can wait.
         userData: u1Snap.data(),
       }),
       sendPreferenceGatedPush({
@@ -1667,6 +1677,62 @@ export const onMeetupFoundConfirmed = onDocumentWritten(
  * doesn't strand the other in 'talking'.  Bounded above by `limit(100)` per
  * run to keep the function fast; subsequent runs drain any backlog.
  */
+/**
+ * sendTalkExpiredPushes — fires a push notification to each participant of a
+ * meetup that just transitioned `talking` → `awaiting_post_talk_decision`.
+ *
+ * Why this is its own helper: BOTH paths into that transition (the every-1-min
+ * scheduler in [onMeetupTalkExpired] AND the client-driven trigger in
+ * [onTalkExpiredRequestCreated]) must produce the same downstream behaviour —
+ * a user whose phone is asleep when their 10-minute talk ends needs the push
+ * either way.  Centralising the send avoids drift between the two paths.
+ *
+ * Gated by the `notifMatchConfirmed` preference (same category as the
+ * meetup-match push, since the post-talk decision is the closing beat of
+ * that same match).  Skips silently when participants array is missing or
+ * malformed — we never block the status transition on a push send failure.
+ */
+async function sendTalkExpiredPushes(
+  meetupId: string,
+  meetupData: FirebaseFirestore.DocumentData,
+): Promise<void> {
+  const participants = meetupData.participants;
+  if (!Array.isArray(participants)) {
+    console.warn(
+      `[meetup-talk-expired-push] ${meetupId} has no participants array — skipping`,
+    );
+    return;
+  }
+  const names =
+    (meetupData.participantNames as Record<string, string> | undefined) ?? {};
+  await Promise.all(
+    participants.map(async (uid) => {
+      if (typeof uid !== 'string' || uid.length === 0) return;
+      // The other participant's first name — used in the push body so the
+      // user sees "How did it go with Jordan?" instead of generic copy.
+      const otherUid = participants.find(
+        (p): p is string => typeof p === 'string' && p !== uid,
+      );
+      const otherName = otherUid ? names[otherUid] : undefined;
+      const body = otherName
+        ? `Tap to decide if you and ${otherName} stay in touch.`
+        : 'Tap to decide if you stay in touch.';
+      await sendPreferenceGatedPush({
+        userId: uid,
+        preferenceKey: 'notifMatchConfirmed',
+        logTag: 'meetup-talk-expired-push',
+        title: 'How did it go?',
+        body,
+        data: {
+          type: 'meetup_talk_expired',
+          meetupId,
+        },
+        channelId: 'meetup',
+      });
+    }),
+  );
+}
+
 export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
   const now = Timestamp.now();
   const snap = await db
@@ -1690,6 +1756,11 @@ export const onMeetupTalkExpired = onSchedule('every 1 minutes', async () => {
   await writer.close();
   console.log(
     `[meetup-talk-expired] flipped ${snap.size} meetup(s) → awaiting_post_talk_decision`,
+  );
+  // Fire pushes AFTER the status writes commit so the client receiving the
+  // push opens to a meetup already in the decision phase.
+  await Promise.all(
+    snap.docs.map((doc) => sendTalkExpiredPushes(doc.id, doc.data())),
   );
 });
 
@@ -1752,6 +1823,15 @@ export const onTalkExpiredRequestCreated = onDocumentCreated(
     console.log(
       `[meetup-talk-expired-req] ${meetupId} → awaiting_post_talk_decision via ${uid}`,
     );
+    // Same push fan-out as the scheduler path so a backgrounded participant
+    // still gets the "How did it go?" prompt regardless of which flip path
+    // fired.  Read the latest data so the participantNames denormalisation
+    // is current.
+    const refreshed = await meetupRef.get();
+    const refreshedData = refreshed.data();
+    if (refreshedData) {
+      await sendTalkExpiredPushes(meetupId, refreshedData);
+    }
   },
 );
 
@@ -2115,3 +2195,191 @@ export const grantAdReward = onCall(async (request) => {
   );
   return result;
 });
+
+// ── Email verification via Resend ─────────────────────────────────────────────
+//
+// Firebase's built-in `sendEmailVerification` ships from
+// `noreply@<project>.firebaseapp.com`, which has zero sender reputation —
+// iCloud / Yahoo aggressively block it and Gmail routes it to spam.  This
+// callable replaces it with a server-generated verification link delivered
+// via Resend from a domain with SPF / DKIM / DMARC in place.
+//
+// Flow:
+//   1. Client calls `sendCustomVerificationEmail` while signed in.
+//   2. Function reads the authed user, generates a verification link with
+//      the Admin SDK (the same link Firebase Auth would have emailed), and
+//      POSTs it to the Resend HTTPS API.
+//   3. Resend handles delivery with proper authentication, so the message
+//      lands in the inbox instead of spam.
+//
+// The link Firebase generates is a `__/auth/action?mode=verifyEmail&oobCode=…`
+// URL.  Tapping it marks the user's email verified server-side; the existing
+// client reload() picks that up on the next focus.
+
+const VERIFY_FROM_EMAIL = 'Icebreaker <verify@icebreakerlive.com>';
+const VERIFY_REPLY_TO = 'icebreaker.support@gmail.com';
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export const sendCustomVerificationEmail = onCall(
+  { secrets: [RESEND_API_KEY] },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError('unauthenticated', 'Sign in required.');
+    }
+    const uid = request.auth.uid;
+
+    const user = await auth.getUser(uid);
+    if (!user.email) {
+      throw new HttpsError(
+        'failed-precondition',
+        'No email address on this account.',
+      );
+    }
+    if (user.emailVerified) {
+      return { ok: true, alreadyVerified: true };
+    }
+
+    const apiKey = RESEND_API_KEY.value();
+    if (!apiKey) {
+      console.error('[verify-email] RESEND_API_KEY secret not configured');
+      throw new HttpsError('internal', 'Email service not configured.');
+    }
+
+    // Admin SDK generates the same verification link Firebase Auth would
+    // have emailed itself — we just take delivery into our own hands.
+    const link = await auth.generateEmailVerificationLink(user.email);
+
+    const safeEmail = escapeHtml(user.email);
+    const safeLink = escapeHtml(link);
+
+    // Brand tokens (kept in sync with lib/core/theme/app_colors.dart).
+    //   bgBase   #090011  brandPink #FF1F6E  brandPurple #7B2FF7
+    //   brandCyan #00E5FF  textPrimary #FFFFFF  textSecondary #B0A4C0
+    //   textMuted #6A5F7A  divider #2A1040
+    //
+    // Inline-only styles because Gmail / iCloud / Yahoo strip <style> blocks.
+    // Background colors live on the table cells, not the body — most email
+    // clients won't honor a body background.
+    const html = `<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Verify your email — Icebreaker</title>
+  </head>
+  <body style="margin:0;padding:0;background:#090011;">
+    <span style="display:none!important;visibility:hidden;opacity:0;color:transparent;height:0;width:0;overflow:hidden;">
+      Tap the button to verify ${safeEmail} and start meeting people in real life.
+    </span>
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#090011;">
+      <tr>
+        <td align="center" style="padding:40px 16px;">
+          <table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:480px;background:#130020;border:1px solid #2A1040;border-radius:24px;">
+            <tr>
+              <td style="padding:40px 32px 32px;text-align:center;">
+
+                <!-- Brand wordmark -->
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:30px;font-weight:800;letter-spacing:-0.5px;line-height:1;margin:0 0 8px;color:#FF1F6E;background:linear-gradient(90deg,#FF1F6E,#7B2FF7);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent;">
+                  Icebreaker
+                </div>
+                <div style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;font-weight:600;letter-spacing:2px;color:#00E5FF;text-transform:uppercase;margin:0 0 32px;">
+                  Stop swiping. Start meeting.
+                </div>
+
+                <!-- Headline -->
+                <h1 style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:26px;font-weight:800;color:#FFFFFF;margin:0 0 14px;letter-spacing:-0.4px;line-height:1.2;">
+                  Confirm your email
+                </h1>
+
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;line-height:1.5;color:#B0A4C0;margin:0 0 32px;">
+                  Tap below to verify <strong style="color:#FFFFFF;">${safeEmail}</strong> so you can go live and meet people nearby.
+                </p>
+
+                <!-- CTA -->
+                <table role="presentation" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto 28px;">
+                  <tr>
+                    <td style="background:#FF1F6E;background:linear-gradient(90deg,#FF1F6E,#7B2FF7);border-radius:999px;">
+                      <a href="${safeLink}" style="display:inline-block;padding:16px 40px;font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:16px;font-weight:700;color:#FFFFFF;text-decoration:none;letter-spacing:0.3px;">
+                        Verify Email
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+
+                <!-- Fallback link -->
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;color:#6A5F7A;margin:0 0 6px;">
+                  Button not working? Paste this into your browser:
+                </p>
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:13px;line-height:1.5;margin:0 0 32px;word-break:break-all;">
+                  <a href="${safeLink}" style="color:#00E5FF;text-decoration:none;">${safeLink}</a>
+                </p>
+
+              </td>
+            </tr>
+            <tr>
+              <td style="padding:20px 32px 32px;border-top:1px solid #2A1040;text-align:center;">
+                <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:12px;line-height:1.5;color:#6A5F7A;margin:0;">
+                  You're receiving this because someone signed up for Icebreaker with this email address. If that wasn't you, you can safely ignore this message — no account will be created.
+                </p>
+              </td>
+            </tr>
+          </table>
+          <p style="font-family:-apple-system,BlinkMacSystemFont,'SF Pro Display','Segoe UI',Helvetica,Arial,sans-serif;font-size:11px;color:#6A5F7A;margin:20px 0 0;">
+            Icebreaker · icebreakerlive.com
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+    const text =
+      `Icebreaker — Stop swiping. Start meeting.\n\n` +
+      `Confirm your email to go live and meet people nearby.\n\n` +
+      `Verify ${user.email}:\n${link}\n\n` +
+      `Didn't sign up for Icebreaker? You can safely ignore this email — no account will be created.\n\n` +
+      `Icebreaker · icebreakerlive.com`;
+
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: VERIFY_FROM_EMAIL,
+        to: [user.email],
+        reply_to: VERIFY_REPLY_TO,
+        subject: 'Confirm your Icebreaker email',
+        html,
+        text,
+      }),
+    });
+
+    if (!response.ok) {
+      const errBody = await response.text().catch(() => '<no body>');
+      console.error(
+        `[verify-email] resend failed uid=${uid} status=${response.status} body=${errBody}`,
+      );
+      throw new HttpsError(
+        'internal',
+        'Could not send verification email. Please try again.',
+      );
+    }
+
+    const json = (await response.json().catch(() => ({}))) as { id?: string };
+    console.log(
+      `[verify-email] sent uid=${uid} to=${user.email} resendId=${json.id ?? 'unknown'}`,
+    );
+
+    return { ok: true };
+  },
+);

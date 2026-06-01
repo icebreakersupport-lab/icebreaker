@@ -546,6 +546,26 @@ service cloud.firestore {
                   && resource.data.status == 'active';
     }
 
+    // ── Live session history ────────────────────────────────────────────────
+    // Durable append-only-ish audit trail: one document per Go Live session.
+    // Unlike `live_sessions/{uid}`, this collection is never keyed by uid, so
+    // multiple historical sessions per user can coexist for debugging,
+    // moderation, and product analytics.  Owner-only access from the client;
+    // Cloud Functions / Admin SDK bypass rules when broader access is needed.
+    match /live_session_history/{sessionId} {
+      allow create: if request.auth != null
+                    && request.resource.data.uid == request.auth.uid;
+
+      allow get, list: if request.auth != null
+                       && resource.data.uid == request.auth.uid;
+
+      allow update: if request.auth != null
+                    && resource.data.uid == request.auth.uid
+                    && request.resource.data.uid == request.auth.uid;
+
+      allow delete: if false;
+    }
+
     // ── Reverse block index ───────────────────────────────────────────────────
     // Mirrors the blockedUsers subcollection in the opposite direction.
     // Written by the blocker at block time so the blocked user can stream
