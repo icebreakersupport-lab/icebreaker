@@ -19,6 +19,9 @@ class NearbyAboutMeCard extends StatelessWidget {
     this.occupation,
     this.height,
     this.lookingFor,
+    this.bio,
+    this.interests = const [],
+    this.hobbies = const [],
   });
 
   final int age;
@@ -26,6 +29,16 @@ class NearbyAboutMeCard extends StatelessWidget {
   final String? occupation;
   final String? height;
   final String? lookingFor;
+
+  /// Free-text "about me" blurb shown above the structured rows.  Hidden
+  /// when null or empty.
+  final String? bio;
+
+  /// Interest chips rendered below the structured rows.  Hidden when empty.
+  final List<String> interests;
+
+  /// Hobby chips rendered below the structured rows.  Hidden when empty.
+  final List<String> hobbies;
 
   @override
   Widget build(BuildContext context) {

@@ -2,11 +2,14 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/state/live_session.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
+import '../services/apple_sign_in.dart';
+import '../services/post_auth_router.dart';
 import '../widgets/auth_text_field.dart';
 
 class SignInScreen extends StatefulWidget {
@@ -23,6 +26,7 @@ class _SignInScreenState extends State<SignInScreen> {
   final _passwordFocus = FocusNode();
 
   bool _isLoading = false;
+  bool _isAppleLoading = false;
   String? _errorMessage;
 
   @override
@@ -210,6 +214,52 @@ class _SignInScreenState extends State<SignInScreen> {
     return AppRoutes.onboardingPhoto;
   }
 
+  /// Sign in (or sign up) with Apple via the native ASAuthorization sheet.
+  /// Apple's flow is account-agnostic — the same call signs an existing
+  /// user in or creates a fresh Firebase account if the Apple ID is new.
+  Future<void> _signInWithApple() async {
+    if (_isLoading || _isAppleLoading) return;
+    _emailFocus.unfocus();
+    _passwordFocus.unfocus();
+    setState(() {
+      _isAppleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final credential = await AppleSignIn.signIn();
+      if (!mounted) return;
+      final routeError = await routeAfterAuth(context, credential.user!);
+      if (routeError != null && mounted) {
+        setState(() {
+          _isAppleLoading = false;
+          _errorMessage = routeError;
+        });
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      // User cancelled → silent no-op.  Other AS errors → show a message.
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = e.code == AuthorizationErrorCode.canceled
+            ? null
+            : 'Apple sign-in failed. Please try again.';
+      });
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = _mapError(e.code);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = 'Something went wrong. Please try again.';
+      });
+    }
+  }
+
   String _mapError(String code) => switch (code) {
         'user-not-found' => 'No account found with that email.',
         'wrong-password' => 'Incorrect email or password.',
@@ -260,7 +310,21 @@ class _SignInScreenState extends State<SignInScreen> {
                     textAlign: TextAlign.center,
                   ),
 
-                  const SizedBox(height: 44),
+                  const SizedBox(height: 32),
+
+                  // ── Continue with Apple ──────────────────────────────────
+                  // Required on iOS by Apple Guideline 4.8 whenever the app
+                  // offers any account system.  Reviewers were tapping the
+                  // QuickType SIWA chip on the email field and getting an
+                  // unhandled error — the explicit button removes that path.
+                  _AppleSignInButton(
+                    onTap: _signInWithApple,
+                    isLoading: _isAppleLoading,
+                    enabled: !_isLoading,
+                  ),
+                  const SizedBox(height: 20),
+                  const _OrDivider(),
+                  const SizedBox(height: 20),
 
                   // ── Email ────────────────────────────────────────────────
                   AuthTextField(
@@ -271,7 +335,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.email],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) =>
                         FocusScope.of(context).requestFocus(_passwordFocus),
                   ),
@@ -286,7 +350,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     isPassword: true,
                     textInputAction: TextInputAction.done,
                     autofillHints: const [AutofillHints.password],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) => _signIn(),
                   ),
 
@@ -342,7 +406,7 @@ class _SignInScreenState extends State<SignInScreen> {
                     label: 'Sign In',
                     onTap: _signIn,
                     isLoading: _isLoading,
-                    enabled: _isValid && !_isLoading,
+                    enabled: _isValid && !_isLoading && !_isAppleLoading,
                   ),
 
                   const Spacer(),
@@ -428,6 +492,94 @@ class _AuthButton extends StatelessWidget {
               : Text(label, style: AppTextStyles.buttonL),
         ),
       ),
+    );
+  }
+}
+
+// ─── Apple sign-in button ─────────────────────────────────────────────────────
+
+/// White-on-black "Continue with Apple" pill that mirrors the visual weight
+/// of [_AuthButton] (56pt tall, fully rounded) so the auth screen reads as
+/// a single ladder of equally-prioritized actions.  Uses Apple's logomark
+/// glyph from CupertinoIcons; the label copy follows the HIG-approved
+/// "Continue with Apple" wording for first-time sign-up flows.
+class _AppleSignInButton extends StatelessWidget {
+  const _AppleSignInButton({
+    required this.onTap,
+    required this.isLoading,
+    required this.enabled,
+  });
+
+  final VoidCallback onTap;
+  final bool isLoading;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final interactive = enabled && !isLoading;
+    return GestureDetector(
+      onTap: interactive ? onTap : null,
+      child: AnimatedOpacity(
+        opacity: interactive ? 1.0 : 0.5,
+        duration: const Duration(milliseconds: 200),
+        child: Container(
+          height: 56,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+          ),
+          alignment: Alignment.center,
+          child: isLoading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Colors.black,
+                  ),
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.apple, color: Colors.black, size: 22),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Continue with Apple',
+                      style: AppTextStyles.buttonL.copyWith(
+                        color: Colors.black,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Or divider ───────────────────────────────────────────────────────────────
+
+class _OrDivider extends StatelessWidget {
+  const _OrDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Divider(color: AppColors.divider, thickness: 1)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'OR',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+              letterSpacing: 1.4,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(child: Divider(color: AppColors.divider, thickness: 1)),
+      ],
     );
   }
 }

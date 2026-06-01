@@ -1,11 +1,16 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:sign_in_with_apple/sign_in_with_apple.dart';
+import 'package:url_launcher/url_launcher.dart';
 import '../../../core/constants/app_constants.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/icebreaker_logo.dart';
+import '../services/apple_sign_in.dart';
+import '../services/post_auth_router.dart';
 import '../widgets/auth_text_field.dart';
 
 class SignUpScreen extends StatefulWidget {
@@ -24,7 +29,29 @@ class _SignUpScreenState extends State<SignUpScreen> {
   final _confirmFocus = FocusNode();
 
   bool _isLoading = false;
+  bool _isAppleLoading = false;
+  bool _acceptedTerms = false;
   String? _errorMessage;
+
+  static const _termsUrl = 'https://icebreakerlive.com/terms.html';
+  static const _privacyUrl = 'https://icebreakerlive.com/privacy.html';
+
+  Future<void> _openUrl(String url) async {
+    final uri = Uri.parse(url);
+    if (!await launchUrl(uri, mode: LaunchMode.externalApplication)) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            "Couldn't open the page. Try again later.",
+            style: AppTextStyles.bodyS.copyWith(color: Colors.white),
+          ),
+          backgroundColor: AppColors.bgElevated,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
+    }
+  }
 
   @override
   void initState() {
@@ -57,7 +84,8 @@ class _SignUpScreenState extends State<SignUpScreen> {
 
   bool get _confirmNonEmpty => _confirmController.text.isNotEmpty;
 
-  bool get _isValid => _emailValid && _passwordValid && _passwordsMatch;
+  bool get _isValid =>
+      _emailValid && _passwordValid && _passwordsMatch && _acceptedTerms;
 
   Future<void> _signUp() async {
     if (!_isValid || _isLoading) return;
@@ -161,6 +189,53 @@ class _SignUpScreenState extends State<SignUpScreen> {
     print('[SignUp] ✅ STEP 3 DONE — navigation triggered');
   }
 
+  /// Continue with Apple — opens the native ASAuthorization sheet, exchanges
+  /// the identity token with Firebase Auth, then routes via the shared
+  /// post-auth router so brand-new Apple IDs land in onboarding and
+  /// returning users land on home.
+  Future<void> _signUpWithApple() async {
+    if (_isLoading || _isAppleLoading) return;
+    _emailFocus.unfocus();
+    _passwordFocus.unfocus();
+    _confirmFocus.unfocus();
+    setState(() {
+      _isAppleLoading = true;
+      _errorMessage = null;
+    });
+
+    try {
+      final credential = await AppleSignIn.signIn();
+      if (!mounted) return;
+      final routeError = await routeAfterAuth(context, credential.user!);
+      if (routeError != null && mounted) {
+        setState(() {
+          _isAppleLoading = false;
+          _errorMessage = routeError;
+        });
+      }
+    } on SignInWithAppleAuthorizationException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = e.code == AuthorizationErrorCode.canceled
+            ? null
+            : 'Apple sign-in failed. Please try again.';
+      });
+    } on FirebaseAuthException catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = _mapError(e.code);
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isAppleLoading = false;
+        _errorMessage = 'Something went wrong. Please try again.';
+      });
+    }
+  }
+
   String _mapError(String code) => switch (code) {
         'email-already-in-use' =>
           'An account already exists with that email.',
@@ -214,7 +289,21 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     textAlign: TextAlign.center,
                   ),
 
-                  const SizedBox(height: 40),
+                  const SizedBox(height: 28),
+
+                  // ── Continue with Apple ──────────────────────────────────
+                  // Required on iOS by Apple Guideline 4.8 alongside any
+                  // first-party account system. Same flow as sign-in — Apple
+                  // doesn't distinguish; the shared post-auth router lands
+                  // new Apple IDs in onboarding and returning users on home.
+                  _AppleSignInButton(
+                    onTap: _signUpWithApple,
+                    isLoading: _isAppleLoading,
+                    enabled: !_isLoading,
+                  ),
+                  const SizedBox(height: 20),
+                  const _OrDivider(),
+                  const SizedBox(height: 20),
 
                   // ── Email ────────────────────────────────────────────────
                   AuthTextField(
@@ -225,7 +314,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     keyboardType: TextInputType.emailAddress,
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.newUsername],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) =>
                         FocusScope.of(context).requestFocus(_passwordFocus),
                   ),
@@ -240,7 +329,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     isPassword: true,
                     textInputAction: TextInputAction.next,
                     autofillHints: const [AutofillHints.newPassword],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) =>
                         FocusScope.of(context).requestFocus(_confirmFocus),
                   ),
@@ -255,7 +344,7 @@ class _SignUpScreenState extends State<SignUpScreen> {
                     isPassword: true,
                     textInputAction: TextInputAction.done,
                     autofillHints: const [AutofillHints.newPassword],
-                    enabled: !_isLoading,
+                    enabled: !_isLoading && !_isAppleLoading,
                     onSubmitted: (_) => _signUp(),
                   ),
 
@@ -305,14 +394,100 @@ class _SignUpScreenState extends State<SignUpScreen> {
                         : const SizedBox.shrink(),
                   ),
 
-                  const SizedBox(height: 24),
+                  const SizedBox(height: 20),
+
+                  // ── EULA accept ───────────────────────────────────────────
+                  // Apple App Review Guideline 1.2 requires UGC apps to have
+                  // the user agree to a Terms of Service / EULA before posting
+                  // content.  We gate the Create Account button on this flag
+                  // so signup itself is the consent moment — every account in
+                  // the system has affirmed the terms by definition.
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: SizedBox(
+                          width: 22,
+                          height: 22,
+                          child: Checkbox(
+                            value: _acceptedTerms,
+                            onChanged: _isLoading
+                                ? null
+                                : (v) => setState(
+                                      () => _acceptedTerms = v ?? false,
+                                    ),
+                            activeColor: AppColors.brandPink,
+                            checkColor: Colors.white,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(4),
+                            ),
+                            side: const BorderSide(
+                              color: AppColors.divider,
+                              width: 1.5,
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Expanded(
+                        child: GestureDetector(
+                          onTap: _isLoading
+                              ? null
+                              : () => setState(
+                                    () => _acceptedTerms = !_acceptedTerms,
+                                  ),
+                          behavior: HitTestBehavior.opaque,
+                          child: Text.rich(
+                            TextSpan(
+                              style: AppTextStyles.bodyS.copyWith(
+                                color: AppColors.textSecondary,
+                              ),
+                              children: [
+                                const TextSpan(text: 'I agree to the '),
+                                TextSpan(
+                                  text: 'Terms of Service',
+                                  style: TextStyle(
+                                    color: AppColors.brandPink,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () => _openUrl(_termsUrl),
+                                ),
+                                const TextSpan(text: ' and '),
+                                TextSpan(
+                                  text: 'Privacy Policy',
+                                  style: TextStyle(
+                                    color: AppColors.brandPink,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                  recognizer: TapGestureRecognizer()
+                                    ..onTap = () => _openUrl(_privacyUrl),
+                                ),
+                                const TextSpan(
+                                  text: '. I get that Icebreaker is for real '
+                                      'meetings in real places — zero tolerance '
+                                      'for harassment, spam, or fake profiles.',
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+
+                  const SizedBox(height: 18),
 
                   // ── Create Account button ─────────────────────────────────
                   _AuthButton(
                     label: 'Create Account',
                     onTap: _signUp,
                     isLoading: _isLoading,
-                    enabled: _isValid && !_isLoading,
+                    enabled: _isValid && !_isLoading && !_isAppleLoading,
                   ),
 
                   const Spacer(),
@@ -398,6 +573,93 @@ class _AuthButton extends StatelessWidget {
               : Text(label, style: AppTextStyles.buttonL),
         ),
       ),
+    );
+  }
+}
+
+// ─── Apple sign-in button ─────────────────────────────────────────────────────
+
+/// White-on-black "Continue with Apple" pill, sized to match [_AuthButton]
+/// so both auth screens read as a single ladder of equally-prioritized
+/// actions.  See sign_in_screen.dart for the matching variant — duplicated
+/// here intentionally to keep each screen self-contained.
+class _AppleSignInButton extends StatelessWidget {
+  const _AppleSignInButton({
+    required this.onTap,
+    required this.isLoading,
+    required this.enabled,
+  });
+
+  final VoidCallback onTap;
+  final bool isLoading;
+  final bool enabled;
+
+  @override
+  Widget build(BuildContext context) {
+    final interactive = enabled && !isLoading;
+    return GestureDetector(
+      onTap: interactive ? onTap : null,
+      child: AnimatedOpacity(
+        opacity: interactive ? 1.0 : 0.5,
+        duration: const Duration(milliseconds: 200),
+        child: Container(
+          height: 56,
+          decoration: BoxDecoration(
+            color: Colors.white,
+            borderRadius: BorderRadius.circular(28),
+          ),
+          alignment: Alignment.center,
+          child: isLoading
+              ? const SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: CircularProgressIndicator(
+                    strokeWidth: 2.5,
+                    color: Colors.black,
+                  ),
+                )
+              : Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.apple, color: Colors.black, size: 22),
+                    const SizedBox(width: 8),
+                    Text(
+                      'Continue with Apple',
+                      style: AppTextStyles.buttonL.copyWith(
+                        color: Colors.black,
+                      ),
+                    ),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Or divider ───────────────────────────────────────────────────────────────
+
+class _OrDivider extends StatelessWidget {
+  const _OrDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(child: Divider(color: AppColors.divider, thickness: 1)),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Text(
+            'OR',
+            style: AppTextStyles.caption.copyWith(
+              color: AppColors.textMuted,
+              letterSpacing: 1.4,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ),
+        Expanded(child: Divider(color: AppColors.divider, thickness: 1)),
+      ],
     );
   }
 }

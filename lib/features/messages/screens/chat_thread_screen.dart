@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../../core/services/blocks_repository.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
+import '../../nearby/models/nearby_image.dart';
 import '../../nearby/widgets/nearby_about_me_card.dart';
 import '../../nearby/widgets/nearby_focus_card.dart';
 import '../../reports/widgets/report_sheet.dart';

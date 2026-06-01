@@ -1,4 +1,4 @@
-package com.example.icebreaker
+package com.dylandreiling.icebreaker
 
 import io.flutter.embedding.android.FlutterActivity
 

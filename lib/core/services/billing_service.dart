@@ -180,21 +180,6 @@ class BillingService extends ChangeNotifier {
     }
   }
 
-  /// Asks the store to re-deliver any past purchases that this device
-  /// hasn't yet finished consuming.  Useful as a recovery affordance: if a
-  /// user's redeem CF call failed mid-purchase, hitting Restore on the
-  /// Shop will replay the pending transaction and re-attempt the redeem.
-  Future<void> restore() async {
-    if (!_isAvailable) return;
-    try {
-      await _iap.restorePurchases();
-    } catch (e) {
-      debugPrint('[Billing] restorePurchases threw: $e');
-      _lastError = e.toString();
-      notifyListeners();
-    }
-  }
-
   /// Single sink for plugin purchase updates.  Drives every state
   /// transition for an in-flight purchase: success → redeem → complete,
   /// failure → record error + complete (so the OS doesn't keep re-firing
@@ -268,9 +253,12 @@ class BillingService extends ChangeNotifier {
       return true;
     } catch (e) {
       debugPrint('[Billing] redeem CF failed for ${p.productID}: $e');
+      // Note: we do NOT acknowledge the purchase with the store on a redeem
+      // failure (see _onPurchaseUpdates), so StoreKit will re-deliver the
+      // transaction on the next app launch and we'll retry server-side.
       _lastError =
-          'Purchase succeeded but credits failed to apply. Pull to refresh '
-          'or hit Restore on the Shop.';
+          'Purchase succeeded but credits failed to apply. Reopen the app '
+          'and we\'ll automatically retry.';
       return false;
     }
   }

@@ -138,12 +138,6 @@ class _ShopScreenState extends State<ShopScreen> {
 
   Future<void> _onRefresh() => _billing.reloadProducts();
 
-  Future<void> _restore() async {
-    await _billing.restore();
-    if (!mounted) return;
-    _showSnack('Checking for past purchases…');
-  }
-
   /// Tracks which reward type is currently mid-watch so the UI can show a
   /// spinner on the tapped card and ignore re-taps until the show resolves.
   RewardType? _watchingType;
@@ -267,19 +261,12 @@ class _ShopScreenState extends State<ShopScreen> {
           onPressed: () => Navigator.of(context).pop(),
         ),
         title: Text('Shop', style: AppTextStyles.h3),
-        actions: [
-          if (_billing.isAvailable)
-            TextButton(
-              onPressed: _restore,
-              child: Text(
-                'Restore',
-                style: AppTextStyles.caption.copyWith(
-                  color: AppColors.brandCyan,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ),
-        ],
+        // Intentionally no "Restore" action: every product in the catalog is
+        // a consumable (icebreaker / live-session credits) so there's nothing
+        // App Store can re-deliver — credits live server-side tied to the
+        // signed-in account and follow the user across devices via login.
+        // Apple Guideline 3.1.1 disallows a restore affordance for
+        // consumable IAPs.
       ),
       body: SafeArea(
         top: false,

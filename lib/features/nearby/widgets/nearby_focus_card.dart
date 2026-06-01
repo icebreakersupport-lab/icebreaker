@@ -3,22 +3,7 @@ import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_text_styles.dart';
 import '../../../shared/widgets/pill_button.dart';
 import '../../reports/widgets/report_sheet.dart';
-
-/// Image kind tag for the Nearby hero rail.  Both kinds render with
-/// [BoxFit.cover] so the photo fills the entire card edge-to-edge.  The
-/// kind is preserved for future per-source treatment (badges, ordering,
-/// etc.) but no longer drives framing.
-enum NearbyImageKind { liveSelfie, profilePhoto }
-
-/// One entry in the hero card's image rail.  Carries the URL plus a [kind]
-/// so the rail can pick the right framing per image instead of treating
-/// every URL identically.
-class NearbyImage {
-  const NearbyImage({required this.url, required this.kind});
-
-  final String url;
-  final NearbyImageKind kind;
-}
+import '../models/nearby_image.dart';
 
 /// The hero profile card shown in the Nearby discovery carousel.
 ///

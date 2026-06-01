@@ -164,6 +164,19 @@ abstract final class LocationService {
     }
   }
 
+  /// Returns the raw [LocationPermission] without prompting.  Used by callers
+  /// that need to distinguish permission denial from a GPS failure after
+  /// [getPosition] returns null.  Most code should prefer [currentStatus] or
+  /// [requestIfNeeded] for the coarse [LocationStatus] surface.
+  static Future<LocationPermission> checkPermission() async {
+    try {
+      return await Geolocator.checkPermission();
+    } catch (_) {
+      return LocationPermission.denied;
+    }
+  }
+
+
   // ── Geohash ───────────────────────────────────────────────────────────────────
 
   static const String _base32 = '0123456789bcdefghjkmnpqrstuvwxyz';
